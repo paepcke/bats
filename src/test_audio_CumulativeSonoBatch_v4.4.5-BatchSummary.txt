@@ -1,0 +1,10 @@
+	Myyu	Myca	Myci	Myvo	Mylu	Myev	Pahe	Labl	Anpa	Epfu	Lano	Coto	Myth	Tabr	Laci	Euma	Eupe	
+Consensus count	0	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	
+Corrected count	0	1	0	0	0	0	0	0	0	0	0	0	0	0	0	0	0	
+
+likelihood of presence	0.00	0.32	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00	0.00	
+MLE	1.00	0.68	1.00	1.00	1.00	1.00	1.00	1.00	1.00	1.00	1.00	1.00	1.00	1.00	1.00	1.00	1.00	
+
+HiF sum	20
+LoF sum	28
+total est. passes	48

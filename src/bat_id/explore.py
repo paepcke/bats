@@ -10,6 +10,7 @@ import os
 import plotly.express as px
 # from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
 
 
 #------------------------------------
@@ -141,14 +142,21 @@ def create_dataset_from_csv(dir):
 
     for csv in os.listdir(dir):
         fname = os.path.join(dir, csv) 
-        X.append(pd.read_csv(fname)['pitch'])
-        Y.append(fname[-8:-4])
+        x = pd.read_csv(fname).to_numpy().reshape((1, -1))
+        if x.shape[1] != 12:
+            continue
+        X.append(x)
+        Y.append(fname[fname.index('-') + 1:fname.index('-') + 5])
+        # print(fname)
 
-    X, Y = np.array(X), np.array(Y)
-    X = X.reshape((X.shape[0], X.shape[1]))
+    # X, Y = np.array(X), np.array(Y)
+    X = np.concatenate(X)
+    # print(X)
+    # print(X.shape)
+    # X = X.reshape((X.shape[0], X.shape[1]))
     return X, Y
 
-
+# 
 #------------------------------------
 # cluster_dataset
 #-------------------
@@ -165,12 +173,15 @@ def cluster_dataset(X, Y):
         (num_examples, 1) 
     :type Y: np.array
     '''
-    X_embedded = TSNE(n_components=2,
-                      learning_rate='auto',
-                      init='random',
-                      perplexity=5).fit_transform(X)
-    fig = px.scatter(X_embedded, x=0, y=1, color=Y)
-    fig.show()
+    for i in [5, 10, 20, 30]:
+        X_embedded = TSNE(n_components=2,
+                        learning_rate='auto',
+                        init='random',
+                        perplexity=i).fit_transform(X)
+        fig = px.scatter(X_embedded, x=0, y=1, color=Y)
+        fig.show()
+
+
 
 
 def main():

@@ -1,0 +1,391 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+  <meta charset="utf-8" />
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  
+  <title>birdsong package &mdash; Birdsong  documentation</title>
+  
+
+  
+  <link rel="stylesheet" href="../_static/css/theme.css" type="text/css" />
+  <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+  <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+  <link rel="stylesheet" href="../_static/css/theme.css" type="text/css" />
+
+  
+  
+
+  
+  
+
+  
+
+  
+  <!--[if lt IE 9]>
+    <script src="../_static/js/html5shiv.min.js"></script>
+  <![endif]-->
+  
+    
+      <script type="text/javascript" id="documentation_options" data-url_root="../" src="../_static/documentation_options.js"></script>
+        <script data-url_root="../" id="documentation_options" src="../_static/documentation_options.js"></script>
+        <script src="../_static/jquery.js"></script>
+        <script src="../_static/underscore.js"></script>
+        <script src="../_static/doctools.js"></script>
+    
+    <script type="text/javascript" src="../_static/js/theme.js"></script>
+
+    
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav">
+
+   
+  <div class="wy-grid-for-nav">
+    
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+          
+
+          
+            <a href="../index.html" class="icon icon-home"> Birdsong
+          
+
+          
+          </a>
+
+          
+            
+            
+          
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+
+          
+        </div>
+
+        
+        <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
+          
+            
+            
+              
+            
+            
+              <!-- Local TOC -->
+              <div class="local-toc"><ul>
+<li><a class="reference internal" href="#">birdsong package</a><ul>
+<li><a class="reference internal" href="#subpackages">Subpackages</a></li>
+<li><a class="reference internal" href="#submodules">Submodules</a></li>
+<li><a class="reference internal" href="#birdsong-birds-train-basic-module">birdsong.birds_train_basic module</a></li>
+<li><a class="reference internal" href="#birdsong-birds-train-basic-cv-module">birdsong.birds_train_basic_CV module</a></li>
+<li><a class="reference internal" href="#birdsong-birds-train-parallel-module">birdsong.birds_train_parallel module</a></li>
+<li><a class="reference internal" href="#birdsong-class-weight-discovery-module">birdsong.class_weight_discovery module</a></li>
+<li><a class="reference internal" href="#birdsong-conv-matrix-module">birdsong.conv_matrix module</a></li>
+<li><a class="reference internal" href="#birdsong-cross-validation-dataloader-module">birdsong.cross_validation_dataloader module</a></li>
+<li><a class="reference internal" href="#birdsong-display-module">birdsong.display module</a></li>
+<li><a class="reference internal" href="#birdsong-distributed-c10d-module">birdsong.distributed_c10d module</a></li>
+<li><a class="reference internal" href="#birdsong-ensembletrain-module">birdsong.ensembletrain module</a></li>
+<li><a class="reference internal" href="#birdsong-launch-birds-training-module">birdsong.launch_birds_training module</a></li>
+<li><a class="reference internal" href="#birdsong-launch-multiprocessing-training-runs-module">birdsong.launch_multiprocessing_training_runs module</a></li>
+<li><a class="reference internal" href="#birdsong-launch-training-runs-module">birdsong.launch_training_runs module</a></li>
+<li><a class="reference internal" href="#birdsong-nets-module">birdsong.nets module</a></li>
+<li><a class="reference internal" href="#birdsong-result-tallying-module">birdsong.result_tallying module</a></li>
+<li><a class="reference internal" href="#birdsong-rooted-image-dataset-module">birdsong.rooted_image_dataset module</a></li>
+<li><a class="reference internal" href="#birdsong-run-inference-module">birdsong.run_inference module</a></li>
+<li><a class="reference internal" href="#birdsong-samplers-module">birdsong.samplers module</a></li>
+<li><a class="reference internal" href="#birdsong-trainingorig-module">birdsong.trainingOrig module</a></li>
+<li><a class="reference internal" href="#birdsong-xeno-canto-manager-module">birdsong.xeno_canto_manager module</a></li>
+<li><a class="reference internal" href="#module-contents">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</div>
+            
+          
+        </div>
+        
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+
+      
+      <nav class="wy-nav-top" aria-label="top navigation">
+        
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Birdsong</a>
+        
+      </nav>
+
+
+      <div class="wy-nav-content">
+        
+        <div class="rst-content">
+        
+          
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div role="navigation" aria-label="breadcrumbs navigation">
+
+  <ul class="wy-breadcrumbs">
+    
+      <li><a href="../index.html" class="icon icon-home"></a> &raquo;</li>
+        
+      <li>birdsong package</li>
+    
+    
+      <li class="wy-breadcrumbs-aside">
+        
+          
+            <a href="../_sources/source/birdsong.rst.txt" rel="nofollow"> View page source</a>
+          
+        
+      </li>
+    
+  </ul>
+
+  
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+            
+  <div class="section" id="birdsong-package">
+<h1>birdsong package<a class="headerlink" href="#birdsong-package" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="subpackages">
+<h2>Subpackages<a class="headerlink" href="#subpackages" title="Permalink to this headline">¶</a></h2>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="birdsong.ml_plotting.html">birdsong.ml_plotting package</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.ml_plotting.html#subpackages">Subpackages</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="birdsong.ml_plotting.tests.html">birdsong.ml_plotting.tests package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.ml_plotting.tests.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.ml_plotting.tests.html#birdsong-ml-plotting-tests-test-classification-charts-module">birdsong.ml_plotting.tests.test_classification_charts module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.ml_plotting.tests.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.ml_plotting.html#submodules">Submodules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.ml_plotting.html#birdsong-ml-plotting-classification-charts-module">birdsong.ml_plotting.classification_charts module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.ml_plotting.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="birdsong.tests.html">birdsong.tests package</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#subpackages">Subpackages</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="birdsong.tests.pytorch_distributed.html">birdsong.tests.pytorch_distributed package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.tests.pytorch_distributed.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.tests.pytorch_distributed.html#module-birdsong.tests.pytorch_distributed.fake_train_script">birdsong.tests.pytorch_distributed.fake_train_script module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.tests.pytorch_distributed.html#module-birdsong.tests.pytorch_distributed.simple_multimachine_pytorch">birdsong.tests.pytorch_distributed.simple_multimachine_pytorch module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.tests.pytorch_distributed.html#module-birdsong.tests.pytorch_distributed">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#submodules">Submodules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-brokentest-birds-training-parallel-training-module">birdsong.tests.brokentest_birds_training_parallel_training module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-brokentest-birds-training-parallell-initialization-module">birdsong.tests.brokentest_birds_training_parallell_initialization module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-brokentest-train-results-module">birdsong.tests.brokentest_train_results module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-birds-training-basic-cv-module">birdsong.tests.test_birds_training_basic_CV module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-birds-training-parallel-save-model-module">birdsong.tests.test_birds_training_parallel_save_model module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-class-weight-discovery-module">birdsong.tests.test_class_weight_discovery module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-cross-validation-dataloader-module">birdsong.tests.test_cross_validation_dataloader module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-launch-birds-train-parallel-module">birdsong.tests.test_launch_birds_train_parallel module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-launch-training-runs-module">birdsong.tests.test_launch_training_runs module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-model-archive-module">birdsong.tests.test_model_archive module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-multiprocess-sampler-module">birdsong.tests.test_multiprocess_sampler module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-nets-module">birdsong.tests.test_nets module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-rooted-image-dataloader-module">birdsong.tests.test_rooted_image_dataloader module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-rooted-image-dataset-module">birdsong.tests.test_rooted_image_dataset module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-run-inference-module">birdsong.tests.test_run_inference module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-single-process-sampler-module">birdsong.tests.test_single_process_sampler module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-tensorboard-ops-module">birdsong.tests.test_tensorboard_ops module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-test-xeno-canto-manager-module">birdsong.tests.test_xeno_canto_manager module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#birdsong-tests-zzzdeletemesomeday-training-module">birdsong.tests.zzzDeleteMeSomeDay_training module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.tests.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="birdsong.utils.html">birdsong.utils package</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#subpackages">Subpackages</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="birdsong.utils.tests.html">birdsong.utils.tests package</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#submodules">Submodules</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-dottable-config-parser-module">birdsong.utils.tests.test_dottable_config_parser module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-dottable-map-module">birdsong.utils.tests.test_dottable_map module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-match-snippets-to-selection-table-module">birdsong.utils.tests.test_match_snippets_to_selection_table module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-move-random-perc-of-files-module">birdsong.utils.tests.test_move_random_perc_of_files module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-multiclass-pr-curve-module">birdsong.utils.tests.test_multiclass_pr_curve module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-neural-net-config-module">birdsong.utils.tests.test_neural_net_config module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-tensorboard-manager-module">birdsong.utils.tests.test_tensorboard_manager module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-tensorboard-plotter-module">birdsong.utils.tests.test_tensorboard_plotter module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-utilities-module">birdsong.utils.tests.test_utilities module</a></li>
+<li class="toctree-l4"><a class="reference internal" href="birdsong.utils.tests.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#submodules">Submodules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-dottable-config-module">birdsong.utils.dottable_config module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-dottable-map-module">birdsong.utils.dottable_map module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-github-table-maker-module">birdsong.utils.github_table_maker module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-learning-phase-module">birdsong.utils.learning_phase module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-match-snippets-to-selection-table-module">birdsong.utils.match_snippets_to_selection_table module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-minimal-across-two-gpus-ddp-module">birdsong.utils.minimal_across_two_gpus_ddp module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-minimal-ddp-launcher-module">birdsong.utils.minimal_ddp_launcher module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-minimal-within-two-gpus-ddp-module">birdsong.utils.minimal_within_two_gpus_ddp module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-model-archive-module">birdsong.utils.model_archive module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-move-random-perc-of-files-module">birdsong.utils.move_random_perc_of_files module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-multi-class-pr-curves-module">birdsong.utils.multi_class_pr_curves module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-neural-net-config-module">birdsong.utils.neural_net_config module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-remove-bad-bird-recordings-module">birdsong.utils.remove_bad_bird_recordings module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-tensorboard-manager-module">birdsong.utils.tensorboard_manager module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-tensorboard-plotter-module">birdsong.utils.tensorboard_plotter module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-tiny-one-gpu-ddp-module">birdsong.utils.tiny_one_gpu_ddp module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-tiny-one-gpu-no-ddp-module">birdsong.utils.tiny_one_gpu_no_ddp module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-trash-module">birdsong.utils.trash module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-utilities-module">birdsong.utils.utilities module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#birdsong-utils-xeno-canto-download-cleaning-module">birdsong.utils.xeno_canto_download_cleaning module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<div class="section" id="submodules">
+<h2>Submodules<a class="headerlink" href="#submodules" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-birds-train-basic-module">
+<h2>birdsong.birds_train_basic module<a class="headerlink" href="#birdsong-birds-train-basic-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-birds-train-basic-cv-module">
+<h2>birdsong.birds_train_basic_CV module<a class="headerlink" href="#birdsong-birds-train-basic-cv-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-birds-train-parallel-module">
+<h2>birdsong.birds_train_parallel module<a class="headerlink" href="#birdsong-birds-train-parallel-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-class-weight-discovery-module">
+<h2>birdsong.class_weight_discovery module<a class="headerlink" href="#birdsong-class-weight-discovery-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-conv-matrix-module">
+<h2>birdsong.conv_matrix module<a class="headerlink" href="#birdsong-conv-matrix-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-cross-validation-dataloader-module">
+<h2>birdsong.cross_validation_dataloader module<a class="headerlink" href="#birdsong-cross-validation-dataloader-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-display-module">
+<h2>birdsong.display module<a class="headerlink" href="#birdsong-display-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-distributed-c10d-module">
+<h2>birdsong.distributed_c10d module<a class="headerlink" href="#birdsong-distributed-c10d-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-ensembletrain-module">
+<h2>birdsong.ensembletrain module<a class="headerlink" href="#birdsong-ensembletrain-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-launch-birds-training-module">
+<h2>birdsong.launch_birds_training module<a class="headerlink" href="#birdsong-launch-birds-training-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-launch-multiprocessing-training-runs-module">
+<h2>birdsong.launch_multiprocessing_training_runs module<a class="headerlink" href="#birdsong-launch-multiprocessing-training-runs-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-launch-training-runs-module">
+<h2>birdsong.launch_training_runs module<a class="headerlink" href="#birdsong-launch-training-runs-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-nets-module">
+<h2>birdsong.nets module<a class="headerlink" href="#birdsong-nets-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-result-tallying-module">
+<h2>birdsong.result_tallying module<a class="headerlink" href="#birdsong-result-tallying-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-rooted-image-dataset-module">
+<h2>birdsong.rooted_image_dataset module<a class="headerlink" href="#birdsong-rooted-image-dataset-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-run-inference-module">
+<h2>birdsong.run_inference module<a class="headerlink" href="#birdsong-run-inference-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-samplers-module">
+<h2>birdsong.samplers module<a class="headerlink" href="#birdsong-samplers-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-trainingorig-module">
+<h2>birdsong.trainingOrig module<a class="headerlink" href="#birdsong-trainingorig-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-xeno-canto-manager-module">
+<h2>birdsong.xeno_canto_manager module<a class="headerlink" href="#birdsong-xeno-canto-manager-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="module-contents">
+<h2>Module contents<a class="headerlink" href="#module-contents" title="Permalink to this headline">¶</a></h2>
+</div>
+</div>
+
+
+           </div>
+           
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>
+        &#169; Copyright 2021, Team.
+
+    </p>
+  </div>
+    
+    
+    
+    Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    
+    provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+
+</footer>
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+  
+
+  <script type="text/javascript">
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script>
+
+  
+  
+    
+   
+
+</body>
+</html>

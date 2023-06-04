@@ -1,0 +1,318 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+  <meta charset="utf-8" />
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  
+  <title>birdsong.utils package &mdash; Birdsong  documentation</title>
+  
+
+  
+  <link rel="stylesheet" href="../_static/css/theme.css" type="text/css" />
+  <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+  <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+  <link rel="stylesheet" href="../_static/css/theme.css" type="text/css" />
+
+  
+  
+
+  
+  
+
+  
+
+  
+  <!--[if lt IE 9]>
+    <script src="../_static/js/html5shiv.min.js"></script>
+  <![endif]-->
+  
+    
+      <script type="text/javascript" id="documentation_options" data-url_root="../" src="../_static/documentation_options.js"></script>
+        <script data-url_root="../" id="documentation_options" src="../_static/documentation_options.js"></script>
+        <script src="../_static/jquery.js"></script>
+        <script src="../_static/underscore.js"></script>
+        <script src="../_static/doctools.js"></script>
+    
+    <script type="text/javascript" src="../_static/js/theme.js"></script>
+
+    
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" /> 
+</head>
+
+<body class="wy-body-for-nav">
+
+   
+  <div class="wy-grid-for-nav">
+    
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+          
+
+          
+            <a href="../index.html" class="icon icon-home"> Birdsong
+          
+
+          
+          </a>
+
+          
+            
+            
+          
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+
+          
+        </div>
+
+        
+        <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="main navigation">
+          
+            
+            
+              
+            
+            
+              <!-- Local TOC -->
+              <div class="local-toc"><ul>
+<li><a class="reference internal" href="#">birdsong.utils package</a><ul>
+<li><a class="reference internal" href="#subpackages">Subpackages</a></li>
+<li><a class="reference internal" href="#submodules">Submodules</a></li>
+<li><a class="reference internal" href="#birdsong-utils-dottable-config-module">birdsong.utils.dottable_config module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-dottable-map-module">birdsong.utils.dottable_map module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-github-table-maker-module">birdsong.utils.github_table_maker module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-learning-phase-module">birdsong.utils.learning_phase module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-match-snippets-to-selection-table-module">birdsong.utils.match_snippets_to_selection_table module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-minimal-across-two-gpus-ddp-module">birdsong.utils.minimal_across_two_gpus_ddp module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-minimal-ddp-launcher-module">birdsong.utils.minimal_ddp_launcher module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-minimal-within-two-gpus-ddp-module">birdsong.utils.minimal_within_two_gpus_ddp module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-model-archive-module">birdsong.utils.model_archive module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-move-random-perc-of-files-module">birdsong.utils.move_random_perc_of_files module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-multi-class-pr-curves-module">birdsong.utils.multi_class_pr_curves module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-neural-net-config-module">birdsong.utils.neural_net_config module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-remove-bad-bird-recordings-module">birdsong.utils.remove_bad_bird_recordings module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-tensorboard-manager-module">birdsong.utils.tensorboard_manager module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-tensorboard-plotter-module">birdsong.utils.tensorboard_plotter module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-tiny-one-gpu-ddp-module">birdsong.utils.tiny_one_gpu_ddp module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-tiny-one-gpu-no-ddp-module">birdsong.utils.tiny_one_gpu_no_ddp module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-trash-module">birdsong.utils.trash module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-utilities-module">birdsong.utils.utilities module</a></li>
+<li><a class="reference internal" href="#birdsong-utils-xeno-canto-download-cleaning-module">birdsong.utils.xeno_canto_download_cleaning module</a></li>
+<li><a class="reference internal" href="#module-contents">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</div>
+            
+          
+        </div>
+        
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+
+      
+      <nav class="wy-nav-top" aria-label="top navigation">
+        
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">Birdsong</a>
+        
+      </nav>
+
+
+      <div class="wy-nav-content">
+        
+        <div class="rst-content">
+        
+          
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<div role="navigation" aria-label="breadcrumbs navigation">
+
+  <ul class="wy-breadcrumbs">
+    
+      <li><a href="../index.html" class="icon icon-home"></a> &raquo;</li>
+        
+      <li>birdsong.utils package</li>
+    
+    
+      <li class="wy-breadcrumbs-aside">
+        
+          
+            <a href="../_sources/source/birdsong.utils.rst.txt" rel="nofollow"> View page source</a>
+          
+        
+      </li>
+    
+  </ul>
+
+  
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+            
+  <div class="section" id="birdsong-utils-package">
+<h1>birdsong.utils package<a class="headerlink" href="#birdsong-utils-package" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="subpackages">
+<h2>Subpackages<a class="headerlink" href="#subpackages" title="Permalink to this headline">¶</a></h2>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="birdsong.utils.tests.html">birdsong.utils.tests package</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#submodules">Submodules</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-dottable-config-parser-module">birdsong.utils.tests.test_dottable_config_parser module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-dottable-map-module">birdsong.utils.tests.test_dottable_map module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-match-snippets-to-selection-table-module">birdsong.utils.tests.test_match_snippets_to_selection_table module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-move-random-perc-of-files-module">birdsong.utils.tests.test_move_random_perc_of_files module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-multiclass-pr-curve-module">birdsong.utils.tests.test_multiclass_pr_curve module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-neural-net-config-module">birdsong.utils.tests.test_neural_net_config module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-tensorboard-manager-module">birdsong.utils.tests.test_tensorboard_manager module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-tensorboard-plotter-module">birdsong.utils.tests.test_tensorboard_plotter module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#birdsong-utils-tests-test-utilities-module">birdsong.utils.tests.test_utilities module</a></li>
+<li class="toctree-l2"><a class="reference internal" href="birdsong.utils.tests.html#module-contents">Module contents</a></li>
+</ul>
+</li>
+</ul>
+</div>
+</div>
+<div class="section" id="submodules">
+<h2>Submodules<a class="headerlink" href="#submodules" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-dottable-config-module">
+<h2>birdsong.utils.dottable_config module<a class="headerlink" href="#birdsong-utils-dottable-config-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-dottable-map-module">
+<h2>birdsong.utils.dottable_map module<a class="headerlink" href="#birdsong-utils-dottable-map-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-github-table-maker-module">
+<h2>birdsong.utils.github_table_maker module<a class="headerlink" href="#birdsong-utils-github-table-maker-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-learning-phase-module">
+<h2>birdsong.utils.learning_phase module<a class="headerlink" href="#birdsong-utils-learning-phase-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-match-snippets-to-selection-table-module">
+<h2>birdsong.utils.match_snippets_to_selection_table module<a class="headerlink" href="#birdsong-utils-match-snippets-to-selection-table-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-minimal-across-two-gpus-ddp-module">
+<h2>birdsong.utils.minimal_across_two_gpus_ddp module<a class="headerlink" href="#birdsong-utils-minimal-across-two-gpus-ddp-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-minimal-ddp-launcher-module">
+<h2>birdsong.utils.minimal_ddp_launcher module<a class="headerlink" href="#birdsong-utils-minimal-ddp-launcher-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-minimal-within-two-gpus-ddp-module">
+<h2>birdsong.utils.minimal_within_two_gpus_ddp module<a class="headerlink" href="#birdsong-utils-minimal-within-two-gpus-ddp-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-model-archive-module">
+<h2>birdsong.utils.model_archive module<a class="headerlink" href="#birdsong-utils-model-archive-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-move-random-perc-of-files-module">
+<h2>birdsong.utils.move_random_perc_of_files module<a class="headerlink" href="#birdsong-utils-move-random-perc-of-files-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-multi-class-pr-curves-module">
+<h2>birdsong.utils.multi_class_pr_curves module<a class="headerlink" href="#birdsong-utils-multi-class-pr-curves-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-neural-net-config-module">
+<h2>birdsong.utils.neural_net_config module<a class="headerlink" href="#birdsong-utils-neural-net-config-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-remove-bad-bird-recordings-module">
+<h2>birdsong.utils.remove_bad_bird_recordings module<a class="headerlink" href="#birdsong-utils-remove-bad-bird-recordings-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-tensorboard-manager-module">
+<h2>birdsong.utils.tensorboard_manager module<a class="headerlink" href="#birdsong-utils-tensorboard-manager-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-tensorboard-plotter-module">
+<h2>birdsong.utils.tensorboard_plotter module<a class="headerlink" href="#birdsong-utils-tensorboard-plotter-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-tiny-one-gpu-ddp-module">
+<h2>birdsong.utils.tiny_one_gpu_ddp module<a class="headerlink" href="#birdsong-utils-tiny-one-gpu-ddp-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-tiny-one-gpu-no-ddp-module">
+<h2>birdsong.utils.tiny_one_gpu_no_ddp module<a class="headerlink" href="#birdsong-utils-tiny-one-gpu-no-ddp-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-trash-module">
+<h2>birdsong.utils.trash module<a class="headerlink" href="#birdsong-utils-trash-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-utilities-module">
+<h2>birdsong.utils.utilities module<a class="headerlink" href="#birdsong-utils-utilities-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="birdsong-utils-xeno-canto-download-cleaning-module">
+<h2>birdsong.utils.xeno_canto_download_cleaning module<a class="headerlink" href="#birdsong-utils-xeno-canto-download-cleaning-module" title="Permalink to this headline">¶</a></h2>
+</div>
+<div class="section" id="module-contents">
+<h2>Module contents<a class="headerlink" href="#module-contents" title="Permalink to this headline">¶</a></h2>
+</div>
+</div>
+
+
+           </div>
+           
+          </div>
+          <footer>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>
+        &#169; Copyright 2021, Team.
+
+    </p>
+  </div>
+    
+    
+    
+    Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    
+    provided by <a href="https://readthedocs.org">Read the Docs</a>. 
+
+</footer>
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+  
+
+  <script type="text/javascript">
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script>
+
+  
+  
+    
+   
+
+</body>
+</html>
