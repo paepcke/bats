@@ -22,21 +22,26 @@ parser.add_argument("--val_check_interval", type=float, default=1.0)
 parser.add_argument("--limit_val_batches", type=float, default=1.0)
 parser.add_argument("--no_earlystopping", action="store_true")
 parser.add_argument("--patience", type=int, default=5)
-parser.add_argument(
-    "--trials", type=int, default=1, help="How many consecutive trials to run"
-)
+parser.add_argument("--trials", type=int, default=1, help="How many consecutive trials to run")
 config = parser.parse_args()
 args = config
+
 #reading dataframe
 df = pd.read_csv("data/data.csv")
 max_seq_len = df.groupby("Filename").size().max()
-
+#df["TimeInFile"] = df["TimeInFile"].fillna(1)
+df.fillna(1, inplace=True)
 #create dataset with spactimeformer CSVDataset object
+print("RAW DF")
+print(df)
+print(max_seq_len)
 bats_time_series = stf.data.CSVTimeSeries(
                         raw_df = df,
                         time_col_name = "TimeInFile",
                         time_features = ["minute"],
-                        ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght']
+                        ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght'],
+                        val_split = 0.1,
+                        test_split = 0.1
                     )
 # create a dataloader with the bats_time_series object
 bats_dataset = stf.data.CSVTorchDset(
@@ -47,9 +52,11 @@ bats_dataset = stf.data.CSVTorchDset(
                     time_resolution = 1
                 )
 
-x_dim = 1
-yc_dim = max_seq_len - 2
-yt_dim = 2
+x_dim = bats_time_series.time_cols.size
+yc_dim = len(bats_time_series.target_cols)
+yt_dim = len(bats_time_series.target_cols)
+
+print(f"{x_dim = }, {yc_dim = }, {yt_dim = }")
 
 data_module = stf.data.DataModule(
     datasetCls = stf.data.CSVTorchDset,
@@ -64,12 +71,28 @@ data_module = stf.data.DataModule(
     overfit = args.overfit
 )
 
+# Example DataLoader check
+train_loader = data_module.train_dataloader()
+val_loader = data_module.val_dataloader()
+test_loader = data_module.test_dataloader()
+
+assert train_loader is not None, "Training DataLoader is None"
+assert val_loader is not None, "Validation DataLoader is None"
+assert test_loader is not None, "Test DataLoader is None"
+
+assert len(train_loader.dataset) > 0, "Training dataset is empty"
+assert len(val_loader.dataset) > 0, "Validation dataset is empty"
+assert len(test_loader.dataset) > 0, "Test dataset is empty"
+
+
+
+
 scaler = bats_time_series.apply_scaling
 inverse_scaler = bats_time_series.reverse_scaling
-null_val = np.nan
-pad_val = np.nan
-config.null_value = null_val
-config.pad_value = pad_val
+null_val = -1
+pad_val = -1;
+config.null_value = None
+config.pad_value = None
 # initialize the spacetimeformer model
 model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             d_x=x_dim,
@@ -78,13 +101,14 @@ model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             max_seq_len=max_seq_len,
             start_token_len=config.start_token_len,
             attn_factor=config.attn_factor,
-            d_model=config.d_model,
-            d_queries_keys=config.d_qk,
-            d_values=config.d_v,
-            n_heads=config.n_heads,
+            #d_model=config.d_model,
+            d_model=20,
+            d_queries_keys=20,#config.d_qk,
+            d_values=20,#config.d_v,
+            n_heads=1,#config.n_heads,
             e_layers=config.enc_layers,
             d_layers=config.dec_layers,
-            d_ff=config.d_ff,
+            d_ff=20,#config.d_ff,
             dropout_emb=config.dropout_emb,
             dropout_attn_out=config.dropout_attn_out,
             dropout_attn_matrix=config.dropout_attn_matrix,
@@ -137,8 +161,8 @@ model.set_null_value(null_val);
 
 trainer = pl.Trainer(
         gpus=args.gpus,
-        #callbacks=callbacks,
-        #logger=logger if args.wandb else None,
+        callbacks=callbacks,
+        logger=logger if args.wandb else None,
         accelerator="dp",
         gradient_clip_val=args.grad_clip_norm,
         gradient_clip_algorithm="norm",
