@@ -6,10 +6,13 @@ import pytorch_lightning as pl
 import spacetimeformer as stf
 import pandas as pd
 
+from data import preprocess
+
 parser = ArgumentParser()
 stf.spacetimeformer_model.Spacetimeformer_Forecaster.add_cli(parser)
 stf.callbacks.TimeMaskedLossCallback.add_cli(parser)
 stf.data.DataModule.add_cli(parser)
+preprocess.add_cli(parser)
 
 parser.add_argument("--wandb", action="store_true")
 parser.add_argument("--plot", action="store_true")
@@ -27,14 +30,7 @@ config = parser.parse_args()
 args = config
 
 #reading dataframe
-df = pd.read_csv("data/data.csv")
-max_seq_len = df.groupby("Filename").size().max()
-#df["TimeInFile"] = df["TimeInFile"].fillna(1)
-df.fillna(1, inplace=True)
-#create dataset with spactimeformer CSVDataset object
-print("RAW DF")
-print(df)
-print(max_seq_len)
+df, max_seq_len = preprocess.preprocess(config)
 bats_time_series = stf.data.CSVTimeSeries(
                         raw_df = df,
                         time_col_name = "TimeInFile",
@@ -89,8 +85,6 @@ assert len(test_loader.dataset) > 0, "Test dataset is empty"
 
 scaler = bats_time_series.apply_scaling
 inverse_scaler = bats_time_series.reverse_scaling
-null_val = -1
-pad_val = -1;
 config.null_value = None
 config.pad_value = None
 # initialize the spacetimeformer model
@@ -157,7 +151,7 @@ model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
 
 model.set_inv_scaler(inverse_scaler);
 model.set_scaler(scaler);
-model.set_null_value(null_val);
+model.set_null_value(config.null_val);
 
 trainer = pl.Trainer(
         gpus=args.gpus,
