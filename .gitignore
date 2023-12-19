@@ -22,6 +22,7 @@ var/
 wheels/
 pip-wheel-metadata/
 share/python-wheels/
+lightning_logs/
 *.egg-info/
 .installed.cfg
 *.egg

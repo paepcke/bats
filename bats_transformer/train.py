@@ -151,12 +151,12 @@ model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
 
 model.set_inv_scaler(inverse_scaler);
 model.set_scaler(scaler);
-model.set_null_value(config.null_val);
+model.set_null_value(config.null_value);
 
 trainer = pl.Trainer(
         gpus=args.gpus,
-        callbacks=callbacks,
-        logger=logger if args.wandb else None,
+        #callbacks=callbacks,
+        #logger=logger if args.wandb else None,
         accelerator="dp",
         gradient_clip_val=args.grad_clip_norm,
         gradient_clip_algorithm="norm",
@@ -164,6 +164,7 @@ trainer = pl.Trainer(
         accumulate_grad_batches=args.accumulate,
         sync_batchnorm=True,
         limit_val_batches=args.limit_val_batches,
+        max_epochs=20
         #**val_control,
 )
 
