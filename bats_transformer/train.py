@@ -26,6 +26,9 @@ parser.add_argument("--limit_val_batches", type=float, default=1.0)
 parser.add_argument("--no_earlystopping", action="store_true")
 parser.add_argument("--patience", type=int, default=5)
 parser.add_argument("--trials", type=int, default=1, help="How many consecutive trials to run")
+parser.add_argumnet("--random_seed", type=int, default=42)
+parser.add_argument("--max_epochs", type=int, default=20)
+
 config = parser.parse_args()
 args = config
 
@@ -81,12 +84,14 @@ assert len(val_loader.dataset) > 0, "Validation dataset is empty"
 assert len(test_loader.dataset) > 0, "Test dataset is empty"
 
 
-
-
 scaler = bats_time_series.apply_scaling
 inverse_scaler = bats_time_series.reverse_scaling
 config.null_value = None
 config.pad_value = None
+seed = args.random_seed
+max_epochs = args.max_epochs
+
+pl.seed_everything(seed)
 # initialize the spacetimeformer model
 model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             d_x=x_dim,
@@ -164,9 +169,24 @@ trainer = pl.Trainer(
         accumulate_grad_batches=args.accumulate,
         sync_batchnorm=True,
         limit_val_batches=args.limit_val_batches,
-        max_epochs=20
+        max_epochs=max_epochs
         #**val_control,
 )
 
 # Train
 trainer.fit(model, datamodule=data_module)
+
+# Saving model checkpoint
+model_path = f"models/{args.run_name}.ckpt"
+#torch.save(model.state_dict(), model_path)
+trainer.save_checkpoint(model_path)
+#not really sure how the two above lines differ
+
+# to load the model:
+'''
+# Path to the saved weights
+model_path = "models/your_model.ckpt"  # replace with your path
+
+# Load the model
+model = YourModel.load_from_checkpoint(checkpoint_path=model_path)
+'''
