@@ -9,14 +9,14 @@ def add_cli(parser):
 
 def get_files(path):
     files = []
-    for file in glob.glob(path + '/**/*parameters_*.txt', recursive=True):
+    for file in glob.glob(path + '/**/*Parameters_*.txt', recursive=True):
         files.append(file)
     return files
 
 def get_df(files):
     df = pd.DataFrame()
     for file in files:
-        df = df.append(pd.read_csv(file, sep='\t'))
+        df = pd.concat([df, (pd.read_csv(file, sep='\t'))], ignore_index = True)
     return df
 
 def pad_group(group, max_length):
