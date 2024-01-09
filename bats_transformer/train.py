@@ -26,7 +26,7 @@ parser.add_argument("--limit_val_batches", type=float, default=1.0)
 parser.add_argument("--no_earlystopping", action="store_true")
 parser.add_argument("--patience", type=int, default=5)
 parser.add_argument("--trials", type=int, default=1, help="How many consecutive trials to run")
-parser.add_argumnet("--random_seed", type=int, default=42)
+parser.add_argument("--random_seed", type=int, default=42)
 parser.add_argument("--max_epochs", type=int, default=20)
 
 config = parser.parse_args()
