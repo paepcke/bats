@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import glob
 
+minimum_length = 5
 def add_cli(parser):
     parser.add_argument('-i', '--input_data_path', type=str, default='/qnap/bats/jasperridge/barn1/grouped_audio', help='input file')
     parser.add_argument('-o', '--output_data_path', type=str, default='./data.csv', help='output file')
@@ -34,6 +35,9 @@ args = parser.parse_args()
 
 df = get_df(get_files(args.input_data_path)).sort_values(["Filename", "TimeInFile"])
 max_length = df.groupby("Filename").size().max()
+
+#drop all entries corresponging to Filenames which have less than minimum_length entries
+df = df[df.groupby("Filename").Filename.transform('size') > minimum_length]
 
 # Apply the padding function to each group and concatenate them
 padded_df = pd.concat([pad_group(group, max_length) for _, group in df.groupby('Filename')], ignore_index=True)

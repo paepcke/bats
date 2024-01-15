@@ -5,14 +5,19 @@ import spacetimeformer as stf
 import pandas as pd
 
 from data import preprocess
+import argparse
+parser = argparse.ArgumentParser()
 
-parser = ArgumentParser()
 stf.spacetimeformer_model.Spacetimeformer_Forecaster.add_cli(parser)
-stf.callback.TimeInFileLossCallback.add_cli(parser)
+stf.callbacks.TimeMaskedLossCallback.add_cli(parser)
 stf.data.DataModule.add_cli(parser)
 preprocess.add_cli(parser)
 
-parser.add_argument("--model_path", type=str, action="store_true")
+parser.add_argument("--model_path", type=str, default="/home/vdesai/bats/bats_transformer/models/random_seed_42.ckpt")
+parser.add_argument("--predictions_path", type=str, default="/home/vdesai/bats/bats_transformer/predictions.csv")
+parser.add_argument("--originals_path", type=str, default="/home/vdesai/bats/bats_transformer/originals.csv")
+
+
 config = parser.parse_args()
 args = config
 model_path = args.model_path
@@ -20,15 +25,17 @@ model_path = args.model_path
 #reading dataframe
 df, max_seq_len = preprocess.preprocess(config)
 df, max_seq_len = preprocess.preprocess(config)
+
 bats_time_series = stf.data.CSVTimeSeries(
                         raw_df = df,
-                        time_col_name = "TimeInFile",
-                        time_features = ["minute"],
+                        time_col_name = "TimeIndex",
+                        time_features = ["hour", "minute", "second"],
                         ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght'],
                         val_split = 0.1,
                         test_split = 0.1
                     )
 # create a dataloader with the bats_time_series object
+print("B")
 bats_dataset = stf.data.CSVTorchDset(
                     csv_time_series = bats_time_series,
                     split = "train",
@@ -43,41 +50,11 @@ yt_dim = len(bats_time_series.target_cols)
 
 print(f"{x_dim = }, {yc_dim = }, {yt_dim = }")
 
-data_module = stf.data.DataModule(
-    datasetCls = stf.data.CSVTorchDset,
-    dataset_kwargs = {
-        "csv_time_series": bats_time_series,
-        "context_points": max_seq_len - 2,
-        "target_points": 2,
-        "time_resolution": 1,
-    },
-    batch_size = config.batch_size,
-    workers = config.workers,
-    overfit = args.overfit
-)
-
-# Example DataLoader check
-train_loader = data_module.train_dataloader()
-val_loader = data_module.val_dataloader()
-test_loader = data_module.test_dataloader()
-
-assert train_loader is not None, "Training DataLoader is None"
-assert val_loader is not None, "Validation DataLoader is None"
-assert test_loader is not None, "Test DataLoader is None"
-
-assert len(train_loader.dataset) > 0, "Training dataset is empty"
-assert len(val_loader.dataset) > 0, "Validation dataset is empty"
-assert len(test_loader.dataset) > 0, "Test dataset is empty"
-
-
 scaler = bats_time_series.apply_scaling
 inverse_scaler = bats_time_series.reverse_scaling
 config.null_value = None
 config.pad_value = None
-seed = args.random_seed
-max_epochs = args.max_epochs
 
-pl.seed_everything(seed)
 # initialize the spacetimeformer model
 model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             d_x=x_dim,
@@ -139,13 +116,25 @@ model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             recon_mask_drop_full=config.recon_mask_drop_full,
         )
 
+
+
+model = model.load_from_checkpoint(checkpoint_path=model_path)
 model.set_inv_scaler(inverse_scaler);
 model.set_scaler(scaler);
 model.set_null_value(config.null_value);
 
-model = model.load_from_checkpoint(checkpoint_path=model_path)
+predictions = pd.DataFrame(columns = bats_dataset.time_cols + bats_dataset.target_cols)
+originals = pd.DataFrame(columns = bats_dataset.time_cols + bats_dataset.target_cols)
 
-#now that model is loaded, run it on the test data set, save the results, and then evaluate the variance in the output
+for (x_c, y_c, x_t, y_t) in bats_dataset:
+    yhat_t = model.predict(x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0))
+    
+    predictions = predictions.append(pd.DataFrame(torch.cat((x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0), yhat_t), dim=1).numpy(), columns = bats_dataset.time_cols + bats_dataset.target_cols))
+    
+    originals = originals.append(pd.DataFrame(torch.cat((x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0), y_t.unsqueeze(0)), dim=1).numpy(), columns = bats_dataset.time_cols + bats_dataset.target_cols))
 
-#run the model on the test data set, and dump the output of the model to a csv file
+#Now that we have gone through all of the files, it is time to save these where they belong
+
+predictions.to_csv(config.predictions_path)
+originals.to_csv(config.originals_path)
 
