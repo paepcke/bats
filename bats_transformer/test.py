@@ -1,7 +1,5 @@
-from argparse import ArgumentParser
 import torch
 import numpy as np
-
 import pytorch_lightning as pl
 import spacetimeformer as stf
 import pandas as pd
@@ -10,34 +8,22 @@ from data import preprocess
 
 parser = ArgumentParser()
 stf.spacetimeformer_model.Spacetimeformer_Forecaster.add_cli(parser)
-stf.callbacks.TimeMaskedLossCallback.add_cli(parser)
+stf.callback.TimeInFileLossCallback.add_cli(parser)
 stf.data.DataModule.add_cli(parser)
 preprocess.add_cli(parser)
 
-parser.add_argument("--wandb", action="store_true")
-parser.add_argument("--plot", action="store_true")
-parser.add_argument("--plot_samples", type=int, default=8)
-parser.add_argument("--attn_plot", action="store_true")
-parser.add_argument("--debug", action="store_true")
-parser.add_argument("--run_name", type=str, required=True)
-parser.add_argument("--accumulate", type=int, default=1)
-parser.add_argument("--val_check_interval", type=float, default=1.0)
-parser.add_argument("--limit_val_batches", type=float, default=1.0)
-parser.add_argument("--no_earlystopping", action="store_true")
-parser.add_argument("--patience", type=int, default=5)
-parser.add_argument("--trials", type=int, default=1, help="How many consecutive trials to run")
-parser.add_argument("--random_seed", type=int, default=42)
-parser.add_argument("--max_epochs", type=int, default=20)
-
+parser.add_argument("--model_path", type=str, action="store_true")
 config = parser.parse_args()
 args = config
+model_path = args.model_path
 
 #reading dataframe
 df, max_seq_len = preprocess.preprocess(config)
+df, max_seq_len = preprocess.preprocess(config)
 bats_time_series = stf.data.CSVTimeSeries(
                         raw_df = df,
-                        time_col_name = "TimeIndex",
-                        time_features = ["hour", "minute", "seconds"],
+                        time_col_name = "TimeInFile",
+                        time_features = ["minute"],
                         ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght'],
                         val_split = 0.1,
                         test_split = 0.1
@@ -100,14 +86,13 @@ model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             max_seq_len=max_seq_len,
             start_token_len=config.start_token_len,
             attn_factor=config.attn_factor,
-            #d_model=config.d_model,
-            d_model=20,
-            d_queries_keys=20,#config.d_qk,
-            d_values=20,#config.d_v,
-            n_heads=1,#config.n_heads,
+            d_model=config.d_model,
+            d_queries_keys=config.d_qk,
+            d_values=config.d_v,
+            n_heads=config.n_heads,
             e_layers=config.enc_layers,
             d_layers=config.dec_layers,
-            d_ff=20,#config.d_ff,
+            d_ff=config.d_ff,
             dropout_emb=config.dropout_emb,
             dropout_attn_out=config.dropout_attn_out,
             dropout_attn_matrix=config.dropout_attn_matrix,
@@ -158,35 +143,9 @@ model.set_inv_scaler(inverse_scaler);
 model.set_scaler(scaler);
 model.set_null_value(config.null_value);
 
-trainer = pl.Trainer(
-        gpus=args.gpus,
-        #callbacks=callbacks,
-        #logger=logger if args.wandb else None,
-        accelerator="dp",
-        gradient_clip_val=args.grad_clip_norm,
-        gradient_clip_algorithm="norm",
-        overfit_batches=20 if args.debug else 0,
-        accumulate_grad_batches=args.accumulate,
-        sync_batchnorm=True,
-        limit_val_batches=args.limit_val_batches,
-        max_epochs=max_epochs
-        #**val_control,
-)
+model = model.load_from_checkpoint(checkpoint_path=model_path)
 
-# Train
-trainer.fit(model, datamodule=data_module)
+#now that model is loaded, run it on the test data set, save the results, and then evaluate the variance in the output
 
-# Saving model checkpoint
-model_path = f"models/{args.run_name}.ckpt"
-#torch.save(model.state_dict(), model_path)
-trainer.save_checkpoint(model_path)
-#not really sure how the two above lines differ
+#run the model on the test data set, and dump the output of the model to a csv file
 
-# to load the model:
-'''
-# Path to the saved weights
-model_path = "models/your_model.ckpt"  # replace with your path
-
-# Load the model
-model = YourModel.load_from_checkpoint(checkpoint_path=model_path)
-'''
