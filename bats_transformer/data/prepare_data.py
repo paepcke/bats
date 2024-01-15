@@ -41,4 +41,5 @@ df = df[df.groupby("Filename").Filename.transform('size') > minimum_length]
 
 # Apply the padding function to each group and concatenate them
 padded_df = pd.concat([pad_group(group, max_length) for _, group in df.groupby('Filename')], ignore_index=True)
+padded_df["TimeIndex"] = padded_df.groupby("Filename").cumcount()
 padded_df.to_csv(args.output_data_path, index = False)
