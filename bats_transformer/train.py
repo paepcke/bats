@@ -7,10 +7,9 @@ import spacetimeformer as stf
 import pandas as pd
 
 from pytorch_lightning.loggers import WandbLogger
-
 from data import preprocess
-
 import time
+import tqdm
 
 parser = ArgumentParser()
 stf.spacetimeformer_model.Spacetimeformer_Forecaster.add_cli(parser)
@@ -206,7 +205,7 @@ predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
 originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
 i = 0
 
-for (x_c, y_c, x_t, y_t) in bats_dataset:
+for (x_c, y_c, x_t, y_t) in tqdm.tqdm(bats_dataset):
     y_c = torch.from_numpy(model._inv_scaler(y_c.numpy())).float()
     y_t = torch.from_numpy(model._inv_scaler(y_t.numpy())).float()
     yhat_t = model.predict(x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0))
