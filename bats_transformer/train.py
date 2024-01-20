@@ -10,6 +10,8 @@ from pytorch_lightning.loggers import WandbLogger
 
 from data import preprocess
 
+import time
+
 parser = ArgumentParser()
 stf.spacetimeformer_model.Spacetimeformer_Forecaster.add_cli(parser)
 stf.callbacks.TimeMaskedLossCallback.add_cli(parser)
@@ -30,9 +32,17 @@ parser.add_argument("--patience", type=int, default=5)
 parser.add_argument("--trials", type=int, default=1, help="How many consecutive trials to run")
 parser.add_argument("--random_seed", type=int, default=42)
 parser.add_argument("--max_epochs", type=int, default=20)
+parser.add_argument("--log_file", type=str, default="/home/vdesai/bats_data/logs/log.txt")
+parser.add_argument("--predictions_path", type=str, default="/home/vdesai/bats_data/predictions.csv")
+parser.add_argument("--originals_path", type=str, default="/home/vdesai/bats_data/originals.csv")
+
+#take a list of string as input from cli
+parser.add_argument("--ignore_cols", nargs='+', type=str)
 
 config = parser.parse_args()
 args = config
+ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght'] + config.ignore_cols
+#take this as input from cli
 
 #reading dataframe
 df, max_seq_len = preprocess.preprocess(config)
@@ -40,7 +50,7 @@ bats_time_series = stf.data.CSVTimeSeries(
                         raw_df = df,
                         time_col_name = "TimeIndex",
                         time_features = ["hour", "minute", "seconds"],
-                        ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght'],
+                        ignore_cols = ignore_cols,
                         val_split = 0.1,
                         test_split = 0.1
                     )
@@ -173,22 +183,82 @@ trainer = pl.Trainer(
         sync_batchnorm=True,
         limit_val_batches=args.limit_val_batches,
         max_epochs=max_epochs
-        #**val_control,
 )
 
-# Train
+start = time.time()
 trainer.fit(model, datamodule=data_module)
+end = time.time()
+
+print(f"Time taken to train: {end - start} seconds")
+print("With config: ")
+print(config)
+
+with open(args.log_file, "a") as f:
+    f.write(f"Ignore cols: {}")
+    f.write(f"Time taken to train: {end - start} seconds\n")
+    f.write("With config: \n")
+    f.write(f"{config}\n")
 # Saving model checkpoint
 model_path = f"/home/vdesai/bats_data/models/{args.run_name}.ckpt"
-#torch.save(model.state_dict(), model_path)
 trainer.save_checkpoint(model_path)
-#not really sure how the two above lines differ
 
-# to load the model:
-'''
-# Path to the saved weights
-model_path = "models/your_model.ckpt"  # replace with your path
+df_columns = list(bats_time_series.time_cols) + list(bats_time_series.target_cols)
+predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
+originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
+i = 0
 
-# Load the model
-model = YourModel.load_from_checkpoint(checkpoint_path=model_path)
-'''
+for (x_c, y_c, x_t, y_t) in bats_dataset:
+    y_c = torch.from_numpy(model._inv_scaler(y_c.numpy())).float()
+    y_t = torch.from_numpy(model._inv_scaler(y_t.numpy())).float()
+    yhat_t = model.predict(x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0))
+    
+    predictions_df = pd.DataFrame(torch.cat((x_c, y_c), dim=1).numpy(), columns = df_columns)
+    predictions_df = pd.concat([predictions_df, pd.DataFrame(torch.cat((x_t, yhat_t.squeeze(0)), dim=1).numpy(), columns = df_columns)], ignore_index = True)
+    predictions_df["FileIndex"] = i
+
+
+    originals_df = pd.DataFrame(torch.cat((x_c, y_c), dim=1).numpy(), columns = df_columns)
+    originals_df = pd.concat([originals_df, pd.DataFrame(torch.cat((x_t, y_t), dim=1).numpy(), columns = df_columns)], ignore_index = True)
+    originals_df["FileIndex"] = i
+    originals   = pd.concat([originals, originals_df], ignore_index=True)
+    predictions = pd.concat([predictions, predictions_df], ignore_index=True)
+    i += 1
+#Now that we have gone through all of the files, it is time to save these where they belong
+
+#now we have originals and predictions, time to evaluate the performace of the model.
+
+Y = originals.to_numpy()
+Yhat = predictions.to_numpy()
+
+mean_Y = np.mean(Y, axis = 0)
+mean_Yhat = np.mean(Yhat, axis = 0)
+sig_1 = np.std(Y, axis = 0)
+sig_2 = np.std(Yhat, axis = 0)
+
+Y = (Y - mean_Y)/sig_1
+Yhat = (Yhat - mean_Yhat)/sig_2
+error = ((Y - Yhat)**2)
+
+#drop the rows in error where all the values are zero
+error = error[~np.all(error == 0, axis=1)]
+
+#also drop columns where there are nan values
+error = error[:, ~np.any(np.isnan(error), axis=0)]
+
+error = np.mean(error, axis = 1)
+print(f"25th percentile: {np.percentile(error, 25)}")
+print(f"50th percentile: {np.percentile(error, 50)}")
+print(f"75th percentile: {np.percentile(error, 75)}")
+print(f"Min: {np.min(error)}")
+print(f"Max: {np.max(error)}")
+print(f"Mean: {np.mean(error)}")
+
+print(f"25th percentile: {np.percentile(error, 25)}", file=open(args.log_file, "a"))
+print(f"50th percentile: {np.percentile(error, 50)}", file=open(args.log_file, "a"))
+print(f"75th percentile: {np.percentile(error, 75)}", file=open(args.log_file, "a"))
+print(f"Min: {np.min(error)}", file=open(args.log_file, "a"))
+print(f"Max: {np.max(error)}", file=open(args.log_file, "a"))
+print(f"Mean: {np.mean(error)}", file=open(args.log_file, "a"))
+
+predictions.to_csv(config.predictions_path)
+originals.to_csv(config.originals_path)
