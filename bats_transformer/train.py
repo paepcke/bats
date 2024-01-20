@@ -6,6 +6,8 @@ import pytorch_lightning as pl
 import spacetimeformer as stf
 import pandas as pd
 
+from pytorch_lightning.loggers import WandbLogger
+
 from data import preprocess
 
 parser = ArgumentParser()
@@ -50,6 +52,8 @@ bats_dataset = stf.data.CSVTorchDset(
                     target_points = 2, 
                     time_resolution = 1
                 )
+
+wandb_logger = WandbLogger(name=f"{args.run_name}", save_dir="/home/vdesai/bats_data/logs/")
 
 x_dim = bats_time_series.time_cols.size
 yc_dim = len(bats_time_series.target_cols)
@@ -160,7 +164,7 @@ model.set_null_value(config.null_value);
 trainer = pl.Trainer(
         gpus=args.gpus,
         #callbacks=callbacks,
-        #logger=logger if args.wandb else None,
+        logger=logger if args.wandb else None,
         accelerator="dp",
         gradient_clip_val=args.grad_clip_norm,
         gradient_clip_algorithm="norm",
@@ -174,9 +178,8 @@ trainer = pl.Trainer(
 
 # Train
 trainer.fit(model, datamodule=data_module)
-
 # Saving model checkpoint
-model_path = f"models/{args.run_name}.ckpt"
+model_path = f"/home/vdesai/bats_data/models/{args.run_name}.ckpt"
 #torch.save(model.state_dict(), model_path)
 trainer.save_checkpoint(model_path)
 #not really sure how the two above lines differ
