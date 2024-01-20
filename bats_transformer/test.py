@@ -123,16 +123,29 @@ model.set_inv_scaler(inverse_scaler);
 model.set_scaler(scaler);
 model.set_null_value(config.null_value);
 
-predictions = pd.DataFrame(columns = bats_dataset.time_cols + bats_dataset.target_cols)
-originals = pd.DataFrame(columns = bats_dataset.time_cols + bats_dataset.target_cols)
+df_columns = list(bats_time_series.time_cols) + list(bats_time_series.target_cols)
+predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
+originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
+i = 0
 
 for (x_c, y_c, x_t, y_t) in bats_dataset:
+    y_c = torch.from_numpy(model._inv_scaler(y_c.numpy())).float()
+    y_t = torch.from_numpy(model._inv_scaler(y_t.numpy())).float()
     yhat_t = model.predict(x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0))
     
-    predictions = predictions.append(pd.DataFrame(torch.cat((x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0), yhat_t), dim=1).numpy(), columns = bats_dataset.time_cols + bats_dataset.target_cols))
-    
-    originals = originals.append(pd.DataFrame(torch.cat((x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0), y_t.unsqueeze(0)), dim=1).numpy(), columns = bats_dataset.time_cols + bats_dataset.target_cols))
+    predictions_df = pd.DataFrame(torch.cat((x_c, y_c), dim=1).numpy(), columns = df_columns)
+    predictions_df = pd.concat([predictions_df, pd.DataFrame(torch.cat((x_t, yhat_t.squeeze(0)), dim=1).numpy(), columns = df_columns)], ignore_index = True)
+    predictions_df["FileIndex"] = i
 
+
+    originals_df = pd.DataFrame(torch.cat((x_c, y_c), dim=1).numpy(), columns = df_columns)
+    originals_df = pd.concat([originals_df, pd.DataFrame(torch.cat((x_t, y_t), dim=1).numpy(), columns = df_columns)], ignore_index = True)
+    originals_df["FileIndex"] = i
+    originals   = pd.concat([originals, originals_df], ignore_index=True)
+    predictions = pd.concat([predictions, predictions_df], ignore_index=True)
+    #print(originals)
+    #print(predictions)
+    i += 1
 #Now that we have gone through all of the files, it is time to save these where they belong
 
 predictions.to_csv(config.predictions_path)

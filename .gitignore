@@ -128,3 +128,15 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+
+#saved model weights
+*.ckpt
+
+
+#predictions, orgiinals
+*.predictions
+*.originals
+
+# data
+data*.csv

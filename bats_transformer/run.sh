@@ -1,6 +1,6 @@
 #!/bin/bash
 RUN_NAME=$1
-DATA_PATH=data/data_2.csv
+DATA_PATH=data/data.csv
 MAX_EPOCHS=5
 GPUS=1
 RANDOM_SEED=$2
@@ -18,6 +18,20 @@ python3 train.py \
     --gpus $GPUS \
     --random_seed $RANDOM_SEED \
     --run_name $RUN_NAME \
+    --d_model $D_MODEL \
+    --d_qk $D_QK \
+    --d_v $D_V \
+    --d_ff $D_FF \
+    --enc_layers $ENC_LAYERS \
+    --dec_layers $DEC_LAYERS \
+    --n_heads $N_HEADS
+
+
+python3 test.py \
+    --input_data_path $DATA_PATH \
+    --model_path models/$RUN_NAME.ckpt \
+    --predictions_path predictions/$RUN_NAME.predictions \
+    --originals_path originals/$RUN_NAME.originals \
     --d_model $D_MODEL \
     --d_qk $D_QK \
     --d_v $D_V \
