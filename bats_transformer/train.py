@@ -37,7 +37,7 @@ parser.add_argument("--predictions_path", type=str, default="/home/vdesai/bats_d
 parser.add_argument("--originals_path", type=str, default="/home/vdesai/bats_data/originals.csv")
 
 #take a list of string as input from cli
-parser.add_argument("--ignore_cols", nargs='+', type=str)
+parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 
 config = parser.parse_args()
 args = config
@@ -63,8 +63,7 @@ bats_dataset = stf.data.CSVTorchDset(
                     time_resolution = 1
                 )
 
-wandb_logger = WandbLogger(name=f"{args.run_name}", save_dir="/home/vdesai/bats_data/logs/")
-
+wandb_logger = WandbLogger(name=f"{args.run_name}", save_dir="/home/vdesai/bats_data/logs/") if args.wandb else None
 x_dim = bats_time_series.time_cols.size
 yc_dim = len(bats_time_series.target_cols)
 yt_dim = len(bats_time_series.target_cols)
@@ -174,7 +173,7 @@ model.set_null_value(config.null_value);
 trainer = pl.Trainer(
         gpus=args.gpus,
         #callbacks=callbacks,
-        logger=logger if args.wandb else None,
+        logger=wandb_logger if args.wandb else None,
         accelerator="dp",
         gradient_clip_val=args.grad_clip_norm,
         gradient_clip_algorithm="norm",
@@ -194,7 +193,7 @@ print("With config: ")
 print(config)
 
 with open(args.log_file, "a") as f:
-    f.write(f"Ignore cols: {}")
+    f.write(f"Ignore cols: {ignore_cols}")
     f.write(f"Time taken to train: {end - start} seconds\n")
     f.write("With config: \n")
     f.write(f"{config}\n")
