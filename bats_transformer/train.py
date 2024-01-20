@@ -200,27 +200,60 @@ with open(args.log_file, "a") as f:
 model_path = f"/home/vdesai/bats_data/models/{args.run_name}.ckpt"
 trainer.save_checkpoint(model_path)
 
+batch_size = 28
 df_columns = list(bats_time_series.time_cols) + list(bats_time_series.target_cols)
 predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
 originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
 i = 0
 
-for (x_c, y_c, x_t, y_t) in tqdm.tqdm(bats_dataset):
-    y_c = torch.from_numpy(model._inv_scaler(y_c.numpy())).float()
-    y_t = torch.from_numpy(model._inv_scaler(y_t.numpy())).float()
-    yhat_t = model.predict(x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0))
-    
-    predictions_df = pd.DataFrame(torch.cat((x_c, y_c), dim=1).numpy(), columns = df_columns)
-    predictions_df = pd.concat([predictions_df, pd.DataFrame(torch.cat((x_t, yhat_t.squeeze(0)), dim=1).numpy(), columns = df_columns)], ignore_index = True)
-    predictions_df["FileIndex"] = i
+for i in tqdm.tqdm(range(0, len(bats_dataset), batch_size)):
+    batch = bats_dataset[i:i + batch_size]
 
+    # Unpacking and stacking data for batch processing
+    x_c_batch, y_c_batch, x_t_batch, y_t_batch = zip(*batch)
+    x_c_batch = torch.stack(x_c_batch)
+    y_c_batch = torch.stack(y_c_batch)
+    x_t_batch = torch.stack(x_t_batch)
+    y_t_batch = torch.stack(y_t_batch)
 
-    originals_df = pd.DataFrame(torch.cat((x_c, y_c), dim=1).numpy(), columns = df_columns)
-    originals_df = pd.concat([originals_df, pd.DataFrame(torch.cat((x_t, y_t), dim=1).numpy(), columns = df_columns)], ignore_index = True)
-    originals_df["FileIndex"] = i
-    originals   = pd.concat([originals, originals_df], ignore_index=True)
-    predictions = pd.concat([predictions, predictions_df], ignore_index=True)
-    i += 1
+    # Apply model's inverse scaler and predict in batches
+    y_c_batch = torch.from_numpy(model._inv_scaler(y_c_batch.numpy())).float()
+    y_t_batch = torch.from_numpy(model._inv_scaler(y_t_batch.numpy())).float()
+    yhat_t_batch = model.predict(x_c_batch, y_c_batch, x_t_batch)
+
+    # Process each item in the batch for DataFrame conversion
+    for j in range(len(batch)):
+        # Handle cases where the last batch might be smaller than batch_size
+        if j >= yhat_t_batch.size(0):
+            break
+
+        # Preparing data for DataFrame
+        predictions_data = torch.cat((x_c_batch[j], y_c_batch[j], x_t_batch[j], yhat_t_batch[j]), dim=1)
+        predictions_df = pd.DataFrame(predictions_data.numpy(), columns=df_columns)
+        predictions_df["FileIndex"] = i + j
+        predictions = pd.concat([predictions, predictions_df], ignore_index=True)
+
+        originals_data = torch.cat((x_c_batch[j], y_c_batch[j], x_t_batch[j], y_t_batch[j]), dim=1)
+        originals_df = pd.DataFrame(originals_data.numpy(), columns=df_columns)
+        originals_df["FileIndex"] = i + j
+        originals = pd.concat([originals, originals_df], ignore_index=True)
+
+#for (x_c, y_c, x_t, y_t) in tqdm.tqdm(bats_dataset):
+#    y_c = torch.from_numpy(model._inv_scaler(y_c.numpy())).float()
+#    y_t = torch.from_numpy(model._inv_scaler(y_t.numpy())).float()
+#    yhat_t = model.predict(x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0))
+#    
+#    predictions_df = pd.DataFrame(torch.cat((x_c, y_c), dim=1).numpy(), columns = df_columns)
+#    predictions_df = pd.concat([predictions_df, pd.DataFrame(torch.cat((x_t, yhat_t.squeeze(0)), dim=1).numpy(), columns = df_columns)], ignore_index = True)
+#    predictions_df["FileIndex"] = i
+#
+#
+#    originals_df = pd.DataFrame(torch.cat((x_c, y_c), dim=1).numpy(), columns = df_columns)
+#    originals_df = pd.concat([originals_df, pd.DataFrame(torch.cat((x_t, y_t), dim=1).numpy(), columns = df_columns)], ignore_index = True)
+#    originals_df["FileIndex"] = i
+#    originals   = pd.concat([originals, originals_df], ignore_index=True)
+#    predictions = pd.concat([predictions, predictions_df], ignore_index=True)
+#    i += 1
 #Now that we have gone through all of the files, it is time to save these where they belong
 
 #now we have originals and predictions, time to evaluate the performace of the model.
