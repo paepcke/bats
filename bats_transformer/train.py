@@ -193,7 +193,7 @@ print("With config: ")
 print(config)
 
 with open(args.log_file, "a") as f:
-    f.write(f"Ignore cols: {ignore_cols}")
+    f.write(f"Ignore cols: {ignore_cols}\n")
     f.write(f"Time taken to train: {end - start} seconds\n")
     f.write("With config: \n")
     f.write(f"{config}\n")
