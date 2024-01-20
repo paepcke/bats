@@ -13,9 +13,9 @@ stf.callbacks.TimeMaskedLossCallback.add_cli(parser)
 stf.data.DataModule.add_cli(parser)
 preprocess.add_cli(parser)
 
-parser.add_argument("--model_path", type=str, default="/home/vdesai/bats/bats_transformer/models/random_seed_42.ckpt")
-parser.add_argument("--predictions_path", type=str, default="/home/vdesai/bats/bats_transformer/predictions.csv")
-parser.add_argument("--originals_path", type=str, default="/home/vdesai/bats/bats_transformer/originals.csv")
+parser.add_argument("--model_path", type=str, default="/home/vdesai/bats_data/models/random_seed_42.ckpt")
+parser.add_argument("--predictions_path", type=str, default="/home/vdesai/bats_data/predictions.csv")
+parser.add_argument("--originals_path", type=str, default="/home/vdesai/bats_data/originals.csv")
 
 
 config = parser.parse_args()

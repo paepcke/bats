@@ -1,6 +1,6 @@
 #!/bin/bash
 RUN_NAME=$1
-DATA_PATH=data/data.csv
+DATA_PATH=/home/vdesai/bats_data/training_files/data.csv
 MAX_EPOCHS=5
 GPUS=1
 RANDOM_SEED=$2
@@ -24,12 +24,12 @@ python3 train.py \
     --d_ff $D_FF \
     --enc_layers $ENC_LAYERS \
     --dec_layers $DEC_LAYERS \
-    --n_heads $N_HEADS
+    --n_heads $N_HEADS \
 
 
 python3 test.py \
     --input_data_path $DATA_PATH \
-    --model_path models/$RUN_NAME.ckpt \
+    --model_path /home/vdesai/bats_data/models/$RUN_NAME.ckpt \
     --predictions_path predictions/$RUN_NAME.predictions \
     --originals_path originals/$RUN_NAME.originals \
     --d_model $D_MODEL \
