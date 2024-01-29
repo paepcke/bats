@@ -28,5 +28,6 @@ python3 train.py \
     --predictions_path /home/vdesai/bats_data/predictions/$RUN_NAME.predictions \
     --originals_path /home/vdesai/bats_data/originals/$RUN_NAME.originals \
     --log_file /home/vdesai/bats_data/logs/$RUN_NAME.log \
+    --mse_log_file /home/vdesai/bats_data/logs/$RUN_NAME.mse.csv \
     --ignore_cols DominantSlope Amp3rdMean DurOf20dB HiFtoFcDmp PreFc500 PreFc3000 Bndw5dB AmpEndLn60ExpC PreFc1000 HiFtoUpprKnSlp AmpK@end Bndwdth RelPwr3rdTo1st FreqKnee PreFc250Residue Bndw15dB Amp2ndMean AmpKurtosis KnToFcAmp KnToFcExpAmp AmpSkew EndF HiFminusStartF DurOf32dB AmpGausR2 FFwd5dB HiFtoKnDmp HiFtoKnSlope HiFtoFcExp PrcntMaxAmpDur ParentDir PreFc250 TimeFromMaxToFc HiFtoUpprKnAmp Fc LdgToFcSlp KneeToFcSlope SteepestSlope LdgToFcAmp MinAccpQuality SlopeAtFc Amp4thQrtl AmpK@start HiFtoFcAmp LedgeDuration EndSlope LnExpB_EndAmp FFwd32dB FBak32dB AmpStartLn60ExpC DurOf5dB PreFc500Residue
 
