@@ -34,6 +34,7 @@ parser.add_argument("--max_epochs", type=int, default=20)
 parser.add_argument("--log_file", type=str, default="/home/vdesai/bats_data/logs/log.txt")
 parser.add_argument("--predictions_path", type=str, default="/home/vdesai/bats_data/predictions.csv")
 parser.add_argument("--originals_path", type=str, default="/home/vdesai/bats_data/originals.csv")
+parser.add_argument("--mse_log_path", type=str, default="/home/vdesai/bats_data/mse_log.csv")
 
 #take a list of string as input from cli
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
@@ -206,56 +207,42 @@ predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
 originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
 i = 0
 
-#for i in tqdm.tqdm(range(0, len(bats_dataset), batch_size)):
-#    batch = bats_dataset[i:i + batch_size]
-#
-#    # Unpacking and stacking data for batch processing
-#    x_c_batch, y_c_batch, x_t_batch, y_t_batch = zip(*batch)
-#    x_c_batch = torch.stack(x_c_batch)
-#    y_c_batch = torch.stack(y_c_batch)
-#    x_t_batch = torch.stack(x_t_batch)
-#    y_t_batch = torch.stack(y_t_batch)
-#
-#    # Apply model's inverse scaler and predict in batches
-#    y_c_batch = torch.from_numpy(model._inv_scaler(y_c_batch.numpy())).float()
-#    y_t_batch = torch.from_numpy(model._inv_scaler(y_t_batch.numpy())).float()
-#    yhat_t_batch = model.predict(x_c_batch, y_c_batch, x_t_batch)
-#
-#    # Process each item in the batch for DataFrame conversion
-#    for j in range(len(batch)):
-#        # Handle cases where the last batch might be smaller than batch_size
-#        if j >= yhat_t_batch.size(0):
-#            break
-#
-#        # Preparing data for DataFrame
-#        predictions_data = torch.cat((x_c_batch[j], y_c_batch[j], x_t_batch[j], yhat_t_batch[j]), dim=1)
-#        predictions_df = pd.DataFrame(predictions_data.numpy(), columns=df_columns)
-#        predictions_df["FileIndex"] = i + j
-#        predictions = pd.concat([predictions, predictions_df], ignore_index=True)
-#
-#        originals_data = torch.cat((x_c_batch[j], y_c_batch[j], x_t_batch[j], y_t_batch[j]), dim=1)
-#        originals_df = pd.DataFrame(originals_data.numpy(), columns=df_columns)
-#        originals_df["FileIndex"] = i + j
-#        originals = pd.concat([originals, originals_df], ignore_index=True)
+for batch_index in tqdm.tqdm(range(0, len(bats_dataset), batch_size)):
+    # Process each batch
+    batch = [bats_dataset[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset)))]
 
-for (x_c, y_c, x_t, y_t) in tqdm.tqdm(bats_dataset):
-    y_c = torch.from_numpy(model._inv_scaler(y_c.numpy())).float()
-    y_t = torch.from_numpy(model._inv_scaler(y_t.numpy())).float()
-    yhat_t = model.predict(x_c.unsqueeze(0), y_c.unsqueeze(0), x_t.unsqueeze(0))
-    
-    predictions_df = pd.DataFrame(torch.cat((x_c, y_c), dim=1).numpy(), columns = df_columns)
-    predictions_df = pd.concat([predictions_df, pd.DataFrame(torch.cat((x_t, yhat_t.squeeze(0)), dim=1).numpy(), columns = df_columns)], ignore_index = True)
-    predictions_df["FileIndex"] = i
+    # Stack tensors for batch processing
+    x_c_batch = torch.stack([item[0] for item in batch])
+    y_c_batch = torch.stack([torch.from_numpy(model._inv_scaler(item[1].numpy())).float() for item in batch])
+    x_t_batch = torch.stack([item[2] for item in batch])
+    y_t_batch = torch.stack([torch.from_numpy(model._inv_scaler(item[3].numpy())).float() for item in batch])
 
+    # Model prediction for each batch
+    yhat_t_batch = model.predict(x_c_batch, y_c_batch, x_t_batch)
+    print(yhat_t_batch)
+    print(yhat_t_batch.shape)
+    print(x_c_batch.shape)
+    print(x_t_batch.shape)
+    for j in range(len(batch)):
+        # Concatenating tensors for DataFrame creation
+        predictions_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
+        predictions_data = torch.cat((predictions_data, torch.cat((x_t_batch[j], yhat_t_batch[j]), dim=1)), dim=0)
 
-    originals_df = pd.DataFrame(torch.cat((x_c, y_c), dim=1).numpy(), columns = df_columns)
-    originals_df = pd.concat([originals_df, pd.DataFrame(torch.cat((x_t, y_t), dim=1).numpy(), columns = df_columns)], ignore_index = True)
-    originals_df["FileIndex"] = i
-    originals   = pd.concat([originals, originals_df], ignore_index=True)
-    predictions = pd.concat([predictions, predictions_df], ignore_index=True)
-    i += 1
+        originals_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
+        originals_data = torch.cat((originals_data, torch.cat((x_t_batch[j], y_t_batch[j]), dim=1)), dim=0)
+
+        # Create DataFrame and append
+        predictions_df = pd.DataFrame(predictions_data.numpy(), columns=df_columns)
+        predictions_df["FileIndex"] = i
+        predictions = pd.concat([predictions, predictions_df], ignore_index=True)
+
+        originals_df = pd.DataFrame(originals_data.numpy(), columns=df_columns)
+        originals_df["FileIndex"] = i
+        originals = pd.concat([originals, originals_df], ignore_index=True)
+        
+        i += 1
+
 #Now that we have gone through all of the files, it is time to save these where they belong
-
 #now we have originals and predictions, time to evaluate the performace of the model.
 
 Y = originals.to_numpy(dtype=np.float64)
@@ -270,11 +257,14 @@ Y = (Y - mean_Y)/sig_1
 Yhat = (Yhat - mean_Yhat)/sig_2
 error = ((Y - Yhat)**2)
 
+
 #drop the rows in error where all the values are zero
 error = error[~np.all(error == 0, axis=1)]
 
 #also drop columns where there are nan values
 error = error[:, ~np.any(np.isnan(error), axis=0)]
+MSE_df = pd.DataFrame(error, columns = df_columns)
+MSE_df.describe().T.to_csv(config.mse_log_path)
 
 error = np.mean(error, axis = 1)
 print(f"25th percentile: {np.percentile(error, 25)}")
