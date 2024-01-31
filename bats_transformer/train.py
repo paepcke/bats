@@ -219,10 +219,6 @@ for batch_index in tqdm.tqdm(range(0, len(bats_dataset), batch_size)):
 
     # Model prediction for each batch
     yhat_t_batch = model.predict(x_c_batch, y_c_batch, x_t_batch)
-    print(yhat_t_batch)
-    print(yhat_t_batch.shape)
-    print(x_c_batch.shape)
-    print(x_t_batch.shape)
     for j in range(len(batch)):
         # Concatenating tensors for DataFrame creation
         predictions_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)

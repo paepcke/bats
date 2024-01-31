@@ -25,8 +25,8 @@ python3 train.py \
     --enc_layers $ENC_LAYERS \
     --dec_layers $DEC_LAYERS \
     --n_heads $N_HEADS \
-    --predictions_path /home/vdesai/bats_data/predictions/$RUN_NAME.predictions \
-    --originals_path /home/vdesai/bats_data/originals/$RUN_NAME.originals \
-    --mse_log_file /home/vdesai/bats_data/logs/$RUN_NAME.mse.csv \
-    --log_file /home/vdesai/bats_data/logs/$RUN_NAME.log
+    --predictions_path /home/vdesai/bats_data/predictions_2/$RUN_NAME.predictions \
+    --originals_path /home/vdesai/bats_data/originals_2/$RUN_NAME.originals \
+    --mse_log_path /home/vdesai/bats_data/logs_2/$RUN_NAME.mse.csv \
+    --log_file /home/vdesai/bats_data/logs_2/$RUN_NAME.log
 
