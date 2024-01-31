@@ -35,7 +35,7 @@ parser.add_argument("--log_file", type=str, default="/home/vdesai/bats_data/logs
 parser.add_argument("--predictions_path", type=str, default="/home/vdesai/bats_data/predictions.csv")
 parser.add_argument("--originals_path", type=str, default="/home/vdesai/bats_data/originals.csv")
 parser.add_argument("--mse_log_path", type=str, default="/home/vdesai/bats_data/mse_log.csv")
-parser.add_argument("--pca_components", type=int, default=0)
+parser.add_argument("--pca_components", type=int, default=10)
 
 #take a list of string as input from cli
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
@@ -43,15 +43,17 @@ parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 config = parser.parse_args()
 args = config
 ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght'] + config.ignore_cols
+config.ignore_cols = ignore_cols
 #take this as input from cli
 
 #reading dataframe
-df, max_seq_len = preprocess.preprocess(config)
+df_original, df, max_seq_len, pca = preprocess.preprocess(config)
+
 bats_time_series = stf.data.CSVTimeSeries(
                         raw_df = df,
                         time_col_name = "TimeIndex",
                         time_features = ["hour", "minute", "seconds"],
-                        ignore_cols = ignore_cols,
+                        ignore_cols = None,
                         val_split = 0.1,
                         test_split = 0.1
                     )
@@ -63,6 +65,24 @@ bats_dataset = stf.data.CSVTorchDset(
                     target_points = 2, 
                     time_resolution = 1
                 )
+
+bats_time_series_orginal = stf.data.CSVTimeSeries(
+                        raw_df = df,
+                        time_col_name = "TimeIndex",
+                        time_features = ["hour", "minute", "seconds"],
+                        ignore_cols = None,
+                        val_split = 0.1,
+                        test_split = 0.1
+                    )
+
+bats_dataset_original = stf.data.CSVTorchDset(
+                    csv_time_series = bats_time_series,
+                    split = "train",
+                    context_points = max_seq_len - 2,
+                    target_points = 2, 
+                    time_resolution = 1
+                )
+
 
 wandb_logger = WandbLogger(name=f"{args.run_name}", save_dir="/home/vdesai/bats_data/logs/") if args.wandb else None
 x_dim = bats_time_series.time_cols.size
@@ -203,7 +223,7 @@ model_path = f"/home/vdesai/bats_data/models/{args.run_name}.ckpt"
 trainer.save_checkpoint(model_path)
 
 batch_size = 28
-df_columns = list(bats_time_series.time_cols) + list(bats_time_series.target_cols)
+df_columns = list(bats_time_series_orginal.time_cols) + list(bats_time_series_orginal.target_cols)
 predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
 originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
 i = 0
@@ -211,6 +231,7 @@ i = 0
 for batch_index in tqdm.tqdm(range(0, len(bats_dataset), batch_size)):
     # Process each batch
     batch = [bats_dataset[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset)))]
+    batch_original = [bats_dataset_original[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset_original)))]
 
     # Stack tensors for batch processing
     x_c_batch = torch.stack([item[0] for item in batch])
@@ -218,15 +239,27 @@ for batch_index in tqdm.tqdm(range(0, len(bats_dataset), batch_size)):
     x_t_batch = torch.stack([item[2] for item in batch])
     y_t_batch = torch.stack([torch.from_numpy(model._inv_scaler(item[3].numpy())).float() for item in batch])
 
+    x_c_batch_original = torch.stack([item[0] for item in batch_original])
+    y_c_batch_original = torch.stack([torch.from_numpy(bats_time_series_orginal.reverse_scaling(item[1].numpy())).float() for item in batch_original])
+    x_t_batch_original = torch.stack([item[2] for item in batch_original])
+    y_t_batch_original = torch.stack([torch.from_numpy(bats_time_series_orginal.reverse_scaling(item[3].numpy())).float() for item in batch_original])
+
     # Model prediction for each batch
     yhat_t_batch = model.predict(x_c_batch, y_c_batch, x_t_batch)
+    
+    y_t_batch = pca.inverse_transform(y_t_batch_original.numpy())
+    y_c_batch = pca.inverse_transform(y_c_batch_original.numpy())
+    yhat_t_batch = pca.inverse_transform(yhat_t_batch.numpy())
+    y_c_batch_original = pca.inverse_transform(y_c_batch_original.numpy())
+    y_t_batch_original = pca.inverse_transform(y_t_batch_original.numpy())
+    
     for j in range(len(batch)):
         # Concatenating tensors for DataFrame creation
         predictions_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
         predictions_data = torch.cat((predictions_data, torch.cat((x_t_batch[j], yhat_t_batch[j]), dim=1)), dim=0)
 
-        originals_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
-        originals_data = torch.cat((originals_data, torch.cat((x_t_batch[j], y_t_batch[j]), dim=1)), dim=0)
+        originals_data = torch.cat((x_c_batch[j], y_c_batch_original[j]), dim=1)
+        originals_data = torch.cat((originals_data, torch.cat((x_t_batch[j], y_t_batch_original[j]), dim=1)), dim=0)
 
         # Create DataFrame and append
         predictions_df = pd.DataFrame(predictions_data.numpy(), columns=df_columns)

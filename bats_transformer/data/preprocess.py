@@ -6,7 +6,20 @@ def add_cli(parser):
 
 
 def preprocess(args):
+    
     df = pd.read_csv(args.input_data_path)
     max_seq_len = df.groupby("Filename").size().max()
     df.fillna(0, inplace=True)
-    return df, max_seq_len
+    if not args.pca_components:
+        return df, max_seq_len
+    else:
+        from sklearn.decomposition import PCA
+        pca = PCA(n_components=args.pca_components)
+        pca.fit(df.drop(columns=["Filename"]))
+        df_reduced = pd.DataFrame(pca.transform(df.drop(columns=args.ignore_cols + ["TimeIndex"])), columns=["pca_"+str(i) for i in range(args.pca_components)])
+
+        #only append the time column
+        df_reduced["TimeIndex"] = df["TimeIndex"]
+
+        #return the reduced dataframe, and information such that you can construct the original dataframe
+        return df, df_reduced, max_seq_len, pca
