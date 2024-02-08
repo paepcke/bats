@@ -14,8 +14,9 @@ def preprocess(args):
         return df, max_seq_len
     else:
         from sklearn.decomposition import PCA
+        print(args.ignore_cols)
         pca = PCA(n_components=args.pca_components)
-        pca.fit(df.drop(columns=["Filename"]))
+        pca.fit(df.drop(columns=args.ignore_cols + ["TimeIndex"]))
         df_reduced = pd.DataFrame(pca.transform(df.drop(columns=args.ignore_cols + ["TimeIndex"])), columns=["pca_"+str(i) for i in range(args.pca_components)])
 
         #only append the time column

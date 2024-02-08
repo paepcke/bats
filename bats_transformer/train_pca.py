@@ -42,7 +42,7 @@ parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 
 config = parser.parse_args()
 args = config
-ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght'] + config.ignore_cols
+ignore_cols = ["Filename", "ParentDir", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght'] + config.ignore_cols
 config.ignore_cols = ignore_cols
 #take this as input from cli
 
@@ -66,8 +66,8 @@ bats_dataset = stf.data.CSVTorchDset(
                     time_resolution = 1
                 )
 
-bats_time_series_orginal = stf.data.CSVTimeSeries(
-                        raw_df = df,
+bats_time_series_original = stf.data.CSVTimeSeries(
+                        raw_df = df_original.drop(columns=config.ignore_cols),
                         time_col_name = "TimeIndex",
                         time_features = ["hour", "minute", "seconds"],
                         ignore_cols = None,
@@ -76,7 +76,7 @@ bats_time_series_orginal = stf.data.CSVTimeSeries(
                     )
 
 bats_dataset_original = stf.data.CSVTorchDset(
-                    csv_time_series = bats_time_series,
+                    csv_time_series = bats_time_series_original,
                     split = "train",
                     context_points = max_seq_len - 2,
                     target_points = 2, 
@@ -222,13 +222,13 @@ with open(args.log_file, "a") as f:
 model_path = f"/home/vdesai/bats_data/models/{args.run_name}.ckpt"
 trainer.save_checkpoint(model_path)
 
-batch_size = 28
-df_columns = list(bats_time_series_orginal.time_cols) + list(bats_time_series_orginal.target_cols)
+batch_size = 64
+df_columns = list(bats_time_series_original.time_cols) + list(bats_time_series_original.target_cols)
 predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
 originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
 i = 0
 
-for batch_index in tqdm.tqdm(range(0, len(bats_dataset), batch_size)):
+for batch_index in tqdm.tqdm(range(0, (len(bats_dataset)), batch_size)):
     # Process each batch
     batch = [bats_dataset[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset)))]
     batch_original = [bats_dataset_original[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset_original)))]
@@ -240,18 +240,18 @@ for batch_index in tqdm.tqdm(range(0, len(bats_dataset), batch_size)):
     y_t_batch = torch.stack([torch.from_numpy(model._inv_scaler(item[3].numpy())).float() for item in batch])
 
     x_c_batch_original = torch.stack([item[0] for item in batch_original])
-    y_c_batch_original = torch.stack([torch.from_numpy(bats_time_series_orginal.reverse_scaling(item[1].numpy())).float() for item in batch_original])
+    y_c_batch_original = torch.stack([torch.from_numpy(bats_time_series_original.reverse_scaling(item[1].numpy())).float() for item in batch_original])
     x_t_batch_original = torch.stack([item[2] for item in batch_original])
-    y_t_batch_original = torch.stack([torch.from_numpy(bats_time_series_orginal.reverse_scaling(item[3].numpy())).float() for item in batch_original])
+    y_t_batch_original = torch.stack([torch.from_numpy(bats_time_series_original.reverse_scaling(item[3].numpy())).float() for item in batch_original])
 
     # Model prediction for each batch
     yhat_t_batch = model.predict(x_c_batch, y_c_batch, x_t_batch)
     
-    y_t_batch = pca.inverse_transform(y_t_batch_original.numpy())
-    y_c_batch = pca.inverse_transform(y_c_batch_original.numpy())
-    yhat_t_batch = pca.inverse_transform(yhat_t_batch.numpy())
-    y_c_batch_original = pca.inverse_transform(y_c_batch_original.numpy())
-    y_t_batch_original = pca.inverse_transform(y_t_batch_original.numpy())
+    y_t_batch = torch.tensor( pca.inverse_transform(y_t_batch.numpy()))
+    y_c_batch = torch.tensor( pca.inverse_transform(y_c_batch.numpy()))
+    yhat_t_batch = torch.tensor(pca.inverse_transform(yhat_t_batch.numpy()))
+    y_c_batch_original = y_c_batch_original
+    y_t_batch_original = y_t_batch_original
     
     for j in range(len(batch)):
         # Concatenating tensors for DataFrame creation
