@@ -246,13 +246,17 @@ for batch_index in tqdm.tqdm(range(0, (len(bats_dataset)), batch_size)):
 
     # Model prediction for each batch
     yhat_t_batch = model.predict(x_c_batch, y_c_batch, x_t_batch)
-    
+
+    #take the inverse pca transform, back into original space
     y_t_batch = torch.tensor( pca.inverse_transform(y_t_batch.numpy()))
     y_c_batch = torch.tensor( pca.inverse_transform(y_c_batch.numpy()))
     yhat_t_batch = torch.tensor(pca.inverse_transform(yhat_t_batch.numpy()))
+
+    #the originals are already in the original space
     y_c_batch_original = y_c_batch_original
     y_t_batch_original = y_t_batch_original
-    
+
+    #TODO: vectorize this piece of code?
     for j in range(len(batch)):
         # Concatenating tensors for DataFrame creation
         predictions_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
