@@ -224,8 +224,8 @@ trainer.save_checkpoint(model_path)
 
 batch_size = 64
 df_columns = list(bats_time_series_original.time_cols) + list(bats_time_series_original.target_cols)
-predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
-originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
+predictions = pd.DataFrame(columns = df_columns)
+originals = pd.DataFrame(columns = df_columns) 
 i = 0
 
 for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
@@ -281,16 +281,8 @@ for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
 #Now that we have gone through all of the files, it is time to save these where they belong
 #now we have originals and predictions, time to evaluate the performace of the model.
 
-Y = originals.to_numpy(dtype=np.float64)[:, x_dim:]
-Yhat = predictions.to_numpy(dtype=np.float64)[:, x_dim:]
-print(Y.shape)
-print(Yhat.shape)
-
-mean_Y = np.mean(Y, axis = 0)
-sig_Y = np.std(Y, axis = 0)
-
-Y = (Y - mean_Y)/sig_Y
-Yhat = (Yhat - mean_Y)/sig_Y
+Y = bats_time_series_original.apply_scaling(originals.to_numpy(dtype=np.float64)[:, x_dim:])
+Yhat = bats_time_series_original.apply_scaling(predictions.to_numpy(dtype=np.float64)[:, x_dim:])
 error = ((Y - Yhat)**2)
 
 #drop columns with nan values
