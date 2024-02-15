@@ -14,7 +14,7 @@ import tqdm
 
 
 def spacetimeformer_predict_calculate_loss(
-        model: stf.Spacetimeformer,
+        model,
         x_c: torch.Tensor,
         y_c: torch.Tensor,
         x_t: torch.Tensor,
@@ -40,4 +40,5 @@ def spacetimeformer_predict_calculate_loss(
 
         error = normalized_preds - y_t;
         error = error**2;
+        return 0
         return error.to(og_device).float();

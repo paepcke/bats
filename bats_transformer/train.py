@@ -185,7 +185,7 @@ trainer = pl.Trainer(
         accumulate_grad_batches=args.accumulate,
         sync_batchnorm=True,
         limit_val_batches=args.limit_val_batches,
-        max_epochs=max_epochs
+        max_epochs=1#max_epochs
 )
 
 start = time.time()
@@ -220,8 +220,8 @@ for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
     y_t_batch = torch.stack([item[3] for item in batch])
 
     # Model prediction for each batch
-    error_ = spacetimeformer_predict_calculate_loss(x_c_batch, y_c_batch, x_t_batch)
-    error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
+    error_ = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
+    #error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
 
 
 error = error[:, ~np.isnan(error).any(axis=0)]
