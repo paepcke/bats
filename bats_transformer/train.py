@@ -103,7 +103,7 @@ inverse_scaler = bats_time_series.reverse_scaling
 config.null_value = None
 config.pad_value = None
 seed = args.random_seed
-max_epochs = args.max_epochs
+max_epochs = 1#args.max_epochs
 
 pl.seed_everything(seed)
 # initialize the spacetimeformer model
@@ -208,7 +208,7 @@ predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
 originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
 i = 0
 
-for batch_index in tqdm.tqdm(range(0, len(bats_dataset), batch_size)):
+for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)/10), batch_size)):
     # Process each batch
     batch = [bats_dataset[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset)))]
 
@@ -254,9 +254,11 @@ Y = (Y - mean_Y)/sig_1
 Yhat = (Yhat - mean_Yhat)/sig_2
 error = ((Y - Yhat)**2)
 
-
+print(error.shape)
 #drop the rows in error where all the values are zero
 error = error[~np.all(error == 0, axis=1)]
+print(error.shape)
+
 
 #also drop columns where there are nan values
 error = error[:, ~np.any(np.isnan(error), axis=0)]

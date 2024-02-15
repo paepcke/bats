@@ -228,7 +228,7 @@ predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
 originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
 i = 0
 
-for batch_index in tqdm.tqdm(range(0, (len(bats_dataset)), batch_size)):
+for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
     # Process each batch
     batch = [bats_dataset[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset)))]
     batch_original = [bats_dataset_original[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset_original)))]
@@ -259,11 +259,13 @@ for batch_index in tqdm.tqdm(range(0, (len(bats_dataset)), batch_size)):
     #TODO: vectorize this piece of code?
     for j in range(len(batch)):
         # Concatenating tensors for DataFrame creation
-        predictions_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
-        predictions_data = torch.cat((predictions_data, torch.cat((x_t_batch[j], yhat_t_batch[j]), dim=1)), dim=0)
+        #predictions_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
+        #predictions_data = torch.cat((predictions_data, torch.cat((x_t_batch[j], yhat_t_batch[j]), dim=1)), dim=0)
+        predictions_data = torch.cat((x_t_batch[j], yhat_t_batch[j]), dim=1)
 
-        originals_data = torch.cat((x_c_batch[j], y_c_batch_original[j]), dim=1)
-        originals_data = torch.cat((originals_data, torch.cat((x_t_batch[j], y_t_batch_original[j]), dim=1)), dim=0)
+        #originals_data = torch.cat((x_c_batch[j], y_c_batch_original[j]), dim=1)
+        #originals_data = torch.cat((originals_data, torch.cat((x_t_batch[j], y_t_batch_original[j]), dim=1)), dim=0)
+        originals_data = torch.cat((x_t_batch[j], y_t_batch_original[j]), dim=1)
 
         # Create DataFrame and append
         predictions_df = pd.DataFrame(predictions_data.numpy(), columns=df_columns)
@@ -281,6 +283,8 @@ for batch_index in tqdm.tqdm(range(0, (len(bats_dataset)), batch_size)):
 
 Y = originals.to_numpy(dtype=np.float64)
 Yhat = predictions.to_numpy(dtype=np.float64)
+print(Y.shape)
+print(Yhat.shape)
 
 mean_Y = np.mean(Y, axis = 0)
 mean_Yhat = np.mean(Yhat, axis = 0)
@@ -290,15 +294,17 @@ sig_2 = np.std(Yhat, axis = 0)
 Y = (Y - mean_Y)/sig_1
 Yhat = (Yhat - mean_Yhat)/sig_2
 error = ((Y - Yhat)**2)
-
+print(error.shape)
 
 #drop the rows in error where all the values are zero
 error = error[~np.all(error == 0, axis=1)]
 
+print(error.shape)
 #also drop columns where there are nan values
-error = error[:, ~np.any(np.isnan(error), axis=0)]
-MSE_df = pd.DataFrame(error, columns = df_columns)
+MSE_df = pd.DataFrame(error, columns = ["FileIndex"] + df_columns)
 MSE_df.describe().T.to_csv(config.mse_log_path)
+error = error[:, ~np.any(np.isnan(error), axis=0)]
+print(error.shape)
 
 error = np.mean(error, axis = 1)
 print(f"25th percentile: {np.percentile(error, 25)}")
