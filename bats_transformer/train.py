@@ -248,8 +248,8 @@ for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)/10), batch_size)):
 
 #Now that we have gone through all of the files, it is time to save these where they belong
 #now we have originals and predictions, time to evaluate the performace of the model.
-Y = originals.to_numpy(dtype=np.float64)
-Yhat = predictions.to_numpy(dtype=np.float64)
+Y = scaler(originals.to_numpy(dtype=np.float64)[:, x_dim:])
+Yhat = scaler(predictions.to_numpy(dtype=np.float64)[:, x_dim:])
 
 mean_Y = np.mean(Y, axis = 0)
 sig_Y = np.std(Y, axis = 0)
