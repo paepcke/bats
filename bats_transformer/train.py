@@ -258,13 +258,16 @@ Y = (Y - mean_Y)/sig_Y
 Yhat = (Yhat - mean_Y)/sig_Y
 error = ((Y - Yhat)**2)
 
-#also drop columns where there are nan values
-error = error[:, ~np.any(np.isnan(error), axis=0)]
+#drop columns with nan values
+error = error[:, ~np.isnan(error).any(axis=0)]
 print(error)
-MSE_df = pd.DataFrame(error, columns = df_columns)
-MSE_df.describe().T.to_csv(config.mse_log_path)
+#MSE_df = pd.DataFrame(error, columns = df_columns)
+#MSE_df.describe().T.to_csv(config.mse_log_path)
+
 error2 = error
-error = np.mean(error, axis = 1)
+#take mean of error across columns
+error = np.mean(error, axis = 0)
+#error = np.mean(error, axis = 1)
 print(error)
 print(f"25th percentile: {np.percentile(error, 25)}")
 print(f"50th percentile: {np.percentile(error, 50)}")
