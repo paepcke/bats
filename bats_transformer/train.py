@@ -251,16 +251,15 @@ for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)/10), batch_size)):
 Y = scaler(originals.to_numpy(dtype=np.float64)[:, x_dim:])
 Yhat = scaler(predictions.to_numpy(dtype=np.float64)[:, x_dim:])
 
-mean_Y = np.mean(Y, axis = 0)
-sig_Y = np.std(Y, axis = 0)
+#mean_Y = np.mean(Y, axis = 0)
+#sig_Y = np.std(Y, axis = 0)
 
-Y = (Y - mean_Y)/sig_Y
-Yhat = (Yhat - mean_Y)/sig_Y
+#Y = (Y - mean_Y)/sig_Y
+#Yhat = (Yhat - mean_Y)/sig_Y
 error = ((Y - Yhat)**2)
 
 #drop columns with nan values
 error = error[:, ~np.isnan(error).any(axis=0)]
-
 
 #take mean of error across columns
 error = np.mean(error, axis = 0)
