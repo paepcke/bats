@@ -1,0 +1,43 @@
+from argparse import ArgumentParser
+import torch
+import numpy as np
+
+import pytorch_lightning as pl
+import spacetimeformer as stf
+import pandas as pd
+
+from pytorch_lightning.loggers import WandbLogger
+from data import preprocess
+import time
+import tqdm
+
+
+
+def spacetimeformer_predict_calculate_loss(
+        model: stf.Spacetimeformer,
+        x_c: torch.Tensor,
+        y_c: torch.Tensor,
+        x_t: torch.Tensor,
+        y_t: torch.Tensor,
+        sample_preds: bool = False,
+    ) -> torch.Tensor:
+        og_device = y_c.device
+        # move to model device
+        x_c = x_c.to(model.device).float()
+        x_t = x_t.to(model.device).float()
+        # move y_c to cpu if it isn't already there, scale, and then move back to the model device
+        y_c = y_c.to(model.device).float()
+        # create dummy y_t of zeros
+        yhat_t = (
+            torch.zeros((x_t.shape[0], x_t.shape[1], model.d_yt)).to(model.device).float()
+        )
+
+        with torch.no_grad():
+            # gradient-free prediction
+            normalized_preds, *_ = model.forward(
+                x_c, y_c, x_t, yhat_t, **model.eval_step_forward_kwargs
+            )
+
+        error = normalized_preds - y_t;
+        error = error**2;
+        return error.to(og_device).float();
