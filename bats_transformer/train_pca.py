@@ -226,6 +226,7 @@ batch_size = 64
 df_columns = list(bats_time_series_original.time_cols) + list(bats_time_series_original.target_cols)
 predictions = pd.DataFrame(columns = df_columns)
 originals = pd.DataFrame(columns = df_columns) 
+print(df_columns)
 i = 0
 
 for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
@@ -269,11 +270,11 @@ for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
 
         # Create DataFrame and append
         predictions_df = pd.DataFrame(predictions_data.numpy(), columns=df_columns)
-        predictions_df["FileIndex"] = i
+        #predictions_df["FileIndex"] = i
         predictions = pd.concat([predictions, predictions_df], ignore_index=True)
 
         originals_df = pd.DataFrame(originals_data.numpy(), columns=df_columns)
-        originals_df["FileIndex"] = i
+        #originals_df["FileIndex"] = i
         originals = pd.concat([originals, originals_df], ignore_index=True)
         
         i += 1

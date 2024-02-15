@@ -104,7 +104,7 @@ inverse_scaler = bats_time_series.reverse_scaling
 config.null_value = None
 config.pad_value = None
 seed = args.random_seed
-max_epochs = 1#args.max_epochs
+max_epochs = args.max_epochs
 
 pl.seed_everything(seed)
 # initialize the spacetimeformer model
@@ -209,7 +209,7 @@ predictions = pd.DataFrame(columns = df_columns)
 originals = pd.DataFrame(columns = df_columns) 
 i = 0
 
-for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)/10), batch_size)):
+for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
     # Process each batch
     batch = [bats_dataset[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset)))]
 

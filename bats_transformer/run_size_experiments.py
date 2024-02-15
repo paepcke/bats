@@ -4,7 +4,7 @@ import subprocess
 def run_training(run_name, random_seed, Dmodel = 20, Dqk = 20, layers = 2, heads = 1):
     data_path = "/home/vdesai/bats_data/training_files/data.csv"
     max_epochs = 5
-    gpus = 1
+    gpus = 0
     d_model = Dmodel
     d_qk = Dqk
     d_v = Dqk
