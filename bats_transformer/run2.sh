@@ -12,7 +12,7 @@ ENC_LAYERS=2
 DEC_LAYERS=2
 N_HEADS=1
 
-python3 train.py \
+python3 -i train.py \
     --input_data_path $DATA_PATH \
     --max_epochs $MAX_EPOCHS \
     --gpus $GPUS \

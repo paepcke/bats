@@ -36,6 +36,7 @@ parser.add_argument("--predictions_path", type=str, default="/home/vdesai/bats_d
 parser.add_argument("--originals_path", type=str, default="/home/vdesai/bats_data/originals.csv")
 parser.add_argument("--mse_log_path", type=str, default="/home/vdesai/bats_data/mse_log.csv")
 parser.add_argument("--pca_components", type=int, default=0)
+parser.add_argument("--construct_full_output", action ="store_true");
 
 #take a list of string as input from cli
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
@@ -222,50 +223,49 @@ for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)/10), batch_size)):
     yhat_t_batch = model.predict(x_c_batch, y_c_batch, x_t_batch)
     for j in range(len(batch)):
         # Concatenating tensors for DataFrame creation
-        predictions_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
-        predictions_data = torch.cat((predictions_data, torch.cat((x_t_batch[j], yhat_t_batch[j]), dim=1)), dim=0)
+        if(args.construct_full_output):
+            predictions_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
+            predictions_data = torch.cat((predictions_data, torch.cat((x_t_batch[j], yhat_t_batch[j]), dim=1)), dim=0)
 
-        originals_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
-        originals_data = torch.cat((originals_data, torch.cat((x_t_batch[j], y_t_batch[j]), dim=1)), dim=0)
+            originals_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
+            originals_data = torch.cat((originals_data, torch.cat((x_t_batch[j], y_t_batch[j]), dim=1)), dim=0)
 
-        # Create DataFrame and append
+        else:
+            predictions_data = torch.cat((x_t_batch[j], yhat_t_batch[j]), dim = 1)
+            originals_data = torch.cat((x_t_batch[j], y_t_batch[j]), dim = 1)
+        
         predictions_df = pd.DataFrame(predictions_data.numpy(), columns=df_columns)
-        predictions_df["FileIndex"] = i
-        predictions = pd.concat([predictions, predictions_df], ignore_index=True)
-
         originals_df = pd.DataFrame(originals_data.numpy(), columns=df_columns)
-        originals_df["FileIndex"] = i
+
+        if args.construct_full_output:
+            predictions_df["FileIndex"] = i
+            originals_df["FileIndex"] = i
+
+        predictions = pd.concat([predictions, predictions_df], ignore_index=True)
         originals = pd.concat([originals, originals_df], ignore_index=True)
         
         i += 1
 
 #Now that we have gone through all of the files, it is time to save these where they belong
 #now we have originals and predictions, time to evaluate the performace of the model.
-
 Y = originals.to_numpy(dtype=np.float64)
 Yhat = predictions.to_numpy(dtype=np.float64)
 
 mean_Y = np.mean(Y, axis = 0)
-mean_Yhat = np.mean(Yhat, axis = 0)
-sig_1 = np.std(Y, axis = 0)
-sig_2 = np.std(Yhat, axis = 0)
+sig_Y = np.std(Y, axis = 0)
 
-Y = (Y - mean_Y)/sig_1
-Yhat = (Yhat - mean_Yhat)/sig_2
+Y = (Y - mean_Y)/sig_Y
+Yhat = (Yhat - mean_Y)/sig_Y
 error = ((Y - Yhat)**2)
-
-print(error.shape)
-#drop the rows in error where all the values are zero
-error = error[~np.all(error == 0, axis=1)]
-print(error.shape)
-
 
 #also drop columns where there are nan values
 error = error[:, ~np.any(np.isnan(error), axis=0)]
+print(error)
 MSE_df = pd.DataFrame(error, columns = df_columns)
 MSE_df.describe().T.to_csv(config.mse_log_path)
-
+error2 = error
 error = np.mean(error, axis = 1)
+print(error)
 print(f"25th percentile: {np.percentile(error, 25)}")
 print(f"50th percentile: {np.percentile(error, 50)}")
 print(f"75th percentile: {np.percentile(error, 75)}")
