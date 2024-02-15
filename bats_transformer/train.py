@@ -209,17 +209,8 @@ trainer.save_checkpoint(model_path)
 
 batch_size = 128
 error = None
-for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
-    # Process each batch
-    batch = [bats_dataset[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset)))]
-
-    # Stack tensors for batch processing
-    x_c_batch = torch.stack([item[0] for item in batch])
-    y_c_batch = torch.stack([item[1] for item in batch])
-    x_t_batch = torch.stack([item[2] for item in batch])
-    y_t_batch = torch.stack([item[3] for item in batch])
-
-    # Model prediction for each batch
+for batch in data_module.train_dataloader(): 
+    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch
     error_ = spacetimeformer_predict_calculate_loss(x_c_batch, y_c_batch, x_t_batch)
     error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
 
