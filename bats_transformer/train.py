@@ -43,7 +43,7 @@ parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 
 config = parser.parse_args()
 args = config
-ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght'] + config.ignore_cols
+ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir"] + config.ignore_cols
 #take this as input from cli
 
 #reading dataframe
@@ -104,7 +104,7 @@ inverse_scaler = bats_time_series.reverse_scaling
 config.null_value = None
 config.pad_value = None
 seed = args.random_seed
-max_epochs = 1#args.max_epochs
+max_epochs = args.max_epochs
 
 pl.seed_everything(seed)
 # initialize the spacetimeformer model
@@ -209,7 +209,7 @@ predictions = pd.DataFrame(columns = ["FileIndex"] + df_columns)
 originals = pd.DataFrame(columns = ["FileIndex"] + df_columns) 
 i = 0
 
-for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)/10), batch_size)):
+for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
     # Process each batch
     batch = [bats_dataset[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset)))]
 
@@ -260,15 +260,11 @@ error = ((Y - Yhat)**2)
 
 #drop columns with nan values
 error = error[:, ~np.isnan(error).any(axis=0)]
-print(error)
-#MSE_df = pd.DataFrame(error, columns = df_columns)
-#MSE_df.describe().T.to_csv(config.mse_log_path)
 
-error2 = error
+
 #take mean of error across columns
 error = np.mean(error, axis = 0)
-#error = np.mean(error, axis = 1)
-print(error)
+
 print(f"25th percentile: {np.percentile(error, 25)}")
 print(f"50th percentile: {np.percentile(error, 50)}")
 print(f"75th percentile: {np.percentile(error, 75)}")

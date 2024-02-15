@@ -26,9 +26,9 @@ python3 train_pca.py \
     --enc_layers $ENC_LAYERS \
     --dec_layers $DEC_LAYERS \
     --n_heads $N_HEADS \
-    --predictions_path /home/vdesai/bats_data/predictions_pca/$RUN_NAME.predictions \
-    --originals_path /home/vdesai/bats_data/originals_pca/$RUN_NAME.originals \
-    --mse_log_path /home/vdesai/bats_data/logs_pca/$RUN_NAME.mse.csv \
-    --log_file /home/vdesai/bats_data/logs_pca/$RUN_NAME.log \
+    --predictions_path /home/vdesai/bats_logs_new/predictions/$RUN_NAME.predictions \
+    --originals_path /home/vdesai/bats_logs_new/originals/$RUN_NAME.originals \
+    --mse_log_path /home/vdesai/bats_logs_new/logs/$RUN_NAME.mse.csv \
+    --log_file /home/vdesai/bats_logs_new/logs/$RUN_NAME.log \
     --pca_components $PCA_COMPONENTS
 

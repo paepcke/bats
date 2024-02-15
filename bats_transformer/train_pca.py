@@ -287,26 +287,18 @@ print(Y.shape)
 print(Yhat.shape)
 
 mean_Y = np.mean(Y, axis = 0)
-mean_Yhat = np.mean(Yhat, axis = 0)
-sig_1 = np.std(Y, axis = 0)
-sig_2 = np.std(Yhat, axis = 0)
+sig_Y = np.std(Y, axis = 0)
 
-Y = (Y - mean_Y)/sig_1
-Yhat = (Yhat - mean_Yhat)/sig_2
+Y = (Y - mean_Y)/sig_Y
+Yhat = (Yhat - mean_Y)/sig_Y
 error = ((Y - Yhat)**2)
-print(error.shape)
 
-#drop the rows in error where all the values are zero
-error = error[~np.all(error == 0, axis=1)]
+#drop columns with nan values
+error = error[:, ~np.isnan(error).any(axis=0)]
 
-print(error.shape)
-#also drop columns where there are nan values
-MSE_df = pd.DataFrame(error, columns = ["FileIndex"] + df_columns)
-MSE_df.describe().T.to_csv(config.mse_log_path)
-error = error[:, ~np.any(np.isnan(error), axis=0)]
-print(error.shape)
+#take mean of error across columns
+error = np.mean(error, axis = 0)
 
-error = np.mean(error, axis = 1)
 print(f"25th percentile: {np.percentile(error, 25)}")
 print(f"50th percentile: {np.percentile(error, 50)}")
 print(f"75th percentile: {np.percentile(error, 75)}")

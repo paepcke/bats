@@ -12,7 +12,7 @@ ENC_LAYERS=2
 DEC_LAYERS=2
 N_HEADS=1
 
-python3 -i train.py \
+python3 train.py \
     --input_data_path $DATA_PATH \
     --max_epochs $MAX_EPOCHS \
     --gpus $GPUS \
@@ -25,8 +25,8 @@ python3 -i train.py \
     --enc_layers $ENC_LAYERS \
     --dec_layers $DEC_LAYERS \
     --n_heads $N_HEADS \
-    --predictions_path /home/vdesai/bats_data/predictions_2/$RUN_NAME.predictions \
-    --originals_path /home/vdesai/bats_data/originals_2/$RUN_NAME.originals \
-    --mse_log_path /home/vdesai/bats_data/logs_2/$RUN_NAME.mse.csv \
-    --log_file /home/vdesai/bats_data/logs_2/$RUN_NAME.log
+    --predictions_path /home/vdesai/bats_logs_new/predictions/$RUN_NAME.predictions \
+    --originals_path /home/vdesai/bats_logs_new/originals/$RUN_NAME.originals \
+    --mse_log_path /home/vdesai/bats_logs_new/logs/$RUN_NAME.mse.csv \
+    --log_file /home/vdesai/bats_logs_new/logs/$RUN_NAME.log
 
