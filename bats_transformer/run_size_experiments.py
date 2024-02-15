@@ -37,8 +37,11 @@ def run_training(run_name, random_seed, Dmodel = 20, Dqk = 20, layers = 2, heads
         "--mse_log_path", mse_log_path,
         "--log_file", log_file
     ]
-
+    #get output of subprocess on console
     subprocess.run(command)
+    #get output of subprocess in a variable
+    
+
 
 d_model_list = [20,40,60,80,100]
 Dqk_list = [20,40,60,80,100]

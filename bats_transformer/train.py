@@ -11,6 +11,8 @@ from data import preprocess
 import time
 import tqdm
 
+from utils import *
+
 parser = ArgumentParser()
 stf.spacetimeformer_model.Spacetimeformer_Forecaster.add_cli(parser)
 stf.callbacks.TimeMaskedLossCallback.add_cli(parser)
@@ -199,75 +201,36 @@ with open(args.log_file, "a") as f:
     f.write(f"Time taken to train: {end - start} seconds\n")
     f.write("With config: \n")
     f.write(f"{config}\n")
+
+
 # Saving model checkpoint
 model_path = f"/home/vdesai/bats_data/models/{args.run_name}.ckpt"
 trainer.save_checkpoint(model_path)
 
-batch_size = 28
-df_columns = list(bats_time_series.time_cols) + list(bats_time_series.target_cols)
-predictions = pd.DataFrame(columns = df_columns)
-originals = pd.DataFrame(columns = df_columns) 
-i = 0
-
+batch_size = 128
+error = None
 for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
     # Process each batch
     batch = [bats_dataset[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset)))]
 
     # Stack tensors for batch processing
     x_c_batch = torch.stack([item[0] for item in batch])
-    y_c_batch = torch.stack([torch.from_numpy(model._inv_scaler(item[1].numpy())).float() for item in batch])
+    y_c_batch = torch.stack([item[1] for item in batch])
     x_t_batch = torch.stack([item[2] for item in batch])
-    y_t_batch = torch.stack([torch.from_numpy(model._inv_scaler(item[3].numpy())).float() for item in batch])
+    y_t_batch = torch.stack([item[3] for item in batch])
 
     # Model prediction for each batch
-    yhat_t_batch = model.predict(x_c_batch, y_c_batch, x_t_batch)
-    for j in range(len(batch)):
-        # Concatenating tensors for DataFrame creation
-        if(args.construct_full_output):
-            predictions_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
-            predictions_data = torch.cat((predictions_data, torch.cat((x_t_batch[j], yhat_t_batch[j]), dim=1)), dim=0)
+    error_ = spacetimeformer_predict_calculate_loss(x_c_batch, y_c_batch, x_t_batch)
+    error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
 
-            originals_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
-            originals_data = torch.cat((originals_data, torch.cat((x_t_batch[j], y_t_batch[j]), dim=1)), dim=0)
 
-        else:
-            predictions_data = torch.cat((x_t_batch[j], yhat_t_batch[j]), dim = 1)
-            originals_data = torch.cat((x_t_batch[j], y_t_batch[j]), dim = 1)
-        
-        predictions_df = pd.DataFrame(predictions_data.numpy(), columns=df_columns)
-        originals_df = pd.DataFrame(originals_data.numpy(), columns=df_columns)
-
-        if args.construct_full_output:
-            predictions_df["FileIndex"] = i
-            originals_df["FileIndex"] = i
-
-        predictions = pd.concat([predictions, predictions_df], ignore_index=True)
-        originals = pd.concat([originals, originals_df], ignore_index=True)
-        
-        i += 1
-
-#Now that we have gone through all of the files, it is time to save these where they belong
-#now we have originals and predictions, time to evaluate the performace of the model.
-Y = scaler(originals.to_numpy(dtype=np.float64)[:, x_dim:])
-Yhat = scaler(predictions.to_numpy(dtype=np.float64)[:, x_dim:])
-
-#mean_Y = np.mean(Y, axis = 0)
-#sig_Y = np.std(Y, axis = 0)
-
-#Y = (Y - mean_Y)/sig_Y
-#Yhat = (Yhat - mean_Y)/sig_Y
-error = ((Y - Yhat)**2)
-
-#drop columns with nan values
 error = error[:, ~np.isnan(error).any(axis=0)]
-
-#take mean of error across columns
 error = np.mean(error, axis = 0)
 
+print(f"Min: {np.min(error)}")
 print(f"25th percentile: {np.percentile(error, 25)}")
 print(f"50th percentile: {np.percentile(error, 50)}")
 print(f"75th percentile: {np.percentile(error, 75)}")
-print(f"Min: {np.min(error)}")
 print(f"Max: {np.max(error)}")
 print(f"Mean: {np.mean(error)}")
 
@@ -277,6 +240,3 @@ print(f"75th percentile: {np.percentile(error, 75)}", file=open(args.log_file, "
 print(f"Min: {np.min(error)}", file=open(args.log_file, "a"))
 print(f"Max: {np.max(error)}", file=open(args.log_file, "a"))
 print(f"Mean: {np.mean(error)}", file=open(args.log_file, "a"))
-
-predictions.to_csv(config.predictions_path)
-originals.to_csv(config.originals_path)
