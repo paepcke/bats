@@ -40,5 +40,5 @@ def spacetimeformer_predict_calculate_loss(
 
         error = normalized_preds - y_t;
         error = error**2;
-        return 0
+        
         return error.to(og_device).float();

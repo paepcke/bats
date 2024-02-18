@@ -1,7 +1,7 @@
 #!/bin/bash
 RUN_NAME=$1
 DATA_PATH=/home/vdesai/bats_data/training_files/data.csv
-MAX_EPOCHS=5
+MAX_EPOCHS=20
 GPUS=1
 RANDOM_SEED=$2
 D_MODEL=20
