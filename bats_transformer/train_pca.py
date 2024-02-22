@@ -11,6 +11,8 @@ from data import preprocess
 import time
 import tqdm
 
+from utils import *
+
 parser = ArgumentParser()
 stf.spacetimeformer_model.Spacetimeformer_Forecaster.add_cli(parser)
 stf.callbacks.TimeMaskedLossCallback.add_cli(parser)
@@ -67,7 +69,7 @@ bats_dataset = stf.data.CSVTorchDset(
                 )
 
 bats_time_series_original = stf.data.CSVTimeSeries(
-                        raw_df = df_original.drop(columns=config.ignore_cols),
+                        raw_df = df_original,
                         time_col_name = "TimeIndex",
                         time_features = ["hour", "minute", "seconds"],
                         ignore_cols = None,
@@ -95,6 +97,19 @@ data_module = stf.data.DataModule(
     datasetCls = stf.data.CSVTorchDset,
     dataset_kwargs = {
         "csv_time_series": bats_time_series,
+        "context_points": max_seq_len - 2,
+        "target_points": 2,
+        "time_resolution": 1,
+    },
+    batch_size = config.batch_size,
+    workers = config.workers,
+    overfit = args.overfit
+)
+
+data_module_original = stf.data.DataModule(
+    datasetCls = stf.data.CSVTorchDset,
+    dataset_kwargs = {
+        "csv_time_series": bats_time_series_original,
         "context_points": max_seq_len - 2,
         "target_points": 2,
         "time_resolution": 1,
@@ -218,93 +233,62 @@ with open(args.log_file, "a") as f:
     f.write(f"Time taken to train: {end - start} seconds\n")
     f.write("With config: \n")
     f.write(f"{config}\n")
+
 # Saving model checkpoint
 model_path = f"/home/vdesai/bats_data/models/{args.run_name}.ckpt"
 trainer.save_checkpoint(model_path)
+error = None
 
-batch_size = 64
-df_columns = list(bats_time_series_original.time_cols) + list(bats_time_series_original.target_cols)
-predictions = pd.DataFrame(columns = df_columns)
-originals = pd.DataFrame(columns = df_columns) 
-print(df_columns)
-i = 0
-
-for batch_index in tqdm.tqdm(range(0, int(len(bats_dataset)), batch_size)):
+for batch_pca, batch_original in tqdm.tqdm(zip(data_module.train_dataloader(), data_module_original.train_dataloader())):
     # Process each batch
-    batch = [bats_dataset[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset)))]
-    batch_original = [bats_dataset_original[j] for j in range(batch_index, min(batch_index + batch_size, len(bats_dataset_original)))]
+    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch_pca
+    x_c_batch_original, y_c_batch_original, x_t_batch_original, y_t_batch_original = batch_original
 
-    # Stack tensors for batch processing
-    x_c_batch = torch.stack([item[0] for item in batch])
-    y_c_batch = torch.stack([torch.from_numpy(model._inv_scaler(item[1].numpy())).float() for item in batch])
-    x_t_batch = torch.stack([item[2] for item in batch])
-    y_t_batch = torch.stack([torch.from_numpy(model._inv_scaler(item[3].numpy())).float() for item in batch])
+    error_ = spacetimeformer_predict_calculate_loss_pca(
+        model, pca, bats_time_series_original.apply_scaling,
+        x_c_batch, y_c_batch, x_t_batch, y_t_batch_original
+    )
 
-    x_c_batch_original = torch.stack([item[0] for item in batch_original])
-    y_c_batch_original = torch.stack([torch.from_numpy(bats_time_series_original.reverse_scaling(item[1].numpy())).float() for item in batch_original])
-    x_t_batch_original = torch.stack([item[2] for item in batch_original])
-    y_t_batch_original = torch.stack([torch.from_numpy(bats_time_series_original.reverse_scaling(item[3].numpy())).float() for item in batch_original])
+    error = error_ if error is None else np.concatenate((error, error_), axis=0)
 
-    # Model prediction for each batch
-    yhat_t_batch = model.predict(x_c_batch, y_c_batch, x_t_batch)
+for batch_pca, batch_original in tqdm.tqdm(zip(data_module.val_dataloader(), data_module_original.val_dataloader())):
+    # Process each batch
+    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch_pca
+    x_c_batch_original, y_c_batch_original, x_t_batch_original, y_t_batch_original = batch_original
 
-    #take the inverse pca transform, back into original space
-    y_t_batch = torch.tensor( pca.inverse_transform(y_t_batch.numpy()))
-    y_c_batch = torch.tensor( pca.inverse_transform(y_c_batch.numpy()))
-    yhat_t_batch = torch.tensor(pca.inverse_transform(yhat_t_batch.numpy()))
+    error_ = spacetimeformer_predict_calculate_loss_pca(
+        model, pca, bats_time_series_original.apply_scaling,
+        x_c_batch, y_c_batch, x_t_batch, y_t_batch_original
+    )
 
-    #the originals are already in the original space
-    y_c_batch_original = y_c_batch_original
-    y_t_batch_original = y_t_batch_original
+    error = error_ if error is None else np.concatenate((error, error_), axis=0)
 
-    #TODO: vectorize this piece of code?
-    for j in range(len(batch)):
-        # Concatenating tensors for DataFrame creation
-        #predictions_data = torch.cat((x_c_batch[j], y_c_batch[j]), dim=1)
-        #predictions_data = torch.cat((predictions_data, torch.cat((x_t_batch[j], yhat_t_batch[j]), dim=1)), dim=0)
-        predictions_data = torch.cat((x_t_batch[j], yhat_t_batch[j]), dim=1)
+for batch_pca, batch_original in tqdm.tqdm(zip(data_module.test_dataloader(), data_module_original.test_dataloader())):
+    # Process each batch
+    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch_pca
+    x_c_batch_original, y_c_batch_original, x_t_batch_original, y_t_batch_original = batch_original
 
-        #originals_data = torch.cat((x_c_batch[j], y_c_batch_original[j]), dim=1)
-        #originals_data = torch.cat((originals_data, torch.cat((x_t_batch[j], y_t_batch_original[j]), dim=1)), dim=0)
-        originals_data = torch.cat((x_t_batch[j], y_t_batch_original[j]), dim=1)
+    error_ = spacetimeformer_predict_calculate_loss_pca(
+        model, pca, bats_time_series_original.apply_scaling,
+        x_c_batch, y_c_batch, x_t_batch, y_t_batch_original
+    )
 
-        # Create DataFrame and append
-        predictions_df = pd.DataFrame(predictions_data.numpy(), columns=df_columns)
-        #predictions_df["FileIndex"] = i
-        predictions = pd.concat([predictions, predictions_df], ignore_index=True)
+    error = error_ if error is None else np.concatenate((error, error_), axis=0)
 
-        originals_df = pd.DataFrame(originals_data.numpy(), columns=df_columns)
-        #originals_df["FileIndex"] = i
-        originals = pd.concat([originals, originals_df], ignore_index=True)
-        
-        i += 1
 
-#Now that we have gone through all of the files, it is time to save these where they belong
-#now we have originals and predictions, time to evaluate the performace of the model.
-
-Y = bats_time_series_original.apply_scaling(originals.to_numpy(dtype=np.float64)[:, x_dim:])
-Yhat = bats_time_series_original.apply_scaling(predictions.to_numpy(dtype=np.float64)[:, x_dim:])
-error = ((Y - Yhat)**2)
-
-#drop columns with nan values
 error = error[:, ~np.isnan(error).any(axis=0)]
-
-#take mean of error across columns
 error = np.mean(error, axis = 0)
 
+print(f"Min: {np.min(error)}")
 print(f"25th percentile: {np.percentile(error, 25)}")
 print(f"50th percentile: {np.percentile(error, 50)}")
 print(f"75th percentile: {np.percentile(error, 75)}")
-print(f"Min: {np.min(error)}")
 print(f"Max: {np.max(error)}")
 print(f"Mean: {np.mean(error)}")
 
+print(f"Min: {np.min(error)}", file=open(args.log_file, "a"))
 print(f"25th percentile: {np.percentile(error, 25)}", file=open(args.log_file, "a"))
 print(f"50th percentile: {np.percentile(error, 50)}", file=open(args.log_file, "a"))
 print(f"75th percentile: {np.percentile(error, 75)}", file=open(args.log_file, "a"))
-print(f"Min: {np.min(error)}", file=open(args.log_file, "a"))
 print(f"Max: {np.max(error)}", file=open(args.log_file, "a"))
 print(f"Mean: {np.mean(error)}", file=open(args.log_file, "a"))
-
-predictions.to_csv(config.predictions_path)
-originals.to_csv(config.originals_path)
