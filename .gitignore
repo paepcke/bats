@@ -140,3 +140,5 @@ dmypy.json
 
 # data
 data*.csv
+.pydevproject
+.project
