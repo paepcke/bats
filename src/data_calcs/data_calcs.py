@@ -9,6 +9,7 @@ import os
 import pandas as pd  # pip install pyarrow
 import re
 import sys
+from _ast import Or
 
 class DataCalcs:
     '''
@@ -50,6 +51,7 @@ class DataCalcs:
                  infile, 
                  outfile=None,       # Use False for no output
                  compute_stats=False,# True, or a filepath for saving stats
+                 cull_threshold=None,
                  remove_nans=True,
                  admin_cols=None,    # Give [] if no administrative cols
                  unittesting=False
@@ -89,7 +91,10 @@ class DataCalcs:
         are performed in this constructor.   
         '''
         
-        # Remove administrative columns:
+        # No statistics available yet:
+        self.stats_df = None
+        
+        # Standard SonoBat administrative columns:
         if admin_cols is None:
             self.admin_cols = ['Filename',
                                'ParentDir',
@@ -99,6 +104,7 @@ class DataCalcs:
                                'Version',
                                ]
         else:
+            # User-provided admin columns:
             self.admin_cols = admin_cols
             
         if unittesting:
@@ -121,6 +127,13 @@ class DataCalcs:
             # TimeIndex column:
             self.stats_df = self.compute_stats(df)
             
+        if cull_threshold is not None:
+            if (type(cull_threshold) not in (float, int)) or \
+                not (0.0 <= cull_threshold <= 1.0): 
+                raise ValueError(f"Cull threshold must be a number between 0.0 and 1.0, not {cull_threshold}")
+            
+            self.df = self.cull_columns(self.df, cull_threshold)
+
         # Output results or not: outfile may be None, False, or a path:
         if outfile is None:
             # Print summary to console:
@@ -163,6 +176,10 @@ class DataCalcs:
                     print(f"Could not save stats to {compute_stats}: {e}")
             else:
                 print('No stats written, but available via <cleaner>.stats_df')
+       
+        elif compute_stats == True:
+            # Just output to console:
+            print(self.stats_df)
                 
         elif type(compute_stats) == str:
             # Compute_stats is a path, which does not yet exist:
@@ -202,14 +219,19 @@ class DataCalcs:
         # and saved via df.to_csv():
         df = self._normalize_frame(df)
         
+        # Be nice, and handle user supplied administrative
+        # columns are not present:
+        user_cols = set(exclude_cols)
+        true_cols = set(df.columns)
+        exclude_cols = list(true_cols.intersection(user_cols))
+         
         if type(exclude_cols) == list and len(exclude_cols) > 0:
             # Remove column(s) as per caller's request:
             df.drop(exclude_cols, axis='columns', inplace=True)
 
         # Copy column TimeIndex to serve as the 
-        # dataframe index:            
-        df.index.name = 'TimeIndex'
-        # df.drop('TimeIndex', axis='columns', inplace=True)
+        # dataframe index:      
+        df.set_index('TimeIndex', drop=False, inplace=True)      
     
         if remove_nans:        
             # Remove rows in which all columns, except
@@ -260,6 +282,7 @@ class DataCalcs:
         
                    col3  col1  col2  col5   col4
         variance
+        var_norm
         stdev
         max
         min
@@ -272,15 +295,16 @@ class DataCalcs:
         :rtype: pd.DataFrame
         '''
         
-        variances = df.var(axis='index')
-        stdevs    = df.std(axis='index')
-        maxies    = df.max(axis='index')
-        minies    = df.min(axis='index')
-        means     = df.mean(axis='index')
-        medians   = df.median(axis='index')
+        variances   = df.var(axis='index')
+        vars_normed = variances.rank(pct=True) # normalize 0-1
+        stdevs      = df.std(axis='index')
+        maxies      = df.max(axis='index')
+        minies      = df.min(axis='index')
+        means       = df.mean(axis='index')
+        medians     = df.median(axis='index')
         
         stats_df = pd.concat(
-            [variances,stdevs,maxies,minies,means,medians],
+            [variances,vars_normed,stdevs,maxies,minies,means,medians],
             axis='columns',
             
             )
@@ -298,11 +322,11 @@ class DataCalcs:
         
         stats_df = stats_df.transpose()
         stats_df.index = pd.Index(
-            ['variance', 'stdev', 'max', 'min', 'mean', 'median'],
+            ['variance', 'vars_normed', 'stdev', 'max', 'min', 'mean', 'median'],
             name='Stats'
             )
 
-        # Get just variance for each column:
+        # Get just variance of each column:
         variances = stats_df.loc['variance']
 
         # Now have:
@@ -329,6 +353,32 @@ class DataCalcs:
         stats_df_sorted = stats_df.reindex(columns=variances.index)
 
         return stats_df_sorted
+
+    #------------------------------------
+    # cull_columns
+    #-------------------
+    
+    def cull_columns(self, df, threshold):
+        
+        if threshold < 0 or threshold > 1:
+            raise ValueError(f"Threshold must be between 0 and 1, not {threshold}")
+        
+        # Already have stats over cols?
+        if self.stats_df is None:
+            # Stats over column values have not
+            # yet been computed. Compute them
+            # now:
+            self.stats_df = self.compute_stats(df)
+        
+        # Get the descending normalized variances:
+        normed_vars = self.stats_df.loc['vars_normed', :]
+        # Find the threshold point in the series: Get
+        # series [<highes_var>, <second-highes-var> ... <last_acceptable_var>]
+        variences_to_keep = normed_vars[normed_vars>=threshold]
+        # Now chop off all columns below the threshold
+        # in the given df:
+        df_culled = df.iloc[:,0:len(variences_to_keep)]
+        return(df_culled)
 
     #------------------------------------
     # _fix_preemph
@@ -475,18 +525,25 @@ if __name__ == '__main__':
     # *****************
 
     descr = ('Inputs a SonoBat data file. Accomplishes one or more tasks:\n'
+             '\n'
              '    o Removes administrative columns\n'
              '    o Ensures that remaining columns have numeric values\n'
-             '    o Computes the variance for each col, outputing a 1-row df\n'
+             '    o Computes stats over values in each col.\n'
+             '    o Culls columns whose variance is below a given percentile\n'
+             '\n'
              'Examples:\n'
+             '\n'
              '  Print an excerpt of a cleaned input:\n'
              '    data_calcs my_input.csv\n'
+             '\n'
              '  Save cleaned input to a .csv file:\n'
              '    data_calcs -o my_cleaned_file.csv my_input.csv\n'
-             '  Print one-row variance for all columns:\n'
-             '    data_calcs --variances my_input.csv\n'
-             '  Save column variances to a file:\n'
-             '    data_calcs --variances --output my_variances.csv my_input.csv\n'
+             '\n'
+             '  Print statistics for all columns to console:\n'
+             '    data_calcs --statistics True my_input.csv\n'
+             '\n'
+             '  Save statistics to a file:\n'
+             '    data_calcs --statistics my_stats.csv my_input.csv\n'
         )
 
     parser = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]),
@@ -498,13 +555,21 @@ if __name__ == '__main__':
                         default=None,
                         help='file for the finished df; default is to print the cleaned result',)
 
-    parser.add_argument('-v', '--variances',
-                        action='store_true',
-                        help=('with this switch, infile is assumed to be\n'
-                              'a cleaned SonoBat file. The outfile will hold\n'
-                              'the single-row .csv with variance for each column.'),
+    parser.add_argument('-s', '--statistics',
+                        help=('with this option, infile is assumed to be\n'
+                              'a cleaned SonoBat file. If value True, print\n'
+                              'stats to console. If a path, it will hold\n'
+                              'the .csv with with stats for each column.'),
                         default=False
                         )
+    parser.add_argument('-c', '--cull',
+                        help=('with this switch, infile is assumed to be\n'
+                              'a cleaned SonoBat file. The value must be a\n'
+                              'number between 0.0 and 1.0, which indicates\n'
+                              'variance threshold below which a column is removed'),
+                        default=None
+                        )
+    
     # parser.add_argument('-d', '--dirty',
     #                     action='store_false',
     #                     help='with this switch, infile is NOT cleaned ahead of other operations.')
@@ -513,11 +578,37 @@ if __name__ == '__main__':
     parser.add_argument('infile',
                         help='fully qualified Sonobat outfile file')
 
+
     args = parser.parse_args()
+
+    #**********
+    # print(f"Stats: {args.statistics}")
+    # sys.exit()
+    #**********
+
+
+    if args.cull is not None:
+        try:
+            cull_thres = float(args.cull)
+        except Exception:
+            print(f"Cull threshold must be a number between 0.0 and 1.0, not {args.cull}")
+            
+        if not (0.0 <= cull_thres <= 1.0): 
+            print(f"Cull threshold must be a number between 0.0 and 1.0, not {cull_thres}")
+            sys.exit(1)
+
+    if args.statistics:
+        if args.statistics == 'True':
+            do_stats = True
+        else:
+            do_stats = args.statistics
+    else:
+        do_stats = False
 
     if not os.path.exists(args.infile):
         print(f"SonoBat csv input file does not exist")
-        sys.exit()
+        sys.exit(1)
+        
     if args.outfile and os.path.exists(args.outfile):
         decision = input(f"Output file {args.outfile} exists; overwrite (y/n)")
         if decision != 'y':
@@ -525,8 +616,7 @@ if __name__ == '__main__':
 
     DataCalcs(args.infile, 
               args.outfile,
-              #clean=not args.dirty,
-              compute_variance=args.variances
+              compute_stats=do_stats
               )
 
     # '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/data.csv'        

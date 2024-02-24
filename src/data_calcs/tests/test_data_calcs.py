@@ -12,8 +12,8 @@ import unittest
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-#******TEST_ALL = True
-TEST_ALL = False
+TEST_ALL = True
+#TEST_ALL = False
 
 
 class BatCalcTester(unittest.TestCase):
@@ -62,13 +62,14 @@ class BatCalcTester(unittest.TestCase):
             exclude_cols=self.admin_cols,
             remove_nans=True)
         expected = pd.DataFrame(
-            [[5,  '0.5 sec',  '30 kHz anti-katydid',          1],
-             [3,  '4.0 sec',  '10 kHz cutoff',          2],
-             [1,  '4.0 sec',  '10 kHz cutoff',          3]
+            [[5,  '0.5 sec',  '30 kHz anti-katydid',    19],
+             [3,  '4.0 sec',  '10 kHz cutoff',          20],
+             [1,  '4.0 sec',  '10 kHz cutoff',          21]
              ],
             columns=['numbers','mixed', 'enum', 'TimeIndex'],            
             )
-        expected.index.name = 'TimeIndex'
+        expected_index = pd.Index([19,20,21], name = 'TimeIndex')
+        expected.index = expected_index
         pd.testing.assert_frame_equal(new_df, expected)
 
     #------------------------------------
@@ -114,13 +115,13 @@ class BatCalcTester(unittest.TestCase):
 
         df_numeric = cleaner.make_numeric(new_df)
         expected = pd.DataFrame(
-            [[5,  0.5,  1,          1, 1],
-             [3,  4.0,  2,          2, 0],
-             [1,  4.0,  2,          3, 2]
+            [[5,  0.5,  1,          19, 1],
+             [3,  4.0,  2,          20, 0],
+             [1,  4.0,  2,          21, 2]
              ],
             columns=['numbers','MaxSegLnght', 'Filter', 'TimeIndex', 'Preemphasis'],
             )
-        expected.index.name = 'TimeIndex'
+        expected.set_index('TimeIndex', drop=False, inplace=True)
         
         # DataCalc makes columns that were modified
         # from string to int or float into type 'object'.
@@ -178,7 +179,7 @@ class BatCalcTester(unittest.TestCase):
     # test_stats_computation
     #-------------------
     
-    #****@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_stats_computation(self):
         
         cleaner = DataCalcs(self.sono_complex_path, 
@@ -198,6 +199,7 @@ class BatCalcTester(unittest.TestCase):
         
         pre_int = pd.Series([
             1025.345088,
+               1.0,
               32.021010,
              151.056000,
               85.536000,
@@ -207,6 +209,7 @@ class BatCalcTester(unittest.TestCase):
             )
         lnExpB_start_amp = pd.Series([
             1.751163,
+            0.8,
             1.323315,
             -0.876543,
             -3.604043,
@@ -216,6 +219,7 @@ class BatCalcTester(unittest.TestCase):
         
         lnExpA_end_amp = pd.Series([
             0.003518,
+            0.4,
             0.059315,
             0.111705,
             -0.027919,
@@ -225,6 +229,7 @@ class BatCalcTester(unittest.TestCase):
         
         amd_2nd_mean = pd.Series([
             0.003516,
+            0.2,
             0.059298,
             0.855096,
             0.726407,
@@ -241,10 +246,43 @@ class BatCalcTester(unittest.TestCase):
             ], 
             axis='columns',
             )
-        expected_idx = pd.Index(['variance','stdev', 'max', 'min','mean', 'median'], name='Stats')
+        expected_idx = pd.Index(['variance', 'vars_normed', 
+                                 'stdev', 'max', 'min','mean', 
+                                 'median'], name='Stats')
         expected.index = expected_idx
 
         pd.testing.assert_frame_equal(stats_df_trunc, expected)
+    
+    #------------------------------------
+    # test_culling
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_culling(self):
+    
+        cleaner = DataCalcs(self.sono_complex_path, 
+                            compute_stats=True,
+                            outfile=False,
+                            admin_cols=['Filename']
+                            )
+        df = cleaner.df
+
+        # Remove columns with normalized varience <0.4:
+        df_culled = cleaner.cull_columns(df, 0.4)
+
+        # In order to compare the floats in the 
+        # columns of df_culled to the expected values
+        # below, independent of a machine's architecture,
+        # truncate all values six digits:
+        
+        df_culled_trunc = df_culled.apply(BatCalcTester.truncate_series)
+        
+        # For 'expected', start with the original df:
+        expected  = df.copy()
+        # Do what we expect cull_columns() to do:
+        expected.drop(['LnExpA_EndAmp', 'TimeIndex'], axis='columns', inplace=True)
+        
+        pd.testing.assert_frame_equal(df_culled_trunc, expected)
         
     # ---------------- Utilities ------------
 
