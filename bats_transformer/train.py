@@ -10,6 +10,7 @@ from pytorch_lightning.loggers import WandbLogger
 from data import preprocess
 import time
 import tqdm
+from itertools import chain
 
 from utils import *
 
@@ -43,13 +44,22 @@ parser.add_argument("--construct_full_output", action ="store_true");
 #take a list of string as input from cli
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 
+
 config = parser.parse_args()
+print(f"Batch size: {config.batch_size}")
 args = config
 ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir"] + config.ignore_cols
 #take this as input from cli
 
 #reading dataframe
+
+print("Reading data... ", end = "", flush = True)
+t = time.time()
 df, max_seq_len = preprocess.preprocess(config)
+print("Done. [Time taken: {}]".format(time.time() - t))
+
+print("Creating dataset... ", end = "", flush = True)
+t = time.time()
 bats_time_series = stf.data.CSVTimeSeries(
                         raw_df = df,
                         time_col_name = "TimeIndex",
@@ -58,14 +68,7 @@ bats_time_series = stf.data.CSVTimeSeries(
                         val_split = 0.1,
                         test_split = 0.1
                     )
-# create a dataloader with the bats_time_series object
-bats_dataset = stf.data.CSVTorchDset(
-                    csv_time_series = bats_time_series,
-                    split = "train",
-                    context_points = max_seq_len - 2,
-                    target_points = 2, 
-                    time_resolution = 1
-                )
+print("Done. [Time taken: {}]".format(time.time() - t))
 
 wandb_logger = WandbLogger(name=f"{args.run_name}", save_dir="/home/vdesai/bats_data/logs/") if args.wandb else None
 x_dim = bats_time_series.time_cols.size
@@ -78,8 +81,8 @@ data_module = stf.data.DataModule(
     datasetCls = stf.data.CSVTorchDset,
     dataset_kwargs = {
         "csv_time_series": bats_time_series,
-        "context_points": max_seq_len - 2,
-        "target_points": 2,
+        "context_points": max_seq_len - 1,
+        "target_points": 1,
         "time_resolution": 1,
     },
     batch_size = config.batch_size,
@@ -110,6 +113,8 @@ max_epochs = args.max_epochs
 
 pl.seed_everything(seed)
 # initialize the spacetimeformer model
+print("Initializing model... ", flush = True)
+t = time.time()
 model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             d_x=x_dim,
             d_yc=yc_dim,
@@ -169,14 +174,15 @@ model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             recon_mask_drop_standard=config.recon_mask_drop_standard,
             recon_mask_drop_full=config.recon_mask_drop_full,
         )
-
+print("Done.[Time taken: {}]".format(time.time() - t))
 model.set_inv_scaler(inverse_scaler);
 model.set_scaler(scaler);
 model.set_null_value(config.null_value);
+print("Initializing trainer.. ", flush = True)
+t = time.time()
 
 trainer = pl.Trainer(
         gpus=args.gpus,
-        #callbacks=callbacks,
         logger=wandb_logger if args.wandb else None,
         accelerator="dp",
         gradient_clip_val=args.grad_clip_norm,
@@ -187,6 +193,7 @@ trainer = pl.Trainer(
         limit_val_batches=args.limit_val_batches,
         max_epochs=max_epochs
 )
+print("Done. [Time taken: {}]".format(time.time() - t))
 
 start = time.time()
 trainer.fit(model, datamodule=data_module)
@@ -207,36 +214,46 @@ with open(args.log_file, "a") as f:
 model_path = f"/home/vdesai/bats_data/models/{args.run_name}.ckpt"
 trainer.save_checkpoint(model_path)
 print(model.device)
-batch_size = 128
-error = None
-for batch in tqdm.tqdm(data_module.train_dataloader()): 
+
+predicitons = None
+for batch in tqdm.tqdm(chain(data_module.train_dataloader(), data_module.val_dataloader(), data_module.test_dataloader())): 
     x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch
-    error_ = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
-    error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
+    yhat_t_batch = spacetimeformer_predict(model, x_c_batch, y_c_batch, x_t_batch)
+    predictions = yhat_t_batch.numpy() if predictions is None else np.concatenate((predictions, yhat_t_batch.numpy()), axis=0)
 
-for batch in tqdm.tqdm(data_module.val_dataloader()): 
-    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch
-    error_ = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
-    error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
+if(args.predictions_path.endswith('.csv')):
+    pd.DataFrame(predictions).to_csv(args.predictions_path, index=False)
 
-for batch in tqdm.tqdm(data_module.test_dataloader()): 
-    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch
-    error_ = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
-    error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
+elif(args.predictions_path.endswith('.feather')):
+    pd.DataFrame(predictions).to_feather(args.predictions_path, index=False)
 
-error = error[:, ~np.isnan(error).any(axis=0)]
-error = np.mean(error, axis = 0)
+else:
+    raise ValueError("Supported file types are either .csv or .feather, not {}"
+                            .format(args.predictions_path.split('.')[-1]))
 
-print(f"Min: {np.min(error)}")
-print(f"25th percentile: {np.percentile(error, 25)}")
-print(f"50th percentile: {np.percentile(error, 50)}")
-print(f"75th percentile: {np.percentile(error, 75)}")
-print(f"Max: {np.max(error)}")
-print(f"Mean: {np.mean(error)}")
-
-print(f"25th percentile: {np.percentile(error, 25)}", file=open(args.log_file, "a"))
-print(f"50th percentile: {np.percentile(error, 50)}", file=open(args.log_file, "a"))
-print(f"75th percentile: {np.percentile(error, 75)}", file=open(args.log_file, "a"))
-print(f"Min: {np.min(error)}", file=open(args.log_file, "a"))
-print(f"Max: {np.max(error)}", file=open(args.log_file, "a"))
-print(f"Mean: {np.mean(error)}", file=open(args.log_file, "a"))
+#for batch in tqdm.tqdm(data_module.val_dataloader()): 
+#    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch
+#    error_ = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
+#    error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
+#
+#for batch in tqdm.tqdm(data_module.test_dataloader()): 
+#    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch
+#    error_ = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
+#    error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
+#
+#error = error[:, ~np.isnan(error).any(axis=0)]
+#error = np.mean(error, axis = 0)
+#
+#print(f"Min: {np.min(error)}")
+#print(f"25th percentile: {np.percentile(error, 25)}")
+#print(f"50th percentile: {np.percentile(error, 50)}")
+#print(f"75th percentile: {np.percentile(error, 75)}")
+#print(f"Max: {np.max(error)}")
+#print(f"Mean: {np.mean(error)}")
+#
+#print(f"25th percentile: {np.percentile(error, 25)}", file=open(args.log_file, "a"))
+#print(f"50th percentile: {np.percentile(error, 50)}", file=open(args.log_file, "a"))
+#print(f"75th percentile: {np.percentile(error, 75)}", file=open(args.log_file, "a"))
+#print(f"Min: {np.min(error)}", file=open(args.log_file, "a"))
+#print(f"Max: {np.max(error)}", file=open(args.log_file, "a"))
+#print(f"Mean: {np.mean(error)}", file=open(args.log_file, "a"))

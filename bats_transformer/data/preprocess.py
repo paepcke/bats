@@ -5,10 +5,22 @@ def add_cli(parser):
     parser.add_argument('--input_data_path', type=str, default='data/data_2.csv', help='input file')
 
 
-def preprocess(args):    
-    df = pd.read_csv(args.input_data_path)
+def preprocess(args):
+    df = None    
+    
+    if(args.input_data_path.endswith('.csv')):
+        df = pd.read_csv(args.input_data_path)
+    
+    elif(args.input_data_path.endswith('.feather')):
+        df = pd.read_feather(args.input_data_path)
+    
+    else:
+        raise ValueError("Supported file types are either .csv or .feather, not {}"
+                                .format(args.input_data_path.split('.')[-1]))
+
     max_seq_len = df.groupby("Filename").size().max()
     df.fillna(0, inplace=True)
+    
     if not args.pca_components:
         return df, max_seq_len
     else:
