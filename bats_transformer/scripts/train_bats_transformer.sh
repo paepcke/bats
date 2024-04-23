@@ -1,16 +1,16 @@
 #!/bin/bash
 RUN_NAME=$1
 DATA_PATH=/home/vdesai/bats_data/training_files/data.feather
-MAX_EPOCHS=20
+MAX_EPOCHS=1
 GPUS=1
 RANDOM_SEED=$2
-D_MODEL=20
+D_MODEL=100
 D_QK=20
 D_V=20
 D_FF=100
 ENC_LAYERS=2
 DEC_LAYERS=2
-N_HEADS=1
+N_HEADS=5
 
 python3 train.py \
     --input_data_path $DATA_PATH \

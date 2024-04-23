@@ -2,27 +2,45 @@ import argparse
 import pandas as pd
 import numpy as np
 import glob
+import joblib
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
 
 minimum_length = 5
+
+'''
+Add the command line interface arguments to specify the input data path, output data path, and the
+number of splits.
+'''
 def add_cli(parser):
     parser.add_argument('-i', '--input_data_path', type=str, default='/qnap/bats/jasperridge/barn1/grouped_audio', help='input file')
     parser.add_argument('-o', '--output_data_path', type=str, default='./data.csv', help='output file')
     parser.add_argument('-s', '--splits', type = int, default = 1)
+    parser.add_argument('-f', '--use_feather', action='store_true', help='use feather format')
+    parser.add_argument('-m', '--minimum_length', type = int, default = 5)
+    return parser
 
+'''
+Get all the files from a particular root directory
+'''
 def get_files(path):
     files = []
     for file in glob.glob(path + '/**/*Parameters_*.txt', recursive=True):
         files.append(file)
     return files
 
+'''
+Get the dataframe from the files. Merge all of them into a single dataframe.
+'''
 def get_df(files):
     df = pd.DataFrame()
     for file in files:
         df = pd.concat([df, (pd.read_csv(file, sep='\t'))], ignore_index = True)
     return df
 
+'''
+Pads groups with nan entries to make it of the same length as max_length.
+'''
 def pad_group(group, max_length):
     pad_length = max_length - len(group)
     filename = group.iloc[0]["Filename"]
@@ -32,7 +50,12 @@ def pad_group(group, max_length):
 
     return pd.concat([padding_df, group], ignore_index=True)
 
-
+'''
+Takes in a particular group, and then keeps on popping the last row from it untill
+it reaches the minimum length. Then, it takes all of these groups, and appends
+null entries to the begining so that all of them are of the same length, 
+ie max_length.
+'''
 def process_and_pad_groups(group, max_length, min_length):
     groups = []  # To hold the modified groups
     current_group = group.copy()
@@ -45,9 +68,13 @@ def process_and_pad_groups(group, max_length, min_length):
     padded_groups = []
     for grp in groups:
         pad_length = max_length - len(grp)
+        grp["cntxt_sz"] = len(grp) - 1
         filename = grp.iloc[0]["Filename"]  # Assuming 'Filename' is a column in the DataFrame
+        cntxt_sz = grp.iloc[0]["cntxt_sz"]
+
         padding_df = pd.DataFrame(0, index=np.arange(pad_length), columns=grp.columns)
         padding_df["Filename"] = filename  # Fill 'Filename' column with the filename of the current group
+        padding_df["Cntxt_sz"] = cntxt_sz
         grp.TimeInFile = grp.TimeInFile - grp.TimeInFile.min()  # Adjust 'TimeInFile' as per the original function
         
         # Concatenate the padding dataframe and the current group
@@ -57,23 +84,31 @@ def process_and_pad_groups(group, max_length, min_length):
     
     # Concatenate all padded groups into a single DataFrame
     final_df = pd.concat(padded_groups, ignore_index=True)
-    
     return final_df
 
 
 
 
-parser = argparse.ArgumentParser()
-add_cli(parser)
-args = parser.parse_args()
+args = add_cli(argparse.ArgumentParser()).parse_args()
+minimum_length = args.minimum_length
 
 print("Reading files... ", end="", flush=True)
 df = get_df(get_files(args.input_data_path)).sort_values(["Filename", "TimeInFile"])
 print("DONE.")
+
+#storing the config
 max_length = df.groupby("Filename").size().max()
-#get number of unique counts for Filename
 num_files = len(df.groupby("Filename"))
+print("max length: ", max_length)
+print("min length: ", minimum_length)
 print("number of unique files: ", num_files)
+
+pd.DataFrame([
+    {"parameter": "max_length", "value": max_length},
+    {"parameter": "min_length", "value": minimum_length},
+    {"parameter": "num_files", "value": num_files}
+]).to_csv(args.output_data_path + "_config.csv", index=False)
+
 
 #drop all entries corresponging to Filenames which have less than minimum_length entries
 print("Dropping Entries... ", end="", flush=True)
@@ -89,27 +124,48 @@ print("DONE.")
 #write it out to n_files different files.
 if(args.splits == 1):
     print("Writing to file... ", end="", flush=True)
-    padded_df.to_feather(args.output_data_path)
+    padded_df.to_csv(args.output_data_path)
     print("DONE.")
 
 else:
     print("Writing to files... ", end="", flush=True)
-    padded_df.drop(columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir"], inplace = True)
+    df_og = padded_df.copy()
+    padded_df.drop(columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir", "Cntxt_sz"], inplace = True)
     scaler = StandardScaler()
     padded_df = pd.DataFrame(scaler.fit_transform(padded_df), columns = padded_df.columns)
 
+    padded_df["Filename"] = df_og["Filename"]
+    padded_df["Cntxt_sz"] = df_og["Cntxt_sz"]
+
+    df_og = None    
+    #store the parameters of the scaler somewhere (mean, variances) so that can recover dataset.
+    joblib.dump(scaler, args.output_data_path + "_scaler.pkl")
+
     #write padded_df to args.splits different files, each with a different subset of the rows. Also, make sure 
     #that it has rows in the multiple of max_length irrespective of the number of splits.
+    padded_df = padded_df.reset_index(drop = True)
     num_data_points = int(len(padded_df)/max_length)
     num_data_points_per_split = num_data_points//args.splits
     for i in range(args.splits - 1):
-        padded_df.iloc[i*(num_data_points_per_split)*max_length:(i+1)*(num_data_points_per_split)*max_length].to_feather(args.output_data_path + str(i) + ".feather")
-    
+        temp_df = padded_df.iloc[i*(num_data_points_per_split)*max_length:(i+1)*(num_data_points_per_split)*max_length].reset_index(drop=True)
+        
+        if args.use_feather:
+            temp_df.to_feather(args.output_data_path + str(i) + ".feather")
+        else:
+            temp_df.to_csv(args.output_data_path + str(i) + ".csv")
+        
+        print(temp_df.shape)
+        print(max_length)
     #write an additional file with a mapping between feather file and the number of rows.
     mapping_df = pd.DataFrame()
-    mapping_df["Filename"] = [args.output_data_path + str(i) + ".feather" for i in range(args.splits - 1)]
+
+    if args.use_feather:
+        mapping_df["Filename"] = [args.output_data_path + str(i) + ".feather" for i in range(args.splits - 1)]
+    else:
+        mapping_df["Filename"] = [args.output_data_path + str(i) + ".csv" for i in range(args.splits - 1)]
+    
     mapping_df["count"] = [num_data_points_per_split * max_length for i in range(args.splits - 1)]
-    mapping_df.to_feather(args.output_data_path + "_mapping.feather")
+    mapping_df.to_csv(args.output_data_path + "_mapping.csv")
     
     
     print("DONE.")    
