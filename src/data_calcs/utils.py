@@ -50,4 +50,4 @@ class Utils:
         seconds = (dt.replace(tzinfo=None) - dt.min).seconds
         rounding = (seconds+roundTo/2) // roundTo * roundTo
         return dt + timedelta(0,rounding-seconds,-dt.microsecond)
-        
+  

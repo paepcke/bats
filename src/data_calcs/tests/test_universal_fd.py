@@ -1,27 +1,24 @@
 '''
-Created on Apr 20, 2024
+Created on Apr 24, 2024
 
 @author: paepcke
 '''
-from _datetime import datetime, timezone, timedelta
-from data_calcs.daytime_file_selection import DaytimeFileSelector
-from pyarrow import feather
-import csv
+
+from data_calcs.universal_fd import UniversalFd
 import gzip
 import os
-import pandas as pd
 import shutil
 import tempfile
 import unittest
+import pandas as pd
+from pyarrow import feather
 
 TEST_ALL = True
 #TEST_ALL = False
 
-class DaytimeTimeSelectionTester(unittest.TestCase):
+class UniversalFdTester(unittest.TestCase):
 
     def setUp(self):
-        self.selector = DaytimeFileSelector()
-        self.tzinfo = self.selector.timezone
         self.create_test_files()
 
     def tearDown(self):
@@ -33,102 +30,107 @@ class DaytimeTimeSelectionTester(unittest.TestCase):
         except:
             pass
 
-    # ----------------- Tests --------------
-
     #------------------------------------
-    # test_time_from_fname 
+    # test_universal_fd_writing
     #-------------------
     
     @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
-    def test_time_from_fname(self):
+    def test_universal_fd_writing(self):
         
-        fname = '/foo/bar/barn1_D20220205T192049m784-HiF.wav'
-        dt = self.selector.time_from_fname(fname)
-        expected = datetime(2022, 2, 5, 
-                            hour=19, 
-                            minute=20, 
-                            second=49, 
-                            tzinfo=self.tzinfo)
-        self.assertEqual(dt, expected)
+        # Writing regular .csv:
         
-        # Bad fname:
-        fname = '/foo/bar/barn1_DD0220205T192049m784-HiF.wav'
-        with self.assertRaises(ValueError):
-            dt = self.selector.time_from_fname(fname)
-
-    #------------------------------------
-    # test_sunset_time
-    #-------------------
-    
-    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
-    def test_sunset_time(self):
-        
-        the_date = datetime(2022, 2, 5).date()
-        sunset = self.selector.sunset_time(the_date, round_to_minute=True)
-
-        expected = datetime(2022, 2, 5, 
-                            hour=18, minute=38, 
-                            tzinfo=self.tzinfo
-                            )
-                                                     
-        self.assertEqual(sunset, expected)
-
-    #------------------------------------
-    # test_open_file
-    #-------------------
-    
-    def test_open_file(self):
-        selector = DaytimeFileSelector()
-
-        # Test csv opening:
-        
-        expected = self.csv_expected
-        
-        reader, csv_fd = selector.open_file(self.csv_fname)
-        for i, row in enumerate(reader):
-            self.assertEqual(row, expected[i])
+        out_path = os.path.join(self.tmpdir.name, 'fd_test.csv')
+        csv_fd = UniversalFd(out_path, mode='w')
+        for row_arr in self.csv_expected:
+            csv_fd.write(row_arr)
         csv_fd.close()
         
-        # Test .gz opening:
-        
-        reader, gz_fd = selector.open_file(self.gz_fname)
-        for i, row in enumerate(reader):
-            self.assertEqual(row, expected[i])
-        gz_fd.close()
+        with open(out_path, 'r') as in_fd:
+            for i, row in enumerate(in_fd):
+                row_arr = row.strip().split(',')
+                self.assertEqual(row_arr, self.csv_expected[i])
 
-        # Test .feather opening:
-            
-        expected = self.df_expected
-                
-        reader, feather_fd = selector.open_file(self.feather_fname)
-        col_names = next(reader)
-        self.assertListEqual(col_names, list(expected.columns))
-        for i, row in enumerate(reader):
-            self.assertTrue(row == list(expected.iloc[i]))
-        if feather_fd is not None:
-            feather_fd.close()
+        # Test .gz output:
+                        
+        out_path = os.path.join(self.tmpdir.name, 'fd_test.csv.gz')
+        gz_fd = UniversalFd(out_path, mode='w')
+        for row_arr in self.csv_expected:
+            gz_fd.write(row_arr)
+        gz_fd.close()
         
+        in_fd = UniversalFd(out_path, 'r')
+        for i, row in enumerate(in_fd):
+            self.assertEqual(row, self.csv_expected[i])
+
+        # Test .feather output:
+        out_path = os.path.join(self.tmpdir.name, 'fd_test.feather')
+        feather_fd = UniversalFd(out_path, mode='w')
+        for row_arr in self.csv_expected:
+            feather_fd.write(row_arr)
+        feather_fd.close()
+        
+
+        in_fd = UniversalFd(out_path, 'r')
+        for i, row in enumerate(in_fd):
+            self.assertEqual(row, self.csv_expected[i])
+
     #------------------------------------
-    # test_daytime_recordings
+    # test_universal_fd_reading
     #-------------------
     
     @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
-    def test_daytime_recordings(self):
-    
-        out_fpath = os.path.join(self.tmpdir.name, 'out.csv')
-         
-        # Place the pre-sunset files into out_fpath:
-        self.selector.daytime_recordings(self.csv_fname, out_fpath, 'filePath')
-        with open(out_fpath, 'r') as fd:
-            reader = csv.reader(fd)
-            content = list(reader)
-
-        # Col names:
-        self.assertListEqual(content[0], self.csv_expected[0])
-        self.assertListEqual(content[1], self.csv_expected[1])
-        # The 22:30:49 file should have been filtered out:
-        self.assertListEqual(content[2], self.csv_expected[3])
+    def test_universal_fd_reading(self):
         
+        # Test csv:
+        
+        in_fd = UniversalFd(self.csv_fname, 'r')
+        for i, row in enumerate(in_fd):
+            self.assertEqual(row, self.csv_expected[i])
+        in_fd.close()
+                        
+        # Test .gz:
+        
+        in_fd = UniversalFd(self.gz_fname, 'r')
+        for i, row in enumerate(in_fd):
+            self.assertEqual(row, self.csv_expected[i])
+        in_fd.close()
+           
+        # Test .feather:
+        in_fd = UniversalFd(self.feather_fname, 'r')
+        for i, row in enumerate(in_fd):
+            row_strs = [str(el) for el in row]
+            self.assertEqual(row_strs, self.csv_expected[i])
+
+    #------------------------------------
+    # test_context_manager
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_context_manager(self):
+        
+        # CSV:
+        out_path = os.path.join(self.tmpdir.name, 'fd_test.csv')
+        with UniversalFd(out_path, 'w') as fd:
+            for row in self.csv_expected:
+                fd.write(row)
+        # Read back:
+        with UniversalFd(out_path, 'r') as fd:
+            for i, row in enumerate(fd):
+                self.assertEqual(row, self.csv_expected[i])
+                
+        # .gz:
+        out_path = os.path.join(self.tmpdir.name, 'fd_test.csv.gz')
+        with UniversalFd(out_path, 'w') as fd:
+            for row in self.csv_expected:
+                fd.write(row)
+        # Read back:
+        with UniversalFd(out_path, 'r') as fd:
+            for i, row in enumerate(fd):
+                self.assertEqual(row, self.csv_expected[i])
+            
+        # .feather:
+        out_path = os.path.join(self.tmpdir.name, 'fd_test.feather')
+
 # ------------------------ Utilities ------------
 
     #------------------------------------
