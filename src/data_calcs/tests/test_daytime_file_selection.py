@@ -131,16 +131,16 @@ class DaytimeTimeSelectionTester(unittest.TestCase):
         self.assertListEqual(content[2], self.csv_expected[3])
 
     #------------------------------------
-    # test_universal_fd
+    # test_universal_fd_writing
     #-------------------
     
     @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
-    def test_universal_fd(self):
+    def test_universal_fd_writing(self):
         
         # Writing regular .csv:
         
         out_path = os.path.join(self.tmpdir.name, 'fd_test.csv')
-        csv_fd = UniversalFd(out_path)
+        csv_fd = UniversalFd(out_path, mode='w')
         for row_arr in self.csv_expected:
             csv_fd.write(row_arr)
         csv_fd.close()
@@ -153,16 +153,90 @@ class DaytimeTimeSelectionTester(unittest.TestCase):
         # Test .gz output:
                         
         out_path = os.path.join(self.tmpdir.name, 'fd_test.csv.gz')
-        gz_fd = UniversalFd(out_path)
+        gz_fd = UniversalFd(out_path, mode='w')
         for row_arr in self.csv_expected:
             gz_fd.write(row_arr)
         gz_fd.close()
         
-        with gzip.open(out_path, 'r') as in_fd:
-            for i, row in enumerate(in_fd):
-                row_arr = row.strip().split(',')
-                self.assertEqual(row_arr, self.csv_expected[i])
+        in_fd = UniversalFd(out_path, 'r')
+        for i, row in enumerate(in_fd):
+            self.assertEqual(row, self.csv_expected[i])
 
+        # Test .feather output:
+        out_path = os.path.join(self.tmpdir.name, 'fd_test.feather')
+        feather_fd = UniversalFd(out_path, mode='w')
+        for row_arr in self.csv_expected:
+            feather_fd.write(row_arr)
+        feather_fd.close()
+        
+
+        in_fd = UniversalFd(out_path, 'r')
+        for i, row in enumerate(in_fd):
+            self.assertEqual(row, self.csv_expected[i])
+
+    #------------------------------------
+    # test_universal_fd_reading
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_universal_fd_reading(self):
+        
+        # Test csv:
+        
+        in_fd = UniversalFd(self.csv_fname, 'r')
+        for i, row in enumerate(in_fd):
+            self.assertEqual(row, self.csv_expected[i])
+        in_fd.close()
+                        
+        # Test .gz:
+        
+        in_fd = UniversalFd(self.gz_fname, 'r')
+        for i, row in enumerate(in_fd):
+            self.assertEqual(row, self.csv_expected[i])
+        in_fd.close()
+           
+        # Test .feather:
+        in_fd = UniversalFd(self.feather_fname, 'r')
+        for i, row in enumerate(in_fd):
+            row_strs = [str(el) for el in row]
+            self.assertEqual(row_strs, self.csv_expected[i])
+
+    #------------------------------------
+    # test_context_manager
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_context_manager(self):
+        
+        # CSV:
+        out_path = os.path.join(self.tmpdir.name, 'fd_test.csv')
+        with UniversalFd(out_path, 'w') as fd:
+            for row in self.csv_expected:
+                fd.write(row)
+        # Read back:
+        with UniversalFd(out_path, 'r') as fd:
+            for i, row in enumerate(fd):
+                self.assertEqual(row, self.csv_expected[i])
+                
+        # .gz:
+        out_path = os.path.join(self.tmpdir.name, 'fd_test.csv.gz')
+        with UniversalFd(out_path, 'w') as fd:
+            for row in self.csv_expected:
+                fd.write(row)
+        # Read back:
+        with UniversalFd(out_path, 'r') as fd:
+            for i, row in enumerate(fd):
+                self.assertEqual(row, self.csv_expected[i])
+            
+        # .feather:
+        out_path = os.path.join(self.tmpdir.name, 'fd_test.feather')
+        with UniversalFd(out_path, 'w') as fd:
+            for row in self.csv_expected:
+                fd.write(row)
+        
+        with UniversalFd(out_path, 'r') as fd:
+            for i, row in enumerate(fd):
+                self.assertEqual(row, self.csv_expected[i])
 
 # ------------------------ Utilities ------------
 

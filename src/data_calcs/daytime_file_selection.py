@@ -14,6 +14,7 @@ import pyarrow
 import re
 import sys
 import pandas as pd
+from _sqlite3 import Row
 
 class DaytimeFileSelector:
     '''
@@ -66,7 +67,7 @@ class DaytimeFileSelector:
                             print("Aborting, file untouched")
                             sys.exit(1)
                     try:
-                        out_fd = UniversalFd(out_file)
+                        out_fd = UniversalFd(out_file, mode='w')
                     except Exception as e:
                         print(f"Cannot create out file {out_file} ({e}); aborting")
                         sys.exit(1)
@@ -241,7 +242,25 @@ class UniversalFd:
     # Constructor
     #-------------------
 
-    def __init__(self, out_fname):
+    def __init__(self, fname, mode):
+
+        if mode == 'w':
+            self.initialize_writing(fname)
+            
+        elif mode == 'r':
+            self.initialize_reading(fname)
+            
+        else:
+            raise ValueError(f"Mode argument must be 'w' or 'r', not {mode}")
+    
+    
+    #------------------------------------
+    # initialize_writing
+    #-------------------
+    
+    def initialize_writing(self, out_fname):
+        
+        self.direction = 'write'
         
         if type(out_fname) == str:
             self.out_name = Path(out_fname)
@@ -269,31 +288,61 @@ class UniversalFd:
             raise TypeError(f"UniversalFd is for .csv, .csv.gz, or .feather files, not {out_fname}")
 
     #------------------------------------
-    # __repr__
+    # __enter__ and __exit__
     #-------------------
     
-    def __repr__(self):
-        '''
-        Representation will be like:
-        
-              <UniversalFd type=csv out.csv at 0xab4233>
-        '''
-        try:
-            filetype = self.filetype
-        except AttributeError:
-            # Instance is not fully instantiated yet:
-            filetype = 'pending'
-        
-        try:
-            outname = self.out_name.name
-        except AttributeError:
-            # Instance is not fully instantiated yet:
-            outname = 'pending'
-           
-        summary = f"<UniversalFd type={filetype} {outname} at {hex(id(self))}>"
-        return summary
+    # Context handler for UniversalFd
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return None
+    
 
+    #------------------------------------
+    # initialize_reading
+    #-------------------
+    
+    def initialize_reading(self, in_fname):
         
+        self.direction = 'read'
+        
+        if type(in_fname) == str:
+            self.in_name = Path(in_fname)
+        elif type(in_fname) == PosixPath:
+            self.in_name = in_fname
+        else:
+            raise TypeError(f"Infile name must be string or a pathlib.Path, not {in_fname}")
+           
+        # Now input file is a Path instance: 
+        extension = self.in_name.suffix
+        if extension == '.csv':
+            self.filetype = 'csv'
+            self.fd = open(self.in_name, 'rt')
+            self.reader = csv.reader(self.fd)
+        elif extension == '.gz':
+            self.filetype = 'gz'
+            self.fd = gzip.open(self.in_name, 'rt')
+            self.reader = csv.reader(self.fd)
+        elif extension == '.feather':
+            self.filetype = 'feather'
+            # Read the file into a dataframe:
+            df = pd.read_feather(self.in_name)
+            # Construct an array of arrays, like:
+            #   [['col1', 'col2'], [10, 'foo'], [20, 'bar']]
+            # Python array from df row values:            
+            rows = df.to_numpy().tolist()
+            cols = list(df.columns)
+            # Get like
+            #   [['col1', 'col2'], [10, 'foo'], [20, 'bar']]
+            self.content = [cols] + rows
+            # Scan pointer:
+            self.scan_pos = 0
+        else:
+            raise TypeError(f"UniversalFd is for .csv, .csv.gz, or .feather files, not {in_fname}")
+
+
     #------------------------------------
     # write
     #-------------------
@@ -323,24 +372,45 @@ class UniversalFd:
     def readline(self, **kwargs):
         
         if self.filetype in ('csv', 'gz'):
-            
-            
-            if type(str_or_row) == str:
-                row_arr = str_or_row.split(',') 
-                self.writer.writerow(row_arr)
-            elif type(str_or_row) == list:
-                self.writer.writerow(str_or_row)
+            res = next(self.reader)
+            return res
+        
+        # We must be reading from a .feather file
+        # So we created self.content, which is
+        #
+        #   [['col1', 'col2'], [10, 'foo'], [20, 'bar']]
+        #
+        # We also have self.scan_pos pointing into the
+        # outer array:
+        
+        row = self.content[self.scan_pos]
+        self.scan_pos += 1
+        return row  
+
+    #------------------------------------
+    # __iter__
+    #-------------------
+    
+    def __iter__(self):
+        if self.direction == 'read':
+            if self.filetype in ('csv', 'gz'):
+                return self
             else:
-                raise TypeError(f"Arg to write() must be string or list of strings, not {str_or_row}")                                   
-        # Must be .feather destination:
+                # .feather:
+                # Row by row, starting with column headers
+                return iter(self.content)
         else:
-            if type(str_or_row) == str:
-                new_row = self.table.append(str_or_row.split(','))
-            else:
-                new_row = str_or_row
-            self.table.append(new_row)
-
-
+            raise TypeError("Cannot iterate over a writer")
+    
+    
+    #------------------------------------
+    # __next__
+    #-------------------
+    
+    def __next__(self):
+        row = self.readline()
+        return row
+    
     #------------------------------------
     # close
     #-------------------
@@ -358,10 +428,51 @@ class UniversalFd:
             self.fd.close()
             return
         
-        # Must be a feather:
-        df = pd.DataFrame(self.table)
-        df.to_feather(self.out_name)
+        if self.direction == 'write':
+            # Must be a feather:
+            df = pd.DataFrame(self.table[1:], columns=self.table[0])
+            df.to_feather(self.out_name)
         
+
+    #------------------------------------
+    # __repr__
+    #-------------------
+    
+    def __repr__(self):
+        '''
+        Depending on whether the instance is for writing 
+        or reading, representation will be like:
+        
+              <UniversalFd type=out-csv out.csv at 0xab4233>
+              <UniversalFd type=in-csv in.csv at 0xab4233>
+        '''
+        try:
+            filetype = self.filetype
+        except AttributeError:
+            # Instance is not fully instantiated yet:
+            filetype = 'pending'
+        
+        if self.direction == 'read':
+            direction = 'in'
+            try:
+                fname = self.in_name.name
+            except AttributeError:
+                # Instance is not fully instantiated yet:
+                fname = 'fname-pending'
+
+        
+        elif self.direction == 'write':
+            direction = 'out'
+            try:
+                fname = self.out_name.name
+            except AttributeError:
+                # Instance is not fully instantiated yet:
+                fname = 'fname-pending'
+        else:
+            direction = 'dir-pending'
+
+        summary = f"<UniversalFd type={direction}-{filetype} {fname} at {hex(id(self))}>"
+        return summary
         
 # --------------------- Class DataFrameRows -----------
 
