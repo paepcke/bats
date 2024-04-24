@@ -67,3 +67,35 @@ def run_train_py(run_name,
         command += additional_flags
     #get output of subprocess on console
     subprocess.run(command)
+
+def run_test_py(model_path, 
+                data_path = None,
+                ignore_cols = [],
+                log_file = "./log.txt",
+                gpus = None, 
+                additional_flags = None):
+    if data_path is None:
+        data_path = "/home/vdesai/bats_data/training_files/splits_feather"
+    
+    if not gpus:
+        gpus = 0
+    
+    if not log_file:
+        log_file = f"/home/vdesai/bats_data/transformer/logs/{model_path}.log"
+
+    command = [
+        "python3", "test.py",
+        "--input_data_path", data_path,
+        "--gpus", str(gpus),
+        "--log_file", log_file,
+        "--model_path", model_path
+    ]
+
+    if(len(ignore_cols) > 0):
+        command.append("--ignore_cols")
+        command += ignore_cols
+    
+    if(additional_flags):
+        command += additional_flags
+    #get output of subprocess on console
+    subprocess.run(command)

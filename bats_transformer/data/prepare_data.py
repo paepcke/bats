@@ -56,7 +56,7 @@ it reaches the minimum length. Then, it takes all of these groups, and appends
 null entries to the begining so that all of them are of the same length, 
 ie max_length.
 '''
-def process_and_pad_groups(group, max_length, min_length):
+def process_and_pad_groups(group, max_length, min_length, filename_to_id):
     groups = []  # To hold the modified groups
     current_group = group.copy()
     
@@ -68,13 +68,18 @@ def process_and_pad_groups(group, max_length, min_length):
     padded_groups = []
     for grp in groups:
         pad_length = max_length - len(grp)
-        grp["cntxt_sz"] = len(grp) - 1
+        cntxt_sz = len(grp) - 1
+
         filename = grp.iloc[0]["Filename"]  # Assuming 'Filename' is a column in the DataFrame
-        cntxt_sz = grp.iloc[0]["cntxt_sz"]
+        file_id = grp.iloc[0]["file_id"]
+        
+
+        grp["cntxt_sz"] = len(grp) - 1
 
         padding_df = pd.DataFrame(0, index=np.arange(pad_length), columns=grp.columns)
         padding_df["Filename"] = filename  # Fill 'Filename' column with the filename of the current group
-        padding_df["Cntxt_sz"] = cntxt_sz
+        padding_df["file_id"] = file_id
+        padding_df["cntxt_sz"] = cntxt_sz
         grp.TimeInFile = grp.TimeInFile - grp.TimeInFile.min()  # Adjust 'TimeInFile' as per the original function
         
         # Concatenate the padding dataframe and the current group
@@ -94,7 +99,8 @@ minimum_length = args.minimum_length
 
 print("Reading files... ", end="", flush=True)
 df = get_df(get_files(args.input_data_path)).sort_values(["Filename", "TimeInFile"])
-print("DONE.")
+print("Done.")
+
 
 #storing the config
 max_length = df.groupby("Filename").size().max()
@@ -110,43 +116,53 @@ pd.DataFrame([
 ]).to_csv(args.output_data_path + "_config.csv", index=False)
 
 
+
+
 #drop all entries corresponging to Filenames which have less than minimum_length entries
 print("Dropping Entries... ", end="", flush=True)
 df = df[df.groupby("Filename").Filename.transform('size') > minimum_length]
-print("DONE.")
+print("Done.")
+
+print("Creating mapping from filename to a unique id... ", end="", flush=True)
+df["file_id"] = pd.factorize(df["Filename"])[0]
+filename_to_id = df.groupby("Filename")["file_id"].first().reset_index()
+filename_to_id.to_csv(args.output_data_path + "_filename_to_id.csv", index=False)   
+print("Done.")
 
 # Apply the padding function to each group and concatenate them
 print("Padding and repeating... ", end="", flush=True)
-padded_df = pd.concat([process_and_pad_groups(group, max_length, minimum_length) 
+padded_df = pd.concat([process_and_pad_groups(group, max_length, minimum_length, filename_to_id) 
                                for _, group in tqdm(df.groupby('Filename'))], ignore_index=True)
-print("DONE.")
+print("Done.")
 
 #write it out to n_files different files.
 if(args.splits == 1):
     print("Writing to file... ", end="", flush=True)
     padded_df.to_csv(args.output_data_path)
-    print("DONE.")
+    print("Done.")
 
 else:
-    print("Writing to files... ", end="", flush=True)
-    df_og = padded_df.copy()
-    padded_df.drop(columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir", "Cntxt_sz"], inplace = True)
+    print("Writing to files... ", end="\n", flush=True)
+    print("Scaling data... ", end="", flush=True)
+    padded_df.drop(columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir"], inplace = True)
+    columns_to_not_scale = ["file_id", "cntxt_sz"]
+    columns_to_scale = [col for col in padded_df.columns if col not in columns_to_not_scale]
+
     scaler = StandardScaler()
-    padded_df = pd.DataFrame(scaler.fit_transform(padded_df), columns = padded_df.columns)
+    scaler.set_output(transform="pandas")
+    padded_df[columns_to_scale] = pd.DataFrame(scaler.fit_transform(padded_df[columns_to_scale]), columns = padded_df.columns)
 
-    padded_df["Filename"] = df_og["Filename"]
-    padded_df["Cntxt_sz"] = df_og["Cntxt_sz"]
-
-    df_og = None    
     #store the parameters of the scaler somewhere (mean, variances) so that can recover dataset.
     joblib.dump(scaler, args.output_data_path + "_scaler.pkl")
+    print("Done. Scaler saved to ", args.output_data_path + "_scaler.pkl")
 
     #write padded_df to args.splits different files, each with a different subset of the rows. Also, make sure 
     #that it has rows in the multiple of max_length irrespective of the number of splits.
+    print("Writing to splits= ", args.splits, " files...")
     padded_df = padded_df.reset_index(drop = True)
     num_data_points = int(len(padded_df)/max_length)
     num_data_points_per_split = num_data_points//args.splits
-    for i in range(args.splits - 1):
+    for i in tqdm(range(args.splits - 1)):
         temp_df = padded_df.iloc[i*(num_data_points_per_split)*max_length:(i+1)*(num_data_points_per_split)*max_length].reset_index(drop=True)
         
         if args.use_feather:
@@ -168,4 +184,4 @@ else:
     mapping_df.to_csv(args.output_data_path + "_mapping.csv")
     
     
-    print("DONE.")    
+    print("Done.")    
