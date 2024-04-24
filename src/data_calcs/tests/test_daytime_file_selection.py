@@ -64,14 +64,20 @@ class DaytimeTimeSelectionTester(unittest.TestCase):
     def test_sunset_time(self):
         
         the_date = datetime(2022, 2, 5).date()
-        sunset = self.selector.sunset_time(the_date, round_to_minute=True)
+        sunrise, sunset = self.selector.sunrise_sunset_times(
+            the_date, round_to_minute=True)
 
-        expected = datetime(2022, 2, 5, 
-                            hour=18, minute=38, 
-                            tzinfo=self.tzinfo
-                            )
-                                                     
-        self.assertEqual(sunset, expected)
+        expected_sunrise = datetime(2022, 2, 5, 
+                                    hour=8, minute=9, 
+                                    tzinfo=self.tzinfo
+                                    )
+        expected_sunset = datetime(2022, 2, 5, 
+                                   hour=18, minute=38, 
+                                   tzinfo=self.tzinfo
+                                   )
+
+        self.assertEqual(sunrise, expected_sunrise)
+        self.assertEqual(sunset, expected_sunset)
 
     #------------------------------------
     # test_open_file

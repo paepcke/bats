@@ -90,8 +90,9 @@ class DaytimeFileSelector:
                 try:
                     fname = row[file_col_idx]
                     recording_time = self.time_from_fname(fname)
-                    sunset = self.sunset_time(recording_time, round_to_minute=True)
-                    if recording_time <= sunset:
+                    sunrise, sunset = self.sunrise_sunset_times(
+                        recording_time, round_to_minute=True)
+                    if sunrise <= recording_time <= sunset:
                         out_fd.write(row)
                 except IndexError:
                     raise ValueError(f"Row number {file_col_idx} not found in row {row}")
@@ -146,22 +147,23 @@ class DaytimeFileSelector:
             return(DataFrameRows(df), None)
 
     #------------------------------------
-    # sunset_time
+    # sunrise_sunset_times
     #-------------------
     
-    def sunset_time(self, date, round_to_minute=True):
+    def sunrise_sunset_times(self, date, round_to_minute=True):
         '''
-        Given a date return the time of
-        sunset at the Jasper Ridge Preserve.
-        All computations are in Pacific Daylight
-        Time (PDT).
+        Given a date return the times of sunrise and sunset 
+        at the Jasper Ridge Preserve. All computations are 
+        in Pacific Daylight Time (PDT).
          
         :param date: date whose sunset is to be computed
         :type date: datetime
         :param round_to_minute: round to the nearest minute
         :type round_to_minute: bool
-        :return the (possibly rounded) sunset time at Jasper Ridge,
-            Stanford University at the given data and time.
+        :return the (possibly rounded) sunrise and sunset times
+            at Jasper Ridge, Stanford University at the given data 
+            and time.
+        :rtype (datetime, datetime)
         '''
         sun_info = sun.sun(self.jr_loc.observer, date=date, tzinfo=self.timezone)
         sunset = sun_info["sunset"]
@@ -171,7 +173,16 @@ class DaytimeFileSelector:
             final_sunset = Utils.round_time(sunset, roundTo=60)
         else:
             final_sunset = sunset
-        return final_sunset
+            
+        sunrise = sun_info["sunrise"]
+        
+        if round_to_minute:
+            # Round to nearest minute:
+            final_sunrise = Utils.round_time(sunrise, roundTo=60)
+        else:
+            final_sunrise = sunrise
+            
+        return (final_sunrise, final_sunset)
     
     #------------------------------------
     # time_from_fname
