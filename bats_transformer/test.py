@@ -14,6 +14,7 @@ from itertools import chain
 from data.bats_dataset import *
 from pytorch_lightning.callbacks import LearningRateMonitor
 
+from itertools import chain
 from utils import *
 
 parser = ArgumentParser()
@@ -25,7 +26,7 @@ preprocess.add_cli(parser)
 parser.add_argument("--model_path", type=str, default = None)
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 parser.add_argument("--log_file", type=str, required=True)
-
+parser.add_argument("--telegram_updates", action="store_true")
 
 config = parser.parse_args()
 print(f"Batch size: {config.batch_size}")
@@ -41,6 +42,7 @@ data_module = stf.data.DataModule(
         "root_path": args.input_data_path,
         "prefix": "split",
         "ignore_cols": ignore_cols,
+        "metadata_cols": ["file_id", "cntxt_sz"],
         "time_col_name": "TimeIndex",
         "val_split": 0.05,
         "test_split": 0.05,
@@ -64,10 +66,38 @@ config.null_value = None
 config.pad_value = None
 
 model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(max_seq_len = 54).load_from_checkpoint(checkpoint_path=args.model_path)
-
 model.set_null_value(config.null_value);
 
-#how to get Filename, Cntxt_sz here?
-for batch in data_module.train_dataloader(): 
-    data, meta_data = batch
-    print(meta_data)
+#how to move model to gpu?
+if(len(args.gpus)):
+    model = model.to(torch.device(f"cuda:{args.gpus[0]}"))
+
+dummy_dataset = data_module.train_dataloader().dataset
+time_cols = [dummy_dataset.time_col_name]
+target_cols = dummy_dataset.target_cols
+metadata_cols = dummy_dataset.metadata_cols
+
+predictions = pd.DataFrame(columns = (time_cols + target_cols + metadata_cols))
+
+for batch in tqdm.tqdm(chain(
+                data_module.train_dataloader(),
+                data_module.val_dataloader(), 
+                data_module.test_dataloader()
+            )):
+    
+    x_c_batch, y_c_batch, x_t_batch, y_t_batch, metadata = batch
+    y_hat_t = spacetimeformer_predict(model, x_c_batch, y_c_batch, x_t_batch)
+
+    predictions = pd.concat([predictions, 
+                             pd.DataFrame(
+                                 np.squeeze(np.concatenate((x_t_batch.numpy(), y_hat_t.numpy(), metadata.numpy()), axis=2)), 
+                                 columns = (time_cols + target_cols + metadata_cols)
+                            )
+                            ], ignore_index=True)
+
+predictions["model_id"] = args.model_path    
+predictions.to_csv(args.log_file)
+
+#ping on telegram after training is done
+if(args.telegram_updates):
+    send_telegram_message("inference for {} is done".format(args.model_path))

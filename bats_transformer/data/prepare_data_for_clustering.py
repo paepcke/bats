@@ -6,6 +6,7 @@ import joblib
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
 import os
+from itertools import chain
 
 minimum_length = 5
 ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "FBak20dB", "LowFreq", "Bndw20dB", 
@@ -63,24 +64,29 @@ print("DONE.")
 df["file_length"] = df.groupby("Filename")["Filename"].transform("size")
 df = df[df["file_length"] > minimum_length]
 
-
+def replicate_columns(columns, length):
+    return list(chain.from_iterable([f"{col}_{i}" for col in list(columns)] for i in range(length)))
 
 for file_length, df_ in df.groupby("file_length"):
     
-    arr = None
+    final_df = None
+    print("Doing for file len", file_length)
     for _, df2 in df_.groupby("Filename"):
-        temp_arr = np.array(df2.drop(columns = ignore_cols + ['TimeInFile', 'PrecedingIntrvl'], errors='ignore'))
-        #print(df2.drop(columns = ignore_cols, errors = 'ignore').columns)
+        df3 = df2.drop(columns = ignore_cols + ['TimeInFile', 'PrecedingIntrvl'], errors = 'ignore').reset_index(drop = True)
+        temp_arr = np.array(df3)
         temp_arr = temp_arr.reshape(1, -1)
-        if arr is None:
-            arr = temp_arr
+        
+        if(final_df is None):
+            final_df = pd.DataFrame(temp_arr, columns = replicate_columns(df3.columns, file_length))
         else:
-            arr = np.concatenate((arr, temp_arr), axis = 0)
-    
+            final_df = pd.concat([final_df, pd.DataFrame(temp_arr, columns = replicate_columns(df3.columns, file_length))], axis = 0)
+        
     #save arr to a csv file
     scaler = StandardScaler()
-    arr = scaler.fit_transform(arr)
-    pd.DataFrame(arr).to_csv(os.path.join(args.output_data_path, f"{file_length}.csv"), index = False)
+    scaler.set_output(transform='pandas')
+    final_df = scaler.fit_transform(final_df)
+    final_df.to_csv(os.path.join(args.output_data_path, f"{file_length}.csv"), index = False)
+    
 
         
 

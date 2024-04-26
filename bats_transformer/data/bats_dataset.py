@@ -154,45 +154,9 @@ class BatsCSVDataset(Dataset):
         ctxt_y = ctxt_slice[self.target_cols]
         trgt_y = trgt_slice[self.target_cols]
 
-        #print(ctxt_x.shape, ctxt_y.shape, trgt_x.shape, trgt_y.shape, file_idx, filename, chirp_idx)
         return self._torch(ctxt_x, ctxt_y, trgt_x, trgt_y)
 
     
-    def getitem_custom(self, idx):
-        if self.split == "val":
-            idx += self.train_chirps
-        elif self.split == "test":
-            idx += self.train_chirps + self.val_chirps
-        
-        #get the file index from mapping_df
-        file_idx = self.mapping_df[self.mapping_df["cumulative_count"] <= idx].index[-1]
-        chirp_idx = idx - self.mapping_df.iloc[file_idx]["cumulative_count"]
-        chirp_idx *= self.seq_length
-
-        filename = self.mapping_df.iloc[file_idx]["Filename"]
-        df = pd.read_feather(os.path.join(self.root_path, filename.split("/")[-1]))
-
-        if self.ignore_cols:
-            df.drop(columns=self.ignore_cols, inplace=True, errors = 'ignore')
-        
-        series_slice = df.reset_index(drop=True).iloc[chirp_idx:chirp_idx + self.context_points + self.target_points]
-        assert(len(series_slice) == self.context_points + self.target_points), f"{idx}, {file_idx}, {chirp_idx}, {filename}, {len(series_slice)}, {self.context_points + self.target_points}"
-        #print(self.time_col_name, self.context_points, series_slice)
-        ctxt_slice, trgt_slice = (
-            series_slice.iloc[: self.context_points],
-            series_slice.iloc[self.context_points :]
-        )
-
-        ctxt_x = ctxt_slice[self.time_col_name]
-        trgt_x = trgt_slice[self.time_col_name]
-
-        ctxt_y = ctxt_slice[self.target_cols]
-        trgt_y = trgt_slice[self.target_cols]
-        
-        metadata_cols = df.iloc[self.metadata_cols]
-        #print(ctxt_x.shape, ctxt_y.shape, trgt_x.shape, trgt_y.shape, file_idx, filename, chirp_idx)
-        return self._torch(ctxt_x, ctxt_y, trgt_x, trgt_y), metadata_cols
-
     
 
 
@@ -202,6 +166,7 @@ class BatsCSVDatasetWithMetadata(Dataset):
                  prefix = 'split',
                  ignore_cols = [],
                  target_cols = [],
+                 metadata_cols = [],
                  time_col_name = "TimeIndex",
                  val_split = 0.1, 
                  test_split = 0.1, 
@@ -211,7 +176,9 @@ class BatsCSVDatasetWithMetadata(Dataset):
     ):
         assert root_path is not None
         assert prefix is not None
-
+        assert len(metadata_cols) > 0, ("If you do not have any metadata to keep track of,"+
+                                        "just use BatsCSVDataset instead")
+        
         self.root_path = root_path
         self.prefix = prefix
         
@@ -239,7 +206,7 @@ class BatsCSVDatasetWithMetadata(Dataset):
         self.context_points = context_points
         self.target_points = target_points
         self.split = split
-        self.metadata_cols = ["CallsPerSec"]
+        self.metadata_cols = metadata_cols
 
         self.val_split = val_split
         self.test_split = test_split
@@ -268,7 +235,16 @@ class BatsCSVDatasetWithMetadata(Dataset):
             for col in ignore_cols:
                 if col in target_cols:
                     target_cols.remove(col)
-        
+            
+            for col in metadata_cols:
+                if col in target_cols:
+                    target_cols.remove(col)
+
+        #assert that target_cols and metadata_cols have no entries in common
+        assert len(set(target_cols).intersection(set(metadata_cols))) == 0
+        assert len(set(target_cols).intersection(set(ignore_cols))) == 0
+        assert len(set(metadata_cols).intersection(set(ignore_cols))) == 0
+
         self.target_cols = target_cols
         self.split = split
 
@@ -319,8 +295,7 @@ class BatsCSVDatasetWithMetadata(Dataset):
         df = pd.read_feather(os.path.join(self.root_path, filename.split("/")[-1]))
 
         if self.ignore_cols:
-            pass
-            #df.drop(columns=self.ignore_cols, inplace=True, errors = 'ignore')
+            df.drop(columns=self.ignore_cols, inplace=True, errors = 'ignore')
         
         series_slice = df.reset_index(drop=True).iloc[chirp_idx:chirp_idx + self.context_points + self.target_points]
         assert(len(series_slice) == self.context_points + self.target_points), f"{idx}, {file_idx}, {chirp_idx}, {filename}, {len(series_slice)}, {self.context_points + self.target_points}"
@@ -337,9 +312,9 @@ class BatsCSVDatasetWithMetadata(Dataset):
         trgt_y = trgt_slice[self.target_cols]
         
         
-        metadata = df.iloc[chirp_idx][self.metadata_cols]
+        metadata = trgt_slice[self.metadata_cols]
         #print(ctxt_x.shape, ctxt_y.shape, trgt_x.shape, trgt_y.shape, file_idx, filename, chirp_idx)
-        return self._torch(ctxt_x, ctxt_y, trgt_x, trgt_y), list(self._torch(metadata))
+        return self._torch(ctxt_x, ctxt_y, trgt_x, trgt_y, metadata)
 
     
 
