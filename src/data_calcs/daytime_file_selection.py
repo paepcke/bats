@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 '''
 Created on Apr 20, 2024
 
@@ -17,14 +18,47 @@ import sys
 
 class DaytimeFileSelector:
     '''
-    classdocs
+    Given a SonoBat classification output file, and 
+    the column name where SonoBat names the input .wav
+    file, copy to a destination only measures from recordings 
+    that occurred during daytime at the Jasper Ridge preserve.
+    
+    The class computes the  sunset and sunrise for each 
+    recording day. SonoBat's .wav file names are stored
+    in its classification measures output table. Those names
+    contain their recording dates. Those dates are extracted,
+    and checked to be between sunrise and sunset of the
+    recording day at the Preserve.
+    
+    Given an output file, copies the rows of those classification
+    measurement rows to that destination, if the calls logged
+    in the row occurred during daytime.
+    
+    Also provided is a method is_daytime_recording(fname) that
+    extract time and day from a file name, and returns True/False
+    depending on whether the recording was during daylight hours.
+    
+    Example one-shot daytime determination:
+    
+        selector = DaytimeFileSelector()
+        if selector.is_daytime_recording('/foo/bar/barn1_D20220205T192049m784-HiF.wav'):
+            print('Daytime')
+        else:
+            print('Nighttime')
+            
+    Example copy rows from daytime recordings to a destination file:
+    
+        selector = DaytimeFileSelector()
+        selector.daytime_recordings('/tmp/myrecordings.csv',
+                                    '/tmp/only_daytime_recordings.csv, 
+                                    'Filename')
     '''
 
     #------------------------------------
     # Constructor
     #-------------------
 
-    def __init__(self, *dirs):
+    def __init__(self):
         '''
         Constructor
         '''
@@ -44,6 +78,33 @@ class DaytimeFileSelector:
              f"{self.lon}"),
             self.geo_db)
         self.jr_loc = geocoder.lookup('Jasper Ridge Biological Preserve', self.geo_db)
+
+    #------------------------------------
+    # is_daytime_recording
+    #-------------------
+    
+    def is_daytime_recording(self, fname):
+        '''
+        Return True if the recording time that is encoded in
+        fname is between sunrise and sunset at the Stanford Jasper
+        Ridge Preserve. Filenames are expected to be of the form
+        
+             barn1_D20220205T192049m784-HiF.wav
+          
+        :param fname: file name from which to obtain recording
+            date and time.
+        :type fname: str
+        :return True if recording time is during daylight hours, else False
+        :rtype bool
+        :raise ValueError if given filename does not encode date and time
+        '''
+        # Extract a datetime from the fname:
+        recording_time = self.time_from_fname(fname)
+        sunrise, sunset = self.sunrise_sunset_times(
+            recording_time, round_to_minute=True)
+        if sunrise <= recording_time <= sunset:
+            return True 
+        return False
 
     #------------------------------------
     # daytime_recordings
@@ -89,10 +150,7 @@ class DaytimeFileSelector:
             for row in reader:
                 try:
                     fname = row[file_col_idx]
-                    recording_time = self.time_from_fname(fname)
-                    sunrise, sunset = self.sunrise_sunset_times(
-                        recording_time, round_to_minute=True)
-                    if sunrise <= recording_time <= sunset:
+                    if self.is_daytime_recording(fname):
                         out_fd.write(row)
                 except IndexError:
                     raise ValueError(f"Row number {file_col_idx} not found in row {row}")
@@ -200,6 +258,7 @@ class DaytimeFileSelector:
         :type fname_win_or_posix: str
         :return: extracted data and time
         :rtype: datetime
+        :raise ValueError if given filename does not encode date and time
         '''
         
         # Path library does not work with Windows
@@ -210,7 +269,7 @@ class DaytimeFileSelector:
         name_no_ext = path.stem
         pat = re.compile(r'^[^_]*_.([\d]{8})T([\d]{6})m[\d]{3}')
         if (match := pat.match(name_no_ext)) is None:
-            raise ValueError(f"File name {name_no_ext} does not have date/time")
+            raise ValueError(f"File name {name_no_ext} does not encode date/time")
         the_date, the_time = match.groups()
         yr = int(the_date[:4])
         mo = int(the_date[4:6])
@@ -273,8 +332,5 @@ class DataFrameRows:
         # Turn the data pd.Series into a list,
         # as would be true for csv readers:
         return list(data)
-    
-    
-    
-            
+
     

@@ -3,7 +3,7 @@ Created on Apr 20, 2024
 
 @author: paepcke
 '''
-from _datetime import datetime, timezone, timedelta
+from _datetime import datetime #timezone, timedelta
 from data_calcs.daytime_file_selection import DaytimeFileSelector
 from pyarrow import feather
 import csv
@@ -135,6 +135,24 @@ class DaytimeTimeSelectionTester(unittest.TestCase):
         # The 22:30:49 file should have been filtered out:
         self.assertListEqual(content[2], self.csv_expected[3])
         
+    #------------------------------------
+    # test_is_daytime_recording 
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_is_daytime_recording(self):
+        
+        fname = '/foo/bar/barn1_D20220205T222049m784-HiF.wav'
+        decision = self.selector.is_daytime_recording(fname)
+        self.assertFalse(decision)
+        
+        fname = 'barn1_D20220205T152049m784-HiF.csv'
+        decision = self.selector.is_daytime_recording(fname)
+        self.assertTrue(decision)
+        
+        with self.assertRaises(ValueError):
+            self.selector.is_daytime_recording('33')
+            
 # ------------------------ Utilities ------------
 
     #------------------------------------
