@@ -10,6 +10,9 @@ from pytorch_lightning.loggers import WandbLogger
 from data import preprocess
 import time
 import tqdm
+from itertools import chain
+from data.bats_dataset import BatsCSVDataset
+from pytorch_lightning.callbacks import LearningRateMonitor
 
 from utils import *
 
@@ -39,54 +42,49 @@ parser.add_argument("--originals_path", type=str, default="/home/vdesai/bats_dat
 parser.add_argument("--mse_log_path", type=str, default="/home/vdesai/bats_data/mse_log.csv")
 parser.add_argument("--pca_components", type=int, default=0)
 parser.add_argument("--construct_full_output", action ="store_true");
+parser.add_argument("--checkpoint_val_loss", action = 'store_true');
+parser.add_argument("--telegram_updates", action="store_true")
 
 #take a list of string as input from cli
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 
+
+
 config = parser.parse_args()
+print(f"Batch size: {config.batch_size}")
 args = config
 ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir"] + config.ignore_cols
-#take this as input from cli
 
-#reading dataframe
-df, max_seq_len = preprocess.preprocess(config)
-bats_time_series = stf.data.CSVTimeSeries(
-                        raw_df = df,
-                        time_col_name = "TimeIndex",
-                        time_features = ["hour", "minute", "seconds"],
-                        ignore_cols = ignore_cols,
-                        val_split = 0.1,
-                        test_split = 0.1
-                    )
-# create a dataloader with the bats_time_series object
-bats_dataset = stf.data.CSVTorchDset(
-                    csv_time_series = bats_time_series,
-                    split = "train",
-                    context_points = max_seq_len - 2,
-                    target_points = 2, 
-                    time_resolution = 1
-                )
 
 wandb_logger = WandbLogger(name=f"{args.run_name}", save_dir="/home/vdesai/bats_data/logs/") if args.wandb else None
-x_dim = bats_time_series.time_cols.size
-yc_dim = len(bats_time_series.target_cols)
-yt_dim = len(bats_time_series.target_cols)
 
-print(f"{x_dim = }, {yc_dim = }, {yt_dim = }")
 
 data_module = stf.data.DataModule(
-    datasetCls = stf.data.CSVTorchDset,
+    datasetCls = BatsCSVDataset,
     dataset_kwargs = {
-        "csv_time_series": bats_time_series,
-        "context_points": max_seq_len - 2,
-        "target_points": 2,
-        "time_resolution": 1,
+        "root_path": args.input_data_path,
+        "prefix": "split",
+        "ignore_cols": ignore_cols,
+        "time_col_name": "TimeIndex",
+        "val_split": 0.05,
+        "test_split": 0.05,
+        "context_points": None,
+        "target_points": 1,
     },
+    #get output of subprocess in a variable
     batch_size = config.batch_size,
     workers = config.workers,
     overfit = args.overfit
 )
 
+
+x_dim = 1
+yc_dim = len(data_module.train_dataloader().dataset.target_cols)
+yt_dim = yc_dim
+
+max_seq_len = data_module.train_dataloader().dataset.seq_length
+
+print(f"{x_dim = }, {yc_dim = }, {yt_dim = }")
 # Example DataLoader check
 train_loader = data_module.train_dataloader()
 val_loader = data_module.val_dataloader()
@@ -100,9 +98,7 @@ assert len(train_loader.dataset) > 0, "Training dataset is empty"
 assert len(val_loader.dataset) > 0, "Validation dataset is empty"
 assert len(test_loader.dataset) > 0, "Test dataset is empty"
 
-
-scaler = bats_time_series.apply_scaling
-inverse_scaler = bats_time_series.reverse_scaling
+print("Length of splits", len(train_loader.dataset), len(val_loader.dataset), len(test_loader.dataset))
 config.null_value = None
 config.pad_value = None
 seed = args.random_seed
@@ -110,6 +106,9 @@ max_epochs = args.max_epochs
 
 pl.seed_everything(seed)
 # initialize the spacetimeformer model
+print("Initializing model... ", flush = True)
+t = time.time()
+
 model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             d_x=x_dim,
             d_yc=yc_dim,
@@ -169,14 +168,27 @@ model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             recon_mask_drop_standard=config.recon_mask_drop_standard,
             recon_mask_drop_full=config.recon_mask_drop_full,
         )
+print("Done.[Time taken: {}]".format(time.time() - t))
 
-model.set_inv_scaler(inverse_scaler);
-model.set_scaler(scaler);
 model.set_null_value(config.null_value);
+print("Initializing trainer.. ", flush = True)
+t = time.time()
 
+callbacks = None
+
+if(args.checkpoint_val_loss):
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+        monitor='val_loss',
+        dirpath='/home/vdesai/bats_data/models/',
+        filename=args.run_name + '-{epoch:02d}-{val_loss:.2f}-{train_loss:.2f}',
+        save_top_k=-1,
+    )
+
+    callbacks = [checkpoint_callback]
+
+print("Callbacks: ", callbacks)
 trainer = pl.Trainer(
         gpus=args.gpus,
-        #callbacks=callbacks,
         logger=wandb_logger if args.wandb else None,
         accelerator="dp",
         gradient_clip_val=args.grad_clip_norm,
@@ -185,8 +197,11 @@ trainer = pl.Trainer(
         accumulate_grad_batches=args.accumulate,
         sync_batchnorm=True,
         limit_val_batches=args.limit_val_batches,
-        max_epochs=max_epochs
+        max_epochs=max_epochs,
+        callbacks = callbacks
 )
+
+print("Done. [Time taken: {}]".format(time.time() - t))
 
 start = time.time()
 trainer.fit(model, datamodule=data_module)
@@ -204,39 +219,10 @@ with open(args.log_file, "a") as f:
 
 
 # Saving model checkpoint
-model_path = f"/home/vdesai/bats_data/models/{args.run_name}.ckpt"
+model_path = f"/home/vdesai/bats_data/transformer/models/{args.run_name}.ckpt"
 trainer.save_checkpoint(model_path)
 print(model.device)
-batch_size = 128
-error = None
-for batch in tqdm.tqdm(data_module.train_dataloader()): 
-    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch
-    error_ = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
-    error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
 
-for batch in tqdm.tqdm(data_module.val_dataloader()): 
-    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch
-    error_ = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
-    error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
-
-for batch in tqdm.tqdm(data_module.test_dataloader()): 
-    x_c_batch, y_c_batch, x_t_batch, y_t_batch = batch
-    error_ = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
-    error = error_.numpy() if error is None else np.concatenate((error, error_.numpy()), axis=0)
-
-error = error[:, ~np.isnan(error).any(axis=0)]
-error = np.mean(error, axis = 0)
-
-print(f"Min: {np.min(error)}")
-print(f"25th percentile: {np.percentile(error, 25)}")
-print(f"50th percentile: {np.percentile(error, 50)}")
-print(f"75th percentile: {np.percentile(error, 75)}")
-print(f"Max: {np.max(error)}")
-print(f"Mean: {np.mean(error)}")
-
-print(f"25th percentile: {np.percentile(error, 25)}", file=open(args.log_file, "a"))
-print(f"50th percentile: {np.percentile(error, 50)}", file=open(args.log_file, "a"))
-print(f"75th percentile: {np.percentile(error, 75)}", file=open(args.log_file, "a"))
-print(f"Min: {np.min(error)}", file=open(args.log_file, "a"))
-print(f"Max: {np.max(error)}", file=open(args.log_file, "a"))
-print(f"Mean: {np.mean(error)}", file=open(args.log_file, "a"))
+#ping on telegram after training is done
+if(args.telegram_updates):
+    send_telegram_message("training for {} is done".format(args.run_name))
