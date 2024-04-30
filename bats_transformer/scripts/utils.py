@@ -75,7 +75,7 @@ def run_test_py(model_path,
                 gpus = None, 
                 additional_flags = None):
     if data_path is None:
-        data_path = "/home/vdesai/bats_data/training_files/splits_feather"
+        data_path = "/home/vdesai/bats_data/inference_files/measures/"
     
     if not gpus:
         gpus = 0

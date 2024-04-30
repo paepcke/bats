@@ -3,20 +3,29 @@ import pandas as pd
 import numpy as np
 import glob
 import joblib
+from joblib import Parallel, delayed
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
+import os
+import gc
 
 minimum_length = 5
 
 '''
-Add the command line interface arguments to specify the input data path, output data path, and the
-number of splits.
+Add the command line interface arguments to specify the input data path, 
+output data path, and the number of splits.
 '''
 def add_cli(parser):
-    parser.add_argument('-i', '--input_data_path', type=str, default='/qnap/bats/jasperridge/barn1/grouped_audio', help='input file')
-    parser.add_argument('-o', '--output_data_path', type=str, default='./data.csv', help='output file')
+    parser.add_argument('-i', '--input_data_path', type=str, 
+                        default='/qnap/bats/jasperridge/barn1/grouped_audio', 
+                        help='input file')
+    
+    parser.add_argument('-o', '--output_data_path', type=str, 
+                        default='./data.csv', help='output file')
+    
     parser.add_argument('-s', '--splits', type = int, default = 1)
-    parser.add_argument('-f', '--use_feather', action='store_true', help='use feather format')
+    parser.add_argument('-f', '--use_feather', action='store_true', 
+                        help='use feather format')
     parser.add_argument('-m', '--minimum_length', type = int, default = 5)
     return parser
 
@@ -50,21 +59,31 @@ def pad_group(group, max_length):
 
     return pd.concat([padding_df, group], ignore_index=True)
 
+# Define a helper function for processing each group
+def process_group(group):
+    padded_df_tmp, truth_values_tmp = process_and_pad_groups(group, max_length, minimum_length)
+    return padded_df_tmp, truth_values_tmp
+
 '''
 Takes in a particular group, and then keeps on popping the last row from it untill
 it reaches the minimum length. Then, it takes all of these groups, and appends
 null entries to the begining so that all of them are of the same length, 
 ie max_length.
 '''
-def process_and_pad_groups(group, max_length, min_length, filename_to_id):
+def process_and_pad_groups(group, max_length, min_length):
     groups = []  # To hold the modified groups
     current_group = group.copy()
-    
+    truth_values = None
+
     # Keep removing the last row and adding to groups until reaching min_length
     while len(current_group) >= min_length:
         groups.append(current_group.copy())
         current_group = current_group[:-1]  # Remove the last row
     
+    truth_values = group.copy()
+    truth_values["cntxt_sz"] = range(len(truth_values))
+    truth_values["TimeIndex"] = max_length - 1
+
     padded_groups = []
     for grp in groups:
         pad_length = max_length - len(grp)
@@ -72,8 +91,6 @@ def process_and_pad_groups(group, max_length, min_length, filename_to_id):
 
         filename = grp.iloc[0]["Filename"]  # Assuming 'Filename' is a column in the DataFrame
         file_id = grp.iloc[0]["file_id"]
-        
-
         grp["cntxt_sz"] = len(grp) - 1
 
         padding_df = pd.DataFrame(0, index=np.arange(pad_length), columns=grp.columns)
@@ -86,10 +103,12 @@ def process_and_pad_groups(group, max_length, min_length, filename_to_id):
         padded_group = pd.concat([padding_df, grp], ignore_index=True)
         padded_group["TimeIndex"] = range(len(padded_group))
         padded_groups.append(padded_group)
+
     
     # Concatenate all padded groups into a single DataFrame
     final_df = pd.concat(padded_groups, ignore_index=True)
-    return final_df
+    
+    return final_df, truth_values
 
 
 
@@ -129,37 +148,86 @@ filename_to_id = df.groupby("Filename")["file_id"].first().reset_index()
 filename_to_id.to_csv(args.output_data_path + "_filename_to_id.csv", index=False)   
 print("Done.")
 
-# Apply the padding function to each group and concatenate them
+
+# Parallelize processing using joblib and tqdm for progress tracking
 print("Padding and repeating... ", end="", flush=True)
-padded_df = pd.concat([process_and_pad_groups(group, max_length, minimum_length, filename_to_id) 
-                               for _, group in tqdm(df.groupby('Filename'))], ignore_index=True)
+
+# Define the number of parallel jobs (e.g., the number of CPU cores)
+num_jobs = -1  # -1 means use all available cores
+
+# Apply parallel processing to each group
+results = Parallel(n_jobs=num_jobs)(delayed(process_group)(group) for _, group in tqdm(df.groupby("Filename")))
+
+# Separate the results into individual lists for concatenation
+padded_df_list = [result[0] for result in results]
+truth_values_list = [result[1] for result in results]
+
+# Concatenate the results
+padded_df = pd.concat(padded_df_list, ignore_index=True)
+truth_values = pd.concat(truth_values_list, ignore_index=True)
+
+del padded_df_list
+del truth_values_list
+del results
+del filename_to_id
+
+gc.collect()
 print("Done.")
+
+
 
 #write it out to n_files different files.
 if(args.splits == 1):
     print("Writing to file... ", end="", flush=True)
     padded_df.to_csv(args.output_data_path)
+    #write out truth values to a file
+    truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
     print("Done.")
 
 else:
+    print("Saving truth.csv temporarily...", end="", flush=True)
+    truth_values.drop(columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir"], inplace = True)
+    truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
+    del truth_values
+    gc.collect()
+    print("Done.")
+    
+
     print("Writing to files... ", end="\n", flush=True)
     print("Scaling data... ", end="", flush=True)
-    padded_df.drop(columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir"], inplace = True)
+    print("Dropping Columns... ", end="", flush=True)    
+    padded_df.drop(
+        columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 
+                 'Preemphasis', 'MaxSegLnght', "ParentDir"], 
+        inplace = True
+    )
+    print("Done.")
+
     columns_to_not_scale = ["file_id", "cntxt_sz"]
     columns_to_scale = [col for col in padded_df.columns if col not in columns_to_not_scale]
 
     scaler = StandardScaler()
     scaler.set_output(transform="pandas")
-    padded_df[columns_to_scale] = pd.DataFrame(scaler.fit_transform(padded_df[columns_to_scale]), columns = padded_df.columns)
+    
+    chunk_size = 100000
+    for i in tqdm(range(0, len(padded_df), chunk_size)):
+        chunk = padded_df.loc[i:i+chunk_size,:]
+        scaler.partial_fit(chunk[columns_to_scale])
+    
+    for i in tqdm(range(0, len(padded_df), chunk_size)):
+        padded_df.loc[i:i+chunk_size, columns_to_scale] = scaler.transform(padded_df.loc[i:i+chunk_size, columns_to_scale])
+    
 
-    #store the parameters of the scaler somewhere (mean, variances) so that can recover dataset.
+    #storing off the scaler
     joblib.dump(scaler, args.output_data_path + "_scaler.pkl")
     print("Done. Scaler saved to ", args.output_data_path + "_scaler.pkl")
 
-    #write padded_df to args.splits different files, each with a different subset of the rows. Also, make sure 
-    #that it has rows in the multiple of max_length irrespective of the number of splits.
+    #writing to splits
     print("Writing to splits= ", args.splits, " files...")
+    print("Reseting index...")
     padded_df = padded_df.reset_index(drop = True)
+    print("Done.")
+
     num_data_points = int(len(padded_df)/max_length)
     num_data_points_per_split = num_data_points//args.splits
     for i in tqdm(range(args.splits - 1)):
@@ -176,12 +244,19 @@ else:
     mapping_df = pd.DataFrame()
 
     if args.use_feather:
-        mapping_df["Filename"] = [args.output_data_path + str(i) + ".feather" for i in range(args.splits - 1)]
+        mapping_df["Filename"] = [os.path.abspath(args.output_data_path + str(i) + ".feather") for i in range(args.splits - 1)]
     else:
-        mapping_df["Filename"] = [args.output_data_path + str(i) + ".csv" for i in range(args.splits - 1)]
+        mapping_df["Filename"] = [os.path.abspath(args.output_data_path + str(i) + ".csv") for i in range(args.splits - 1)]
     
     mapping_df["count"] = [num_data_points_per_split * max_length for i in range(args.splits - 1)]
     mapping_df.to_csv(args.output_data_path + "_mapping.csv")
     
-    
+    del padded_df
+    gc.collect()
+    print("Done.")
+
+    print("Scaling truth values... ", end="", flush=True)    
+    truth_values = pd.read_csv(args.output_data_path + "_truth_values.csv")
+    truth_values[columns_to_scale] = scaler.transform(truth_values[columns_to_scale])
+    truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
     print("Done.")    

@@ -1,4 +1,6 @@
 from utils import run_test_py
+import os
+import argparse
 
 ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "FBak20dB", "LowFreq", "Bndw20dB", 
                "CallsPerSec", "EndSlope", "SteepestSlope", "StartSlope", "Bndw15dB", "HiFtoUpprKnSlp", "HiFtoKnSlope", 
@@ -12,5 +14,16 @@ ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "
                "HiFminusStartF", "Amp3rdMean", "PreFc500Residue", "Kn-FcCurvinessTrndSlp", "PreFc250Residue", "AmpVariance", "AmpMoment", 
                "meanKn-FcCurviness", "MinAccpQuality", "AmpEndLn60ExpC", "AmpStartLn60ExpC", "Preemphasis", "MaxSegLnght" ,"Max#CallsConsidered" ]
 
-run_test_py(model_path = "/home/vdesai/bats_data/transformer/models/bats_transformer_seed_13.ckpt",
-            ignore_cols = ignore_cols)
+parser = argparse.ArgumentParser()
+parser.add_argument("--model_paths", nargs='+', type=str, default = [])
+parser.add_argument("--ignore_cols", nargs='+', type=str, default = ignore_cols)
+parser.add_argument("--out_dir", type=str, default = "/home/vdesai/bats_data/inference_files/model_outputs")
+parser.add_argument("--gpus", type=str, default = '0')
+
+args = parser.parse_args()
+
+for model_path in args.model_paths:
+    run_test_py(model_path = model_path,
+                log_file = os.path.join(os.path.abspath(args.out_dir), f"{model_path.split('/')[-1]}.log"),
+                ignore_cols = args.ignore_cols,
+                gpus = args.gpus, additional_flags=['--telegram_updates'])
