@@ -10,6 +10,7 @@ import os
 import pandas as pd
 import tempfile
 import unittest
+from data_calcs.universal_fd import UniversalFd
 
 
 TEST_ALL = True
@@ -65,7 +66,7 @@ class PullDaychirpsTester(unittest.TestCase):
             self.assertEqual(Path(dst_path).suffix, '.feather')
             
             # Is the content correct?
-            df = feather.read_feather(dst_path)
+            df = UniversalFd(dst_path, 'r', type_map={'Col1' : int}).asdf
             
             self.assertTrue(df.equals(self.df_expected))
         
