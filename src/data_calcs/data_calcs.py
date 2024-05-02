@@ -9,7 +9,6 @@ import os
 import pandas as pd  # pip install pyarrow
 import re
 import sys
-from _ast import Or
 
 class DataCalcs:
     '''
