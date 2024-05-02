@@ -6,6 +6,7 @@ import joblib
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
+from data_calcs.daytime_file_selection import DaytimeFileSelector
 import os
 import gc
 
@@ -27,14 +28,16 @@ def add_cli(parser):
     parser.add_argument('-f', '--use_feather', action='store_true', 
                         help='use feather format')
     parser.add_argument('-m', '--minimum_length', type = int, default = 5)
+    parser.add_argument('-d', '--daytime', action='store_true')
+    parser.add_argument('--no_dupliation', action='store_true')
     return parser
 
 '''
 Get all the files from a particular root directory
 '''
-def get_files(path):
+def get_files(path, filter_ = (lambda x: True)):
     files = []
-    for file in glob.glob(path + '/**/*Parameters_*.txt', recursive=True):
+    for file in list(filter(filter_, glob.glob(path + '/**/*Parameters_*.txt', recursive=True))):
         files.append(file)
     return files
 
@@ -117,6 +120,12 @@ args = add_cli(argparse.ArgumentParser()).parse_args()
 minimum_length = args.minimum_length
 
 print("Reading files... ", end="", flush=True)
+filter_ = (lambda x: True)
+selector = DaytimeFileSelector()
+
+if(args.daytime):
+    filter_ = lambda s: selector.is_daytime_recording(s)
+
 df = get_df(get_files(args.input_data_path)).sort_values(["Filename", "TimeInFile"])
 print("Done.")
 
@@ -149,29 +158,33 @@ filename_to_id.to_csv(args.output_data_path + "_filename_to_id.csv", index=False
 print("Done.")
 
 
-# Parallelize processing using joblib and tqdm for progress tracking
-print("Padding and repeating... ", end="", flush=True)
+if(args.no_dupliation):
+    df['chirp_index'] = df.groupby('Filename').cumcount()
 
-# Define the number of parallel jobs (e.g., the number of CPU cores)
-num_jobs = -1  # -1 means use all available cores
+else:
+    # Parallelize processing using joblib and tqdm for progress tracking
+    print("Padding and repeating... ", end="", flush=True)
 
-# Apply parallel processing to each group
-results = Parallel(n_jobs=num_jobs)(delayed(process_group)(group) for _, group in tqdm(df.groupby("Filename")))
+    # Define the number of parallel jobs (e.g., the number of CPU cores)
+    num_jobs = -1  # -1 means use all available cores
 
-# Separate the results into individual lists for concatenation
-padded_df_list = [result[0] for result in results]
-truth_values_list = [result[1] for result in results]
+    # Apply parallel processing to each group
+    results = Parallel(n_jobs=num_jobs)(delayed(process_group)(group) for _, group in tqdm(df.groupby("Filename")))
 
-# Concatenate the results
-padded_df = pd.concat(padded_df_list, ignore_index=True)
-truth_values = pd.concat(truth_values_list, ignore_index=True)
+    # Separate the results into individual lists for concatenation
+    padded_df_list = [result[0] for result in results]
+    truth_values_list = [result[1] for result in results]
 
-del padded_df_list
-del truth_values_list
-del results
-del filename_to_id
+    # Concatenate the results
+    padded_df = pd.concat(padded_df_list, ignore_index=True)
+    truth_values = pd.concat(truth_values_list, ignore_index=True)
 
-gc.collect()
+    del padded_df_list
+    del truth_values_list
+    del results
+    del filename_to_id
+
+    gc.collect()
 print("Done.")
 
 
