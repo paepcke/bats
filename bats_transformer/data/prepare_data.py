@@ -29,7 +29,7 @@ def add_cli(parser):
                         help='use feather format')
     parser.add_argument('-m', '--minimum_length', type = int, default = 5)
     parser.add_argument('-d', '--daytime', action='store_true')
-    parser.add_argument('--no_dupliation', action='store_true')
+    parser.add_argument('--no_duplication', action='store_true')
     return parser
 
 '''
@@ -157,9 +157,13 @@ filename_to_id = df.groupby("Filename")["file_id"].first().reset_index()
 filename_to_id.to_csv(args.output_data_path + "_filename_to_id.csv", index=False)   
 print("Done.")
 
+padded_df = None
+truth_value = None
 
-if(args.no_dupliation):
-    df['chirp_index'] = df.groupby('Filename').cumcount()
+if(args.no_duplication):
+    df['chirp_idx'] = df.groupby('Filename').cumcount()
+    padded_df = df
+    padded_df.reset_index(inplace = True)
 
 else:
     # Parallelize processing using joblib and tqdm for progress tracking
@@ -198,37 +202,30 @@ if(args.splits == 1):
     print("Done.")
 
 else:
-    print("Saving truth.csv temporarily...", end="", flush=True)
-    truth_values.drop(columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir"], inplace = True)
-    truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
-    del truth_values
-    gc.collect()
-    print("Done.")
-    
-
     print("Writing to files... ", end="\n", flush=True)
-    print("Scaling data... ", end="", flush=True)
-    print("Dropping Columns... ", end="", flush=True)    
+
+    #takes a LOOOOONG time
     padded_df.drop(
         columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 
                  'Preemphasis', 'MaxSegLnght', "ParentDir"], 
         inplace = True
     )
-    print("Done.")
 
-    columns_to_not_scale = ["file_id", "cntxt_sz"]
+    columns_to_not_scale = ["file_id", "cntxt_sz"] if not args.no_duplication else ["file_id", "chirp_idx"]
     columns_to_scale = [col for col in padded_df.columns if col not in columns_to_not_scale]
 
     scaler = StandardScaler()
     scaler.set_output(transform="pandas")
     
     chunk_size = 100000
+    print(len(padded_df))
     for i in tqdm(range(0, len(padded_df), chunk_size)):
-        chunk = padded_df.loc[i:i+chunk_size,:]
+        print(i, min(len(padded_df), i+chunk_size))
+        chunk = padded_df.loc[i:min(len(padded_df), i+chunk_size),:]
         scaler.partial_fit(chunk[columns_to_scale])
     
     for i in tqdm(range(0, len(padded_df), chunk_size)):
-        padded_df.loc[i:i+chunk_size, columns_to_scale] = scaler.transform(padded_df.loc[i:i+chunk_size, columns_to_scale])
+        padded_df.loc[i:min(len(padded_df), i+chunk_size), columns_to_scale] = scaler.transform(padded_df.loc[i:i+chunk_size, columns_to_scale])
     
 
     #storing off the scaler
@@ -264,12 +261,12 @@ else:
     mapping_df["count"] = [num_data_points_per_split * max_length for i in range(args.splits - 1)]
     mapping_df.to_csv(args.output_data_path + "_mapping.csv")
     
+    #TODO: get rid of these memory management tricks and use a better library instead...
     del padded_df
     gc.collect()
     print("Done.")
-
-    print("Scaling truth values... ", end="", flush=True)    
-    truth_values = pd.read_csv(args.output_data_path + "_truth_values.csv")
-    truth_values[columns_to_scale] = scaler.transform(truth_values[columns_to_scale])
-    truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
-    print("Done.")    
+    if(truth_values is not None):
+        print("Scaling truth values... ", end="", flush=True)    
+        truth_values[columns_to_scale] = scaler.transform(truth_values[columns_to_scale])
+        truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
+        print("Done.")    

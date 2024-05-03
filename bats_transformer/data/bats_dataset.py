@@ -315,7 +315,3 @@ class BatsCSVDatasetWithMetadata(Dataset):
         metadata = trgt_slice[self.metadata_cols]
         #print(ctxt_x.shape, ctxt_y.shape, trgt_x.shape, trgt_y.shape, file_idx, filename, chirp_idx)
         return self._torch(ctxt_x, ctxt_y, trgt_x, trgt_y, metadata)
-
-    
-
-
