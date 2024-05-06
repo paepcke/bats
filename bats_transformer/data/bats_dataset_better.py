@@ -134,6 +134,15 @@ class BatsCSVDataset(torch.utils.data.Dataset):
         df[self.time_col_name] = StandardScaler().fit_transform(np.arange(seq_len).reshape(-1,1))
         return df
     
+    def get_file_id_to_samples(self, df, filename):
+        if filename in self.file_id_to_samples:
+            return self.file_id_to_samples[filename]
+        else:
+            file_id_to_samples = df.groupby("file_id")["chirp_idx"].max().reset_index()
+            file_id_to_samples["n_samples"] = file_id_to_samples["chirp_idx"] - self.min_length + 2
+            self.file_id_to_samples[filename] = file_id_to_samples
+            return file_id_to_samples
+        
     def __getitem__(self, idx):
         if self.split == "val":
             idx += self.train_chirps
@@ -147,18 +156,9 @@ class BatsCSVDataset(torch.utils.data.Dataset):
         df = pd.read_feather(filename)
         
         #get the file index from mapping_df
-        file_idx = self.mapping_df[self.mapping_df["cumulative_count"] <= idx].index[-1]
-        chirp_idx = idx - self.mapping_df.iloc[file_idx]["cumulative_count"]
-        chirp_idx *= self.seq_length
-
-        filename = self.mapping_df.iloc[file_idx]["Filename"]
-        df = pd.read_feather(os.path.join(self.root_path, filename.split("/")[-1]))
-
-        file_id_to_samples = df.groupby("file_id")["chirp_idx"].max().reset_index()
-        
-        file_id_to_samples["n_samples"] = file_id_to_samples["chirp_idx"] - self.min_length + 2
-        file_id_to_samples["cum_samples"] = file_id_to_samples["n_samples"].cumsum() - file_id_to_samples["n_samples"]
-        print(file_id_to_samples)
+        filename = self.mapping_df[self.mapping_df["cumulative_count"] <= idx].iloc[-1]["Filename"]
+        df = pd.read_feather(filename)
+        file_id_to_samples = self.get_file_id_to_samples(df, filename)
         
         file_id_to_use_ = file_id_to_samples[file_id_to_samples["cum_samples"] <= sample_idx].iloc[-1]
         file_id_to_use = file_id_to_use_["file_id"]
