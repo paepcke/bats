@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 Custom class for dealing with the special case of our sonobats dataset.
 '''
 
+
 class BatsCSVDataset(Dataset):
     def __init__(self, 
                  root_path = '/home/vdesai/bats_data/training_files/splits',

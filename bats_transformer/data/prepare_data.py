@@ -158,12 +158,18 @@ filename_to_id.to_csv(args.output_data_path + "_filename_to_id.csv", index=False
 print("Done.")
 
 padded_df = None
-truth_value = None
+truth_values = None
+file_id_to_chirps = None
 
 if(args.no_duplication):
     df['chirp_idx'] = df.groupby('Filename').cumcount()
     padded_df = df
     padded_df.reset_index(inplace = True)
+    file_id_to_chirps = df.groupby("file_id")["chirp_idx"].max().reset_index().sort_values("file_id")
+    file_id_to_chirps["n_chirps"] = file_id_to_chirps["chirp_idx"] - minimum_length + 1
+    file_id_to_chirps["cum_chirps"] = file_id_to_chirps["n_chirps"].cumsum()
+    truth_values = padded_df
+    truth_values["cntxt_sz"] = padded_df["chirp_idx"] 
 
 else:
     # Parallelize processing using joblib and tqdm for progress tracking
@@ -220,7 +226,6 @@ else:
     chunk_size = 100000
     print(len(padded_df))
     for i in tqdm(range(0, len(padded_df), chunk_size)):
-        print(i, min(len(padded_df), i+chunk_size))
         chunk = padded_df.loc[i:min(len(padded_df), i+chunk_size),:]
         scaler.partial_fit(chunk[columns_to_scale])
     
@@ -238,28 +243,48 @@ else:
     padded_df = padded_df.reset_index(drop = True)
     print("Done.")
 
-    num_data_points = int(len(padded_df)/max_length)
-    num_data_points_per_split = num_data_points//args.splits
-    for i in tqdm(range(args.splits - 1)):
-        temp_df = padded_df.iloc[i*(num_data_points_per_split)*max_length:(i+1)*(num_data_points_per_split)*max_length].reset_index(drop=True)
+    if(args.no_duplication):
+        total_files = len(file_id_to_chirps)
+        n_splits = args.splits
+        files_in_a_split = ((total_files + (n_splits/2))//n_splits) #rounding up
+        file_id_to_chirps["split"] = (file_id_to_chirps["file_id"]//files_in_a_split).astype(int)
+        padded_df = pd.merge(padded_df, file_id_to_chirps, on = 'file_id')
         
-        if args.use_feather:
-            temp_df.to_feather(args.output_data_path + str(i) + ".feather")
-        else:
-            temp_df.to_csv(args.output_data_path + str(i) + ".csv")
-        
-        print(temp_df.shape)
-        print(max_length)
-    #write an additional file with a mapping between feather file and the number of rows.
-    mapping_df = pd.DataFrame()
 
-    if args.use_feather:
-        mapping_df["Filename"] = [os.path.abspath(args.output_data_path + str(i) + ".feather") for i in range(args.splits - 1)]
+        for split, split_df in padded_df.groupby("split"):
+            if args.use_feather:
+                split_df.reset_index().to_feather(args.output_data_path + str(split) + ".feather")
+            else:
+                split_df.reset_index().to_csv(args.output_data_path + str(split) + ".csv", index = False)
+        
+        split_to_chirps = file_id_to_chirps.groupby("split")["n_chirps"].sum().reset_index()
+        split_to_chirps["Filename"] = split_to_chirps["split"].apply(lambda x: os.path.abspath(args.output_data_path + str(x) + ".csv"))
+        split_to_chirps.to_csv(args.output_data_path + "_mapping.csv")
+
+
     else:
-        mapping_df["Filename"] = [os.path.abspath(args.output_data_path + str(i) + ".csv") for i in range(args.splits - 1)]
-    
-    mapping_df["count"] = [num_data_points_per_split * max_length for i in range(args.splits - 1)]
-    mapping_df.to_csv(args.output_data_path + "_mapping.csv")
+        num_data_points = int(len(padded_df)/max_length)
+        num_data_points_per_split = num_data_points//args.splits
+        for i in tqdm(range(args.splits - 1)):
+            temp_df = padded_df.iloc[i*(num_data_points_per_split)*max_length:(i+1)*(num_data_points_per_split)*max_length].reset_index(drop=True)
+            
+            if args.use_feather:
+                temp_df.to_feather(args.output_data_path + str(i) + ".feather")
+            else:
+                temp_df.to_csv(args.output_data_path + str(i) + ".csv")
+            
+            print(temp_df.shape)
+            print(max_length)
+        #write an additional file with a mapping between feather file and the number of rows.
+        mapping_df = pd.DataFrame()
+
+        if args.use_feather:
+            mapping_df["Filename"] = [os.path.abspath(args.output_data_path + str(i) + ".feather") for i in range(args.splits - 1)]
+        else:
+            mapping_df["Filename"] = [os.path.abspath(args.output_data_path + str(i) + ".csv") for i in range(args.splits - 1)]
+        
+        mapping_df["count"] = [num_data_points_per_split * max_length for i in range(args.splits - 1)]
+        mapping_df.to_csv(args.output_data_path + "_mapping.csv")
     
     #TODO: get rid of these memory management tricks and use a better library instead...
     del padded_df
