@@ -90,6 +90,7 @@ class BatsCSVDataset(torch.utils.data.Dataset):
         
         self.target_cols = target_cols
         self.split = split
+        self.file_id_to_samples = {}
 
     
     def run_sanity_check(self):
@@ -140,6 +141,7 @@ class BatsCSVDataset(torch.utils.data.Dataset):
         else:
             file_id_to_samples = df.groupby("file_id")["chirp_idx"].max().reset_index()
             file_id_to_samples["n_samples"] = file_id_to_samples["chirp_idx"] - self.min_length + 2
+            file_id_to_samples["cum_samples"] = file_id_to_samples["n_samples"].cumsum() - file_id_to_samples["n_samples"]
             self.file_id_to_samples[filename] = file_id_to_samples
             return file_id_to_samples
         
@@ -170,6 +172,7 @@ class BatsCSVDataset(torch.utils.data.Dataset):
 
         series_slice = self.make_len(df_slice.iloc[:-chirps_to_use] if chirps_to_use > 0 else df_slice, self.seq_length)
 
+        print(series_slice.head().T)
         ctxt_slice, trgt_slice = (
             series_slice.iloc[: self.context_points],
             series_slice.iloc[self.context_points :]

@@ -53,7 +53,7 @@ parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 config = parser.parse_args()
 print(f"Batch size: {config.batch_size}")
 args = config
-ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir", "file_id", "chirp_idx"] + config.ignore_cols
+ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir", "file_id", "chirp_idx", "split"] + config.ignore_cols
 
 
 wandb_logger = WandbLogger(name=f"{args.run_name}", save_dir="/home/vdesai/bats_data/logs/") if args.wandb else None
