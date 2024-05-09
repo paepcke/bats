@@ -3,3 +3,13 @@ This subdirectory tree contains all the files and python scripts required to tra
 notebooks/ contains some jupyter notebooks where in the data is explored and played around with.
 scripts/ contains scripts for running training and inference routines for the transformer.
 data/ contains wrappers which expose the generated dataset to the pytorch APIs, as well as scripts for generating said dataset.
+
+To start off, create a new conda environment, from the yaml file provided:
+```conda create env -f env.yml```
+
+Then, install the spacetimeformer module:
+```cd spacetimeformer/ && pip install -e .```
+
+Make sure you do 
+```git submodule --init```
+first.
