@@ -30,14 +30,19 @@ class DataViz:
     #-------------------
     
     @staticmethod
-    def plot_tsne(tsne_df, kmeans=None, show_plot=True):
+    def plot_tsne(tsne_df, cluster_ids=None, show_plot=True):
         '''
         Given the dataframe that is output by run_tsne(),
-        create a scatterplot that colors each of the points 
-        according to the passed-in kmeans object's cluster 
-        labels.
+        create a scatterplot. If cluster_ids is a list that assigns
+        each TSNE point to a cluster, then the resulting plot
+        will be colored by cluster membership.
         
-        If the kmeans argument is None, all points will have
+        Typically, the cluster_labels will be the 'labels_' attribute
+        of a KMeans object. But anything like [0,0,1,2,0,0,...] will work,
+        as does a 2D array of R,G,B colors, or a list of hex colors. 
+        See the 'c' argument of matplotlib's scatter() method.
+        
+        If the cluster_ids argument is None, all points will have
         the same color.
         
         This method returns the Figure object that contains the
@@ -51,9 +56,10 @@ class DataViz:
         
         :param tsne_df: dataframe output from run_tsne()
         :type tsne_df: pd.DataFrame
-        :param kmeans: a KMeans object that encapsulates the clustering
-            of data in the tsne_df.
-        :type kmeans: UNION[None | sklearn.manifold.KMeans]
+        :param cluster_ids: a list of ints or strings, same length as
+            tsne_df has rows. Each id is a label for a cluster to which
+            the respective Tsne point belongs.
+        :type cluster_ids: union[None | list[int] | list[str]]
         :param show_plot: whether or not this method should display
             the chart on the display
         :type show_plot: bool
@@ -64,12 +70,12 @@ class DataViz:
         fig, ax = plt.subplots()
         cols = tsne_df.columns
         
-        if kmeans is None:
+        if cluster_ids is None:
             ax.scatter(tsne_df[cols[0]], tsne_df[cols[1]])
         else:
             ax.scatter(tsne_df[cols[0]], 
                        tsne_df[cols[1]], 
-                       c=kmeans.labels_,
+                       c=cluster_ids,
                        cmap=DataViz.cmap
                        )
         # If you want x-labels at 45deg:

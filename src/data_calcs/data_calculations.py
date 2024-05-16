@@ -4,19 +4,41 @@ Created on Apr 27, 2024
 @author: paepcke
 '''
 
-from io import StringIO
+from collections import namedtuple
 from data_calcs.universal_fd import UniversalFd
 from data_calcs.utils import Utils
+from io import StringIO
 from logging_service.logging_service import LoggingService
 from pathlib import Path
 from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
+from sympy.physics.secondquant import Fd
+import csv
 import json
 import numpy as np
 import os
 import pandas as pd
 import re
+from sympy.physics.quantum.density import fidelity
+
+# ---------------------------------- namedtuple ChirpID ---------------
+
+ChirpIdSrc = namedtuple('ChirpIDSrc', 
+                        ['wav_file_nm_col', 'more_key_cols'],
+                        defaults=['file_id', ['chirp_idx']]
+                        )
+'''
+Holds which columns in a SonoBat measures (split) file 
+together uniquely identify a single chirp.
+
+At least the name of the column that holds the .wav file's name
+must be provided in the wav_file_nm field, since the file name 
+contains the recording date and time.
+
+If other columns are needed to uniquely identify a chirp, they are
+to be in a list in the more_key_cols field. 
+'''
 
 # ---------------------------------- Class PerplexitySearchResult ---------------
 
@@ -461,13 +483,46 @@ class DataCalcs:
     # Constructor
     #-------------------
 
-    def __init__(self, measures_root, inference_root, fid_col='file_id'):
+    def __init__(self,
+                 measures_root, 
+                 inference_root, 
+                 chirp_id_src=ChirpIdSrc('file_id', ['chirp_idx']),
+                 cols_to_retain=None
+                 ):
         '''
         Calculations for analyzing processed SonoBat data.
         These data are normalized results from SonoBat classification
         runs. Those contain measurements that characterize each chirp.
         
+        The chirp_id_src is a named tuple with two fields: 'wav_file_nm_col',
+        and 'more_key_cols'. The first is the col name that hold the .wav
+        file name from which the chirp is taken. The second field contains
+        a list of additional column names in the measurement files that,
+        together with the .wav file name, uniquely identifies the chirp.
+        
+        By default, the 'file_id' column contains the .wav file name, and
+        the additional column needed is the 'chirp_idx.
+        
+        If cols_to_retain is not none, it needs to be a list of additional
+        column names in the measurements that should be transferred to the
+        TSNE result embedding. For instance, if cols_to_retain is 
+        ['more_col1', 'more_col2'], the TSNE result df will have columns:
+        
+           tsne_x    tsne_y    more_col1           more_col2 
+            xxx1       yyy1  from-measures1_1   from-measures1_2
+            xxx2       yyy2  from-measures2_1   from-measures2_2
+                               ...
+        
         Other data are next-chirp predictions.
+        
+        NOTE: we assume that measures_root contains a file called
+              split_filename_to_id.csv. It must map .wav file names
+              to the file_id values used in measurement files:
+              
+				               Filename,                file_id
+				     barn1_D20220205T192049m784-HiF.wav,11
+				     barn1_D20220205T200541m567-Myca-Myca.wav,12
+                                     ...
         
         :param measures_root: root directory of normalized 
             SonoBat measurements in 'split' files (split1.feather, 
@@ -476,17 +531,39 @@ class DataCalcs:
         :param inference_root: root directory of transformer next-chirp
             predictions
         :type inference_root: src
-        :param fid_col: name of column that uniquely identifies the 
-            .wav file of a chirp. That file name includes the
-            recording date and time
-        :type fid_col: str
+        :param chirp_id_src: name of column, or list of columns that uniquely
+            identify a chirp, including the .wav file of which the chirp
+            is a part. That file name includes the recording date and time
+        :type chirp_id_src: union[str | list[str]]
+        :param cols_to_retain: columns to carry over from measurements df to
+            tsne df
+        :type cols_to_retain: union[None | list[str]]
         '''
 
-        self.measures_root = measures_root
+        self.measures_root  = measures_root
         self.inference_root = inference_root
-        self.fid_col = fid_col
+        self.chirp_id_src   = chirp_id_src
+        self.cols_to_retain = cols_to_retain
         
         self.log = LoggingService()
+        
+        # Read the mapping of .wav file to file_id values in 
+        # the measurements file_id column:
+        map_file = os.path.join(measures_root, 'split_filename_to_id.csv')
+        with open(map_file, 'r') as fd:
+            fname_id_pairs = list(csv.reader(fd))
+        # We now have:
+        #   [[fname1, id1],
+        #    [fname2, id2],
+        #        ...
+        #    ]
+        # Build id -> fname dict:
+        # We need the reverse dict: ID-->wav_fname
+        
+        self.fid_to_fname_dict = {int(fid) : fname
+                                  for fname, fid
+                                  in fname_id_pairs
+                                  } 
         
         # Prepare a list of paths to all split files:
         split_fname_pat = re.compile(r'^split[\d]*$')
@@ -505,11 +582,11 @@ class DataCalcs:
                              for i, split_fname
                              in enumerate(split_fnames)}
         
-        # Create self.fid2split_dict for mapping a file id
+        # Create self.fid2split_dict for mapping a split file id
         # to the split file that contains the data for that
         # file id:
         
-        self._make_fid2split_dict()
+        #self._make_fid2split_dict()
         
         # Cache of dfs of measures split files we had 
         # to open so far: maps split id to df:
@@ -519,65 +596,89 @@ class DataCalcs:
     # _make_fid2split_dict
     #-------------------
     
-    def _make_fid2split_dict(self):
-        '''
-        Create a dict mapping measures file identifier ints
-        to the measures split file that contains the measure
-        created from the file identified by the file id. Like
-        
-            10 : '/foo/bar/split40.feather',
-            43 : '/foo/bar/split4.feather',
-                      ...
-                      
-        This dict is used, for example, to retrieve the chirp measures 
-        that correspond to a given T-sne point.
-        
-        The result will be in self.fid2split_dict.
-        '''
-        
-        self.fid2split_dict = {}
-        for fpath in self.split_fpaths.values():
-            fids_df = pd.read_feather(fpath, columns=[self.fid_col])
-            # Get list of file ids in this split file as a list:
-            fids = fids_df.file_id.values
-            
-            # Add all this split file's file ids to the
-            # fid2split_dict:
-            self.fid2split_dict.update({fid : fpath for fid in fids})
+    # def _make_fid2split_dict(self):
+    #     '''
+    #     Create a dict mapping measures file identifier ints
+    #     to the measures split file that contains the measure
+    #     created from the file identified by the file id. Like
+    #
+    #         10 : '/foo/bar/split40.feather',
+    #         43 : '/foo/bar/split4.feather',
+    #                   ...
+    #
+    #     This dict is used, for example, to retrieve the chirp measures 
+    #     that correspond to a given T-sne point.
+    #
+    #     The result will be in self.fid2split_dict.
+    #     '''
+    #
+    #     self.fid2split_dict = {}
+    #     for fpath in self.split_fpaths.values():
+    #         fids_df = pd.read_feather(fpath, columns=[self.chirp_id_src.wav_file_nm_col])
+    #         # Get list of file ids in this split file as a list:
+    #         fids = fids_df.file_id.values
+    #
+    #         # Add all this split file's file ids to the
+    #         # fid2split_dict:
+    #         self.fid2split_dict.update({fid : fpath for fid in fids})
 
     #------------------------------------
     # measures_from_fid
     #-------------------
     
-    def measures_from_fid(self, fid):
-        '''
-        Given a measures file id, return a pandas
-        Series with the measures.
-        
-        :param fid: file id that identifies the row
-            in a dataset where the related chirp measures
-            are stored.
-        :type fid: int
-        :return the chirp measures created by SonoBat
-        :rtype pd.Series
-        '''
-        
-        try:
-            df = self.split_file_dfs_cache[fid]
-            measures = df.loc[fid]
-            return measures
-        except KeyError:
-            # Df not available yet:
-            pass
-        
-        split_path = self.fid2split_dict[fid]
-        df = pd.read_feather(split_path)
-        
-        # Copy the file id column to the index
-        df.index = df[self.fid_col]
-        
-        measures = df.loc[fid]
-        return measures   
+    # def measures_from_fid(self, fid):
+    #     '''
+    #     Given a measures file id, return a pandas
+    #     Series with the measures.
+    #
+    #     :param fid: file id that identifies the row
+    #         in a dataset where the related chirp measures
+    #         are stored.
+    #     :type fid: int
+    #     :return the chirp measures created by SonoBat
+    #     :rtype pd.Series
+    #     '''
+    #
+    #     try:
+    #         df = self.split_file_dfs_cache[fid]
+    #         measures = df.loc[fid]
+    #         return measures
+    #     except KeyError:
+    #         # Df not available yet:
+    #         pass
+    #
+    #     split_path = self.fid2split_dict[fid]
+    #     df = pd.read_feather(split_path)
+    #
+    #     # Take the .wav file names, extract 
+    #     # the recording datetime, and replace
+    #     # the values in the file_id column with
+    #     # date and time of the recording:
+    #     wav_file_col_nm = self.chirp_id_src.wav_file_nm_col 
+    #     # We now have a column of .wav file integer IDs. 
+    #     # Resolve those into their .wav file names:
+    #     fnames = [self.fid_to_fname_dict[fid]
+    #               for fid 
+    #               in df[wav_file_col_nm]
+    #               ]
+    #
+    #     rec_times = list(map(lambda fname: Utils.time_from_fname(fname), fnames))
+    #
+    #     # Adjust the column name:
+    #     df.rename({wav_file_col_nm : 'rec_datetime'}, axis='columns', inplace=True)
+    #     df['rec_datetime'] = rec_times
+    #
+    #     # Add a column 'daytime' with True or False, depending
+    #     # on whether the recording was at daytime as seen at
+    #     # Stanford's Jasper Ridge Preserve:
+    #     was_day_rec = df['rec_datetime'].apply(lambda dt: Utils.is_daytime_recording(dt))
+    #     df.loc[:, 'is_daytime'] = was_day_rec
+    #
+    #     # Use the default index of 0,1,2,...
+    #     # df.reset_index(drop=True, inplace=True)
+    #
+    #     measures = df.loc[fid]
+    #     return measures   
     
     #------------------------------------
     # sort_by_variance
@@ -726,6 +827,59 @@ class DataCalcs:
         return new_df
 
     #------------------------------------
+    # add_recording_datetime
+    #-------------------
+
+    def add_recording_datetime(self, df):
+        '''
+        Modifies df in three ways:
+        
+            o Replaces the values of the .wav file id column
+              with datetime objects that hold the recording time
+              of the row's chirp
+            o Renames the column name for the .wav fname source
+              (by default 'file_id' with the name 'rec_datetime'
+            o Adds a new boolean column 'is_daytime' that indicates
+              whether the chirp was recorded during daytime.
+              
+        These changes occur in place.  
+        
+        :param df: dataframe to modify
+        :type df: pd.DataFrame
+        :return the modified df
+        :rtype pd.DataFrame
+        '''
+        # Take the .wav file names, extract 
+        # the recording datetime, and replace
+        # the values in the file_id column with
+        # date and time of the recording. The column
+        # that names the .wav file of each row (i.e. of 
+        # each chirp) contains integer file IDs for the
+        # .wav files. Resolve that first:
+        
+        # Name of column with .wav file ID ints:
+        wav_file_col_nm = self.chirp_id_src.wav_file_nm_col 
+        # Resolve those into their .wav file names:
+        fnames = [self.fid_to_fname_dict[fid]
+                  for fid 
+                  in df[wav_file_col_nm]
+                  ]
+    
+        rec_times = list(map(lambda fname: Utils.time_from_fname(fname), fnames))
+    
+        # Adjust the column name:
+        df.rename({wav_file_col_nm : 'rec_datetime'}, axis='columns', inplace=True)
+        df['rec_datetime'] = rec_times
+    
+        # Add a column 'daytime' with True or False, depending
+        # on whether the recording was at daytime as seen at
+        # Stanford's Jasper Ridge Preserve:
+        was_day_rec = df['rec_datetime'].apply(lambda dt: Utils.is_daytime_recording(dt))
+        df.loc[:, 'is_daytime'] = was_day_rec
+
+        return df
+
+    #------------------------------------
     # run_tsne
     #-------------------
     
@@ -850,14 +1004,22 @@ class DataCalcs:
         self.log.info(log_msg)
 
         tsne_obj = TSNE(n_components=2, init='pca', perplexity=perplexity)
-        embedding_arr = tsne_obj.fit_transform(df)
         
-        # For each embedding point, add the point identifier,
-        # which is a column from the original df, i.e. 
-        # which is the value in the given point_id_col:
-        tsne_df_abbridged = pd.DataFrame(embedding_arr, index=file_ids, columns=['tsne_x', 'tsne_y'])
+        # Only use columns for TSNE computation that 
+        # are not carry-overs, and are therefore hoped
+        # to be included for the TSNE. The carry-overs
+        # will be added later to the TSNE output df:
+        
+        cols_to_use = set(df.columns) - set(cols_to_keep)
+        embedding_arr = tsne_obj.fit_transform(df.loc[:, list(cols_to_use)])
+        
+        # For each embedding point, add the cols_to_keep, after
+        # turning the np.array TSNE result into a df:
+        tsne_df_abbridged = pd.DataFrame(embedding_arr, columns=['tsne_x', 'tsne_y'])
         keeper_df = df[cols_to_keep]
-        keeper_df.index = tsne_df_abbridged.index
+        # Make the indexes the same, so that the subsequent concat() aligns;
+        # Don't copy the index into a column during this process (drop=True):
+        keeper_df.reset_index(inplace=True, drop=True)
         tsne_df = pd.concat([tsne_df_abbridged, keeper_df], axis='columns')
         return tsne_df
     
@@ -1020,7 +1182,7 @@ class DataCalcs:
             perplexities=[5.0, 10.0, 20.0, 30.0, 50.0],
             n_clusters_to_try=list(range(2,10)),
             outfile=None,
-            cols_to_keep=['Max#CallsConsidered', 'file_id', 'chirp_idx']
+            cols_to_keep=['Max#CallsConsidered', 'rec_datetime', 'is_daytime', 'chirp_idx']
             ):
         '''
         Determine the Tsne 'perplexity' hyper parameter, and
@@ -1137,13 +1299,13 @@ class DataCalcs:
     
         return result
     
-# -------------------------- run_experiments --- the main    
+# -------------------------- run_experiments --- the mains options    
 
 #------------------------------------
 # run_experiments
 #-------------------
 
-def run_experiments(key_col='file_id'):
+def run_experiments(chirp_id_src=ChirpIdSrc('file_id', ['chirp_idx'])):
     '''
     Run different data analyses. Comment out what you
     don't want. Maybe eventually make into a command
@@ -1163,10 +1325,17 @@ def run_experiments(key_col='file_id'):
 
     path = os.path.join(measures_root, split_file)
 
-    calc = DataCalcs(measures_root, inference_root, fid_col=key_col)
+    calc = DataCalcs(measures_root, inference_root, chirp_id_src=chirp_id_src)
 
     with UniversalFd(path, 'r') as fd:
         calc.df = fd.asdf()
+        
+    # Replace .wav file information in file_id column 
+    # with recording date/time. The file_id column name
+    # will be changed to 'rec_datetime', and an additional
+    # column: 'is_daytime' will be added:
+    calc.add_recording_datetime() 
+    
     
     # Initialize self.optimal_perplexity, self.optimal_n_clusters:
     hyperparms_search_res = calc.find_optimal_tsne_clustering(

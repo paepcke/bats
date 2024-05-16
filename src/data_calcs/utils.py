@@ -5,11 +5,14 @@ Created on Apr 22, 2024
 '''
 
 from _datetime import timedelta, datetime
+from data_calcs.daytime_file_selection import DaytimeFileSelector
 
 class Utils:
     '''
     classdocs
     '''
+
+    rec_time_util = DaytimeFileSelector()
 
     #------------------------------------
     # round_time
@@ -110,3 +113,41 @@ class Utils:
             return callable(value.write)
         except AttributeError:
             return False
+
+    #------------------------------------
+    # time_from_fname
+    #-------------------
+    
+    @classmethod
+    def time_from_fname(cls, fname):
+        '''
+        Given a SonoBat recording .wav filename, 
+        extract, and return the recording time
+        
+        :param fname: .wav file name from which to extract recording time
+        :type fname: str
+        :return recording date and time
+        :rtype: datetime.datetime
+        '''
+        dt = cls.rec_time_util.time_from_fname(fname)
+        return dt
+
+    #------------------------------------
+    # is_daytime_recording
+    #-------------------
+    
+    @classmethod
+    def is_daytime_recording(cls, fname):
+        '''
+        Returns True or False, depending on whether the
+        file name encodes a recording time that was daylight
+        at Jasper Ridge on the Stanford campus.
+        
+        :param fname: .wav name from which to extract recording date and time 
+        :type fname: str
+        :return whether or not the recording time was during the day, or not.
+        :rtype bool
+        '''
+        res = cls.rec_time_util.is_daytime_recording(fname)
+        return res
+        

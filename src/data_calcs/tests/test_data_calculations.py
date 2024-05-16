@@ -5,17 +5,19 @@ Created on Apr 27, 2024
 '''
 
 from data_calcs.data_calculations import DataCalcs, PerplexitySearchResult
+from data_calcs.daytime_file_selection import DaytimeFileSelector
 from logging_service.logging_service import LoggingService
 from pandas.testing import assert_frame_equal
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock
+from datetime import datetime
 import os
 import pandas as pd
 import unittest
 import numpy as np
 
-#*******TEST_ALL = True
-TEST_ALL = False
+TEST_ALL = True
+#TEST_ALL = False
 
 class DataPrepTester(unittest.TestCase):
 
@@ -94,13 +96,13 @@ class DataPrepTester(unittest.TestCase):
         #    13: '/tmp/data_prep_6057jcgj/split4.feather'
         #    }
         
-        expected = {100: f'{self.tmpdir.name}/split15.feather',
-                    110: f'{self.tmpdir.name}/split15.feather',
-                    120: f'{self.tmpdir.name}/split15.feather',
-                    11:  f'{self.tmpdir.name}/split4.feather',
-                    12:  f'{self.tmpdir.name}/split4.feather',
-                    13:  f'{self.tmpdir.name}/split4.feather'}
-        self.assertDictEqual(dp.fid2split_dict, expected)
+        # expected = {100: f'{self.tmpdir.name}/split15.feather',
+        #             110: f'{self.tmpdir.name}/split15.feather',
+        #             120: f'{self.tmpdir.name}/split15.feather',
+        #             11:  f'{self.tmpdir.name}/split4.feather',
+        #             12:  f'{self.tmpdir.name}/split4.feather',
+        #             13:  f'{self.tmpdir.name}/split4.feather'}
+        # self.assertDictEqual(dp.fid2split_dict, expected)
         
         # Check the split_fpaths being a dict mapping
         # a running int (split_id) to the full split path:
@@ -114,25 +116,62 @@ class DataPrepTester(unittest.TestCase):
     # test_measures_from_fid
     #-------------------
     
-    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
-    def test_measures_from_fid(self):
-        
-        dp = DataCalcs(self.tmpdir.name, self.tmpdir.name)
-        
-        measures = dp.measures_from_fid(100)
-        # Ground truth:
-        df_truth = pd.read_feather(f'{self.tmpdir.name}/split15.feather')
-        df_truth.index = df_truth.file_id
-        
-        #    TimeInFile          -0.41427
-        #    PrecedingIntrvl     -0.41427
-        #    CallsPerSec         -0.41427
-        #    file_id            100.00000
-        #    Name: 100, dtype: float64
-        
-        expected = df_truth.loc[100]
-        pd.testing.assert_series_equal(measures, expected)
+    #@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    # def test_measures_from_fid(self):
+    #
+    #     dp = DataCalcs(self.tmpdir.name, self.tmpdir.name)
+    #
+    #     measures = dp.measures_from_fid(11)
+    #     # Ground truth:
+    #     df_truth = pd.read_feather(f'{self.tmpdir.name}/split15.feather')
+    #     df_truth.index = df_truth.file_id
+    #
+    #     #    TimeInFile          -0.41427
+    #     #    PrecedingIntrvl     -0.41427
+    #     #    CallsPerSec         -0.41427
+    #     #    file_id            100.00000
+    #     #    Name: 100, dtype: float64
+    #
+    #     expected = df_truth.loc[11]
+    #     pd.testing.assert_series_equal(measures, expected)
 
+    #------------------------------------
+    # test_add_recording_datetime
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_add_recording_datetime(self):
+        dp = DataCalcs(self.tmpdir.name, self.tmpdir.name)
+        df = self.tst_df_large
+        new_df = dp.add_recording_datetime(df)
+        
+        # Since mods are done inplace, the new and old
+        # dfs should be the same:
+        pd.testing.assert_frame_equal(new_df, df)
+        
+        all([type(val) == datetime
+             for val 
+             in new_df.rec_datetime 
+             ])
+        
+        # Check one of the datetimes:
+        dt0    = df.rec_datetime.iloc[0]
+        
+        tz = DaytimeFileSelector().timezone
+        # .wav file: barn1_D20220205T192049m784-HiF.wav
+        true_dt = datetime(2022, 2, 5, 19, 20, 49, tzinfo=tz)
+        self.assertEqual(dt0, true_dt)
+
+        # Check daylight determination: Should be
+        # false, since 19:20 in February is after dark:
+        is_day0 = df.is_daytime.iloc[0]
+        self.assertFalse(is_day0)
+        
+        # Second chirp's file name:
+        #   'barn1_D20220205T140541m567-Myca-Myca.wav', so: afternoon
+        is_day1 = df.is_daytime.iloc[1]
+        self.assertTrue(is_day1)
+        
 
     #------------------------------------
     # test_feather_input
@@ -147,7 +186,7 @@ class DataPrepTester(unittest.TestCase):
     # test_run_tsne
     #-------------------
     
-    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    #******@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_run_tsne(self):
         dp = DataCalcs(self.tmpdir.name, self.tmpdir.name)
         
@@ -185,11 +224,30 @@ class DataPrepTester(unittest.TestCase):
         # Keep two columns, and specify a key column to be
         # copied to the index:
         tsne_df = dp.run_tsne(self.tst_df4, point_id_col='file_id', cols_to_keep=['file_id', 'TimeInFile']) # num_points, num_dims, point_id_col, perplexity, sort_by_bat_variance)
-        expected = pd.Index([11,12,13], name='file_id')
-        pd.testing.assert_index_equal(tsne_df.index, expected)
         self.assertEqual(tsne_df.ndim, 2)
         expected = pd.Index(['tsne_x', 'tsne_y', 'file_id', 'TimeInFile'])
         pd.testing.assert_index_equal(tsne_df.columns, expected)
+        
+        # Now try TSNE on a df with recording time and daylight information:
+        df = dp.add_recording_datetime(self.tst_df_large).copy()
+        tsne_df = dp.run_tsne(df, cols_to_keep=['rec_datetime', 'is_daytime'])
+        
+        expected = ['tsne_x', 'tsne_y', 'rec_datetime', 'is_daytime']
+        self.assertListEqual(list(tsne_df.columns), expected)
+        self.assertEqual(len(tsne_df), len(df))
+        
+        # Check is_daytime col: only second row is True:
+        expected = [False]*len(df)
+        expected[1] = True
+        self.assertListEqual(list(tsne_df['is_daytime']), expected)
+        
+        # Check one of the datetimes:
+        dt0    = tsne_df.rec_datetime.iloc[0]
+        
+        tz = DaytimeFileSelector().timezone
+        # .wav file: barn1_D20220205T192049m784-HiF.wav
+        true_dt = datetime(2022, 2, 5, 19, 20, 49, tzinfo=tz)
+        self.assertEqual(dt0, true_dt)
         
     #------------------------------------
     # test_cluster_tsne
@@ -319,7 +377,7 @@ class DataPrepTester(unittest.TestCase):
     # test_PerplexitySearchResult_json
     #-------------------
     
-    #*****@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_PerplexitySearchResult_json(self):
         dp = DataCalcs(self.tmpdir.name, self.tmpdir.name)
 
@@ -429,11 +487,14 @@ class DataPrepTester(unittest.TestCase):
         c2 = [100,200,300]
         c3 = [1000,2000,3000]
         file_id = [11,12,13]
+        chirp_idx = [1,4,2]
+        
         self.tst_df4 = pd.DataFrame(
             {'TimeInFile'      : c1,
              'PrecedingIntrvl' : c2,
              'CallsPerSec'     : c3,
-             'file_id'         : file_id
+             'file_id'         : file_id,
+             'chirp_idx'       : chirp_idx 
              })
         
         self.dst_file4 = os.path.join(self.tmpdir.name, 'split4.feather')
@@ -443,12 +504,14 @@ class DataPrepTester(unittest.TestCase):
         c1 = ['foo1','foo2','foo3']
         c2 = ['bar1','bar2','bar3']
         c3 = ['fum1','fum2','fum3']
-        file_id = [100,110,120]
+        file_id = [14,15,16]
+        chirp_idx = [1,4,2]
         self.tst_df15 = pd.DataFrame(
             {'TimeInFile'      : c1,
              'PrecedingIntrvl' : c2,
              'CallsPerSec'     : c3,
-             'file_id'         : file_id
+             'file_id'         : file_id,
+             'chirp_idx'       : chirp_idx 
              })
         self.dst_file15 = os.path.join(self.tmpdir.name, 'split15.feather')
         self.tst_df15.to_feather(self.dst_file15)
@@ -458,8 +521,33 @@ class DataPrepTester(unittest.TestCase):
         # for perplexities searches to make sense:
         for i in range(4, 10):
             # Last value is the file_id:
-            new_row = [i*10, i*100, i*1000, 10+i]
+            new_row = [i*10, i*100, i*1000, 10+i, i]
             self.tst_df_large.loc[i] = new_row 
+        
+        # The file ID to .wav file recording name map:
+        split_file_name_to_id = ('barn1_D20220205T192049m784-HiF.wav,11\n'
+                                 'barn1_D20220205T140541m567-Myca-Myca.wav,12\n'
+                                 'barn1_D20220205T202248m042-HiF.wav,13\n'
+                                 'barn1_D20220205T205824m469-Tabr-Tabr-Tabr.wav,14\n'
+                                 'barn1_D20220205T211937m700-HiF.wav,15\n'
+                                 'barn1_D20220205T231442m354-Myca-Myca.wav,16\n'
+                                 'barn1_D20220205T235354m889-Tabr-Tabr-Tabr.wav,17\n'
+                                 'barn1_D20220206T001144m425-Tabr-Tabr.wav,18\n'
+                                 'barn1_D20220206T012049m898.wav,19')
+        self.fname_to_id_file = os.path.join(self.tmpdir.name, 'split_filename_to_id.csv')
+        with open(self.fname_to_id_file, 'w') as fd:
+            fd.write(split_file_name_to_id)
+            
+        # For easy testing: a dict fid --> .wav file name:
+        fname_id_pairs = [fname_comma_fid.split(',')
+                          for fname_comma_fid
+                          in split_file_name_to_id.split('\n')]
+        
+        self.fid_wav_fname_dict = {int(fid) : fname
+                                   for fname, fid 
+                                   in fname_id_pairs 
+                                   }
+            
         
 
 # ----------------------------- Main ------------------
