@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 Custom class for dealing with the special case of our sonobats dataset.
 '''
 
+
 class BatsCSVDataset(Dataset):
     def __init__(self, 
                  root_path = '/home/vdesai/bats_data/training_files/splits',
@@ -315,7 +316,3 @@ class BatsCSVDatasetWithMetadata(Dataset):
         metadata = trgt_slice[self.metadata_cols]
         #print(ctxt_x.shape, ctxt_y.shape, trgt_x.shape, trgt_y.shape, file_idx, filename, chirp_idx)
         return self._torch(ctxt_x, ctxt_y, trgt_x, trgt_y, metadata)
-
-    
-
-

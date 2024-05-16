@@ -6,6 +6,7 @@ import joblib
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
+from data_calcs.daytime_file_selection import DaytimeFileSelector
 import os
 import gc
 
@@ -27,14 +28,16 @@ def add_cli(parser):
     parser.add_argument('-f', '--use_feather', action='store_true', 
                         help='use feather format')
     parser.add_argument('-m', '--minimum_length', type = int, default = 5)
+    parser.add_argument('-d', '--daytime', action='store_true')
+    parser.add_argument('--no_duplication', action='store_true')
     return parser
 
 '''
 Get all the files from a particular root directory
 '''
-def get_files(path):
+def get_files(path, filter_ = (lambda x: True)):
     files = []
-    for file in glob.glob(path + '/**/*Parameters_*.txt', recursive=True):
+    for file in list(filter(filter_, glob.glob(path + '/**/*Parameters_*.txt', recursive=True))):
         files.append(file)
     return files
 
@@ -117,6 +120,12 @@ args = add_cli(argparse.ArgumentParser()).parse_args()
 minimum_length = args.minimum_length
 
 print("Reading files... ", end="", flush=True)
+filter_ = (lambda x: True)
+selector = DaytimeFileSelector()
+
+if(args.daytime):
+    filter_ = lambda s: selector.is_daytime_recording(s)
+
 df = get_df(get_files(args.input_data_path)).sort_values(["Filename", "TimeInFile"])
 print("Done.")
 
@@ -148,30 +157,44 @@ filename_to_id = df.groupby("Filename")["file_id"].first().reset_index()
 filename_to_id.to_csv(args.output_data_path + "_filename_to_id.csv", index=False)   
 print("Done.")
 
+padded_df = None
+truth_values = None
+file_id_to_chirps = None
 
-# Parallelize processing using joblib and tqdm for progress tracking
-print("Padding and repeating... ", end="", flush=True)
+if(args.no_duplication):
+    df['chirp_idx'] = df.groupby('Filename').cumcount()
+    padded_df = df
+    padded_df.reset_index(inplace = True)
+    file_id_to_chirps = df.groupby("file_id")["chirp_idx"].max().reset_index().sort_values("file_id")
+    file_id_to_chirps["n_chirps"] = file_id_to_chirps["chirp_idx"] - minimum_length + 1
+    file_id_to_chirps["cum_chirps"] = file_id_to_chirps["n_chirps"].cumsum()
+    truth_values = padded_df
+    truth_values["cntxt_sz"] = padded_df["chirp_idx"] 
 
-# Define the number of parallel jobs (e.g., the number of CPU cores)
-num_jobs = -1  # -1 means use all available cores
+else:
+    # Parallelize processing using joblib and tqdm for progress tracking
+    print("Padding and repeating... ", end="", flush=True)
 
-# Apply parallel processing to each group
-results = Parallel(n_jobs=num_jobs)(delayed(process_group)(group) for _, group in tqdm(df.groupby("Filename")))
+    # Define the number of parallel jobs (e.g., the number of CPU cores)
+    num_jobs = -1  # -1 means use all available cores
 
-# Separate the results into individual lists for concatenation
-padded_df_list = [result[0] for result in results]
-truth_values_list = [result[1] for result in results]
+    # Apply parallel processing to each group
+    results = Parallel(n_jobs=num_jobs)(delayed(process_group)(group) for _, group in tqdm(df.groupby("Filename")))
 
-# Concatenate the results
-padded_df = pd.concat(padded_df_list, ignore_index=True)
-truth_values = pd.concat(truth_values_list, ignore_index=True)
+    # Separate the results into individual lists for concatenation
+    padded_df_list = [result[0] for result in results]
+    truth_values_list = [result[1] for result in results]
 
-del padded_df_list
-del truth_values_list
-del results
-del filename_to_id
+    # Concatenate the results
+    padded_df = pd.concat(padded_df_list, ignore_index=True)
+    truth_values = pd.concat(truth_values_list, ignore_index=True)
 
-gc.collect()
+    del padded_df_list
+    del truth_values_list
+    del results
+    del filename_to_id
+
+    gc.collect()
 print("Done.")
 
 
@@ -185,37 +208,29 @@ if(args.splits == 1):
     print("Done.")
 
 else:
-    print("Saving truth.csv temporarily...", end="", flush=True)
-    truth_values.drop(columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir"], inplace = True)
-    truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
-    del truth_values
-    gc.collect()
-    print("Done.")
-    
-
     print("Writing to files... ", end="\n", flush=True)
-    print("Scaling data... ", end="", flush=True)
-    print("Dropping Columns... ", end="", flush=True)    
+
+    #takes a LOOOOONG time
     padded_df.drop(
         columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 
                  'Preemphasis', 'MaxSegLnght', "ParentDir"], 
         inplace = True
     )
-    print("Done.")
 
-    columns_to_not_scale = ["file_id", "cntxt_sz"]
+    columns_to_not_scale = ["file_id", "cntxt_sz"] if not args.no_duplication else ["file_id", "chirp_idx"]
     columns_to_scale = [col for col in padded_df.columns if col not in columns_to_not_scale]
 
     scaler = StandardScaler()
     scaler.set_output(transform="pandas")
     
     chunk_size = 100000
+    print(len(padded_df))
     for i in tqdm(range(0, len(padded_df), chunk_size)):
-        chunk = padded_df.loc[i:i+chunk_size,:]
+        chunk = padded_df.loc[i:min(len(padded_df), i+chunk_size),:]
         scaler.partial_fit(chunk[columns_to_scale])
     
     for i in tqdm(range(0, len(padded_df), chunk_size)):
-        padded_df.loc[i:i+chunk_size, columns_to_scale] = scaler.transform(padded_df.loc[i:i+chunk_size, columns_to_scale])
+        padded_df.loc[i:min(len(padded_df), i+chunk_size), columns_to_scale] = scaler.transform(padded_df.loc[i:i+chunk_size, columns_to_scale])
     
 
     #storing off the scaler
@@ -228,35 +243,55 @@ else:
     padded_df = padded_df.reset_index(drop = True)
     print("Done.")
 
-    num_data_points = int(len(padded_df)/max_length)
-    num_data_points_per_split = num_data_points//args.splits
-    for i in tqdm(range(args.splits - 1)):
-        temp_df = padded_df.iloc[i*(num_data_points_per_split)*max_length:(i+1)*(num_data_points_per_split)*max_length].reset_index(drop=True)
+    if(args.no_duplication):
+        total_files = len(file_id_to_chirps)
+        n_splits = args.splits
+        files_in_a_split = ((total_files + (n_splits/2))//n_splits) #rounding up
+        file_id_to_chirps["split"] = (file_id_to_chirps["file_id"]//files_in_a_split).astype(int)
+        padded_df = pd.merge(padded_df, file_id_to_chirps, on = 'file_id')
         
-        if args.use_feather:
-            temp_df.to_feather(args.output_data_path + str(i) + ".feather")
-        else:
-            temp_df.to_csv(args.output_data_path + str(i) + ".csv")
-        
-        print(temp_df.shape)
-        print(max_length)
-    #write an additional file with a mapping between feather file and the number of rows.
-    mapping_df = pd.DataFrame()
 
-    if args.use_feather:
-        mapping_df["Filename"] = [os.path.abspath(args.output_data_path + str(i) + ".feather") for i in range(args.splits - 1)]
+        for split, split_df in padded_df.groupby("split"):
+            if args.use_feather:
+                split_df.reset_index().to_feather(args.output_data_path + str(split) + ".feather")
+            else:
+                split_df.reset_index().to_csv(args.output_data_path + str(split) + ".csv", index = False)
+        
+        split_to_chirps = file_id_to_chirps.groupby("split")["n_chirps"].sum().reset_index()
+        split_to_chirps["Filename"] = split_to_chirps["split"].apply(lambda x: os.path.abspath(args.output_data_path + str(x) + ".csv"))
+        split_to_chirps.to_csv(args.output_data_path + "_mapping.csv")
+
+
     else:
-        mapping_df["Filename"] = [os.path.abspath(args.output_data_path + str(i) + ".csv") for i in range(args.splits - 1)]
+        num_data_points = int(len(padded_df)/max_length)
+        num_data_points_per_split = num_data_points//args.splits
+        for i in tqdm(range(args.splits - 1)):
+            temp_df = padded_df.iloc[i*(num_data_points_per_split)*max_length:(i+1)*(num_data_points_per_split)*max_length].reset_index(drop=True)
+            
+            if args.use_feather:
+                temp_df.to_feather(args.output_data_path + str(i) + ".feather")
+            else:
+                temp_df.to_csv(args.output_data_path + str(i) + ".csv")
+            
+            print(temp_df.shape)
+            print(max_length)
+        #write an additional file with a mapping between feather file and the number of rows.
+        mapping_df = pd.DataFrame()
+
+        if args.use_feather:
+            mapping_df["Filename"] = [os.path.abspath(args.output_data_path + str(i) + ".feather") for i in range(args.splits - 1)]
+        else:
+            mapping_df["Filename"] = [os.path.abspath(args.output_data_path + str(i) + ".csv") for i in range(args.splits - 1)]
+        
+        mapping_df["count"] = [num_data_points_per_split * max_length for i in range(args.splits - 1)]
+        mapping_df.to_csv(args.output_data_path + "_mapping.csv")
     
-    mapping_df["count"] = [num_data_points_per_split * max_length for i in range(args.splits - 1)]
-    mapping_df.to_csv(args.output_data_path + "_mapping.csv")
-    
+    #TODO: get rid of these memory management tricks and use a better library instead...
     del padded_df
     gc.collect()
     print("Done.")
-
-    print("Scaling truth values... ", end="", flush=True)    
-    truth_values = pd.read_csv(args.output_data_path + "_truth_values.csv")
-    truth_values[columns_to_scale] = scaler.transform(truth_values[columns_to_scale])
-    truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
-    print("Done.")    
+    if(truth_values is not None):
+        print("Scaling truth values... ", end="", flush=True)    
+        truth_values[columns_to_scale] = scaler.transform(truth_values[columns_to_scale])
+        truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
+        print("Done.")    

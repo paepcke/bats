@@ -1,0 +1,3 @@
+[submodule "bats_transformer/spacetimeformer"]
+	path = bats_transformer/spacetimeformer
+	url = https://github.com/varundesai10/spacetimeformer.git

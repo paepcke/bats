@@ -5,7 +5,7 @@ parser = argparse.ArgumentParser(description='Train bats transformer model')
 parser.add_argument('--random_seeds', type=int, nargs='+', help='Random seeds to use for training')
 parser.add_argument('--gpu', type=int, help='GPU to use for training')
 parser.add_argument('--data_path', type=str, 
-                    default='/home/vdesai/bats_data/training_files/splits_feather', 
+                    default='/home/vdesai/bats_data/new_dataset/splits', 
                     help='Path to the data')
 
 args = parser.parse_args()
@@ -26,6 +26,6 @@ ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "
 
 for random_seed in args.random_seeds:
     print("Running for random seed ", random_seed)
-    run_train_py(run_name = f"bats_transformer_seed_{random_seed}", 
+    run_train_py(run_name = f"bats_transformer_seed_nodup_data_{random_seed}", 
                 random_seed = random_seed, Dmodel = d_model, ignore_cols = ignore_cols, 
                 additional_flags = ["--telegram_updates"], gpus = args.gpu, data_path = args.data_path)
