@@ -1,0 +1,1184 @@
+'''
+Created on Apr 27, 2024
+
+@author: paepcke
+'''
+
+from io import StringIO
+from data_calcs.universal_fd import UniversalFd
+from data_calcs.utils import Utils
+from logging_service.logging_service import LoggingService
+from pathlib import Path
+from sklearn.cluster import KMeans
+from sklearn.manifold import TSNE
+from sklearn.metrics import silhouette_score
+import json
+import numpy as np
+import os
+import pandas as pd
+import re
+
+# ---------------------------------- Class PerplexitySearchResult ---------------
+
+class PerplexitySearchResult:
+    '''
+    Holds results of computing Tsne with different perplexities, and 
+    clustering each with multiple n_clusters.
+
+    Attributes:
+		           data_df            : <df being analyzed>
+		           tsne_df           : {perplexity : <df produced by tsne>}
+		           cluster_results    : {perplexity : <ClusterResult objs>
+		           optimal_perplexity : <perplexity that yielded the best clustering result>
+		           optimal_n_clusters : <best n_cluster for the best optimal_complexity>
+		
+	Noteworthy methods:
+		           silhouettes_df()
+		           tsne_df(perplexity)
+    '''
+    
+    #------------------------------------
+    # Constructor
+    #-------------------
+    
+    def __init__(self, data_df):
+        self.data_df  = data_df
+        # Mapping of perplexity to tsne dfs:
+        self._tsne_dfs = {}
+        
+        # Mapping of perplexity to ClusteringResult objs
+        # that hold results of multiple KMeans computations
+        # with different n_clusters: 
+        self._clustering_results = {}
+        
+        self.optimal_perplexity = None
+        self.optimal_n_clusters = None
+        
+        # Nobody asked for the silhouettes_df yet,
+        # so its cache is empty:
+        self._silhouettes_df_cache = None
+        
+
+    #------------------------------------
+    # silhouettes_df
+    #-------------------
+    
+    @property
+    def silhouettes_df(self):
+        '''
+        Returns a dataframe with index being perplexities,
+        and columns being n_clusters that were tried. The latter
+        are in the _clustering_results. Fields are add_silhouette
+        for the respective perplexity/n_clusters. Example: for
+        two perplexities tried, each with n_clusters 2,4, and 10,
+        you get:
+        
+                                N_CLUSTERS
+                         2            4               10
+            PERPLEXITY
+                 5.0  silhouette  silhouette      silhouette
+                10.0  silhouette  silhouette      silhouette
+                
+        The df is constructed only once, then cached
+        '''
+        
+        if self._silhouettes_df_cache is not None:
+            return self._silhouettes_df_cache
+        
+        # A dict mapping perplexities to pd.Series that will be rows in the result df:
+        res = {}
+        
+        # Get perplexity multi-n_clusters result pairs:
+        for perplexity, cl_res in self._clustering_results.items():
+
+            # Get: {
+            #        n_cluster1 : silhouettes1,
+            #        n_cluster2 : silhouettes2,
+            #            ... }
+            n_clusters_silhouettes_dict = cl_res.silhouettes_dict()
+            # Get a pandas Series: index is n_clusters, values are
+            # perplexities. That's one row of the result df: 
+            perplexity_cl_series = pd.Series(n_clusters_silhouettes_dict)
+            res[perplexity] = perplexity_cl_series
+        
+        # Result for just one perplexity (value 5.0), and 
+        # n_clusters 2 through 8 is like:
+        # 
+        #     {5.0: 2    0.517002
+        #       	3    0.391266
+        #       	4    0.248808
+        #       	5    0.083461
+        #       	6    0.060025
+        #       	7    0.083971
+        #       	8    0.030506
+        #       	dtype: float32
+        #           }
+        #
+        # where each value is a pd.Series.
+        
+        # Make a dataframe with perplexities being rows,
+        # and the respective n_clusters the column (fields
+        # are silhouette coefficients):
+        
+        if len(res) == 0:
+            return pd.DataFrame()
+
+        # The concat along cols builds a df
+        # with perplexities being cols, and n_clusters being
+        # index; therefore the transpose():
+        sil_df = pd.concat(res, axis='columns').transpose()
+        sil_df.index.name = 'Perplexities'
+        
+        self._silhouttes_df_cache = sil_df
+        
+        return sil_df
+        
+    #------------------------------------
+    # clustering_result: special getter
+    #-------------------
+    
+    def clustering_result(self, perplexity):
+        '''
+        Given a perplexity, return a ClusteringResult object
+        
+        :param perplexity:
+        :type perplexity:
+        '''
+        if type(perplexity) == int:
+            perplexity = float(perplexity)
+        if type(perplexity) != float:
+            raise TypeError(f"Must pass perplexity as a float, not {perplexity}")
+        return self._clustering_results[perplexity]
+
+    #------------------------------------
+    # add_clustering_result
+    #-------------------
+    
+    def add_clustering_result(self, perplexity, cluster_result):
+        if type(perplexity) == int:
+            perplexity = float(perplexity)
+        if type(perplexity) != float:
+            raise TypeError(f"Perplexity must be a float, not {perplexity}")
+        if not isinstance(cluster_result, ClusteringResult):
+            raise TypeError(f"Must pass ClusterResult as second part of tuple, not {cluster_result}")
+        self._clustering_results[perplexity] = cluster_result
+
+    #------------------------------------
+    # tsne_df: special getter
+    #-------------------
+    
+    def tsne_df(self, perplexity):
+        if type(perplexity) == int:
+            perplexity = float(perplexity)
+        if type(perplexity) != float:
+            raise TypeError(f"Must pass perplexity as a float, not {perplexity}")
+        return self._tsne_dfs[perplexity]
+
+    #------------------------------------
+    # tsne_df: setter
+    #-------------------
+    
+    def add_tsne_dfs(self, tsne_dfs):
+        '''
+        Given a dict of {perplexity : tsne_df}, append those
+        to the _tsne_dfs dict that is already in this result
+        instance.  
+        
+        :param tsne_df: dict of perplexity to TSNE computation result
+        :type tsne_df: dict[str : pd.DataFrame]
+        '''
+        self._tsne_dfs.update(tsne_dfs)
+    
+    #------------------------------------
+    # to_json
+    #-------------------
+
+    def to_json(self, outfile=None):
+        '''
+        Exports the most important state of this instance
+        of PerplexitySearchResult to JSON. Not everything is
+        included, just:
+        
+             'optimal_perplexity',
+             'optimal_n_clusters',
+             'cluster_populations',
+             'cluster_centers',
+             'cluster_labels',
+             'best_silhouette',
+             'tsne_df'
+        
+        The inverse method: read_json() can produce a dict from this
+        method's JSON output. But it cannot recover all the state.
+        
+        :param outfile: if provided, output file where resulting JSON is stored.
+        :type outfile: union[None | str | file-like]
+        :return JSON string if outfile is None, else returns None
+        :rtype union[str | None]
+        '''
+        
+        try:
+            if type(outfile) == str:
+                outfd = open(outfile, 'w')
+            elif outfile is None:
+                outfd = None
+            elif Utils.is_file_like(outfile):
+                # Outfile is file-like, i.e. has a write() method:
+                outfd = outfile
+            else:
+                raise TypeError(f"Arg outfile must be None, filepath, or file-like, not {outfile}")
+            
+            optimal_cluster_res = self.clustering_result(self.optimal_perplexity)
+            optimal_tsne_df     = self.tsne_df(self.optimal_perplexity)
+            optimal_kmeans_obj  = optimal_cluster_res.get_kmeans_obj(self.optimal_n_clusters)
+            res_dict = {}
+            res_dict['optimal_perplexity']  = self.optimal_perplexity
+            res_dict['optimal_n_clusters']  = self.optimal_n_clusters
+            res_dict['cluster_populations'] = optimal_cluster_res.cluster_pops.tolist()
+            res_dict['cluster_centers']     = optimal_kmeans_obj.cluster_centers_.tolist()
+            res_dict['cluster_labels']      = optimal_kmeans_obj.labels_.tolist()
+            res_dict['best_silhouette']     = float(optimal_cluster_res.best_silhouette)
+            res_dict['tsne_df']             = optimal_tsne_df.to_json()
+            
+            if outfd is not None:
+                json.dump(res_dict, outfd)
+                return None
+            else:
+                jstr = json.dumps(res_dict)
+                return jstr
+        finally:
+            if outfd is not None:
+                outfd.close()
+        
+    #------------------------------------
+    # read_json
+    #-------------------
+    
+    @staticmethod
+    def read_json(in_source):
+        '''
+        Given access to a JSON string that was produced by 
+        the to_json() method, return a dict that contains the
+        following keys:
+        
+             'optimal_perplexity',
+             'optimal_n_clusters',
+             'cluster_populations',
+             'cluster_centers',
+             'cluster_labels',
+             'best_silhouette',
+             'tsne_df'
+        
+        The string source may be a JSON string itself, or the path
+        to a file that contains the JSON string, or an open file-like
+        from which to read the JSON string.
+        
+        :param in_source: source of the JSON string to read
+        :type in_source: union[str | path | file-like]
+        :return a dict with the important state of the original PerplexitySearchResult
+        :rtype dict[str : any]
+        '''
+        
+        if Utils.is_file_like(in_source):
+            jstr = in_source.read()
+        elif os.path.exists(in_source):
+            with open(in_source, 'r') as fd:
+                jstr = fd.read()
+        elif type(in_source) == str:
+            jstr = in_source 
+        else:
+            raise TypeError(f"Input source must be a file-like, a path to a file, or a JSON string; not {in_source}")
+            
+            
+        res_dict = json.loads(jstr)
+        # Build the tsne_df from:
+        #    '{"tsne_x":{"0":72.0819854736,"1":17.3076343536, ..., "9":-123.7122039795},
+        #      "tsne_y":{"0":152.3043212891,"1":156.5667877197, ... ,"9":-123.7122039795}
+        #      }'
+        tsne_df = pd.read_json(StringIO(res_dict['tsne_df']))
+        res_dict['tsne_df'] = tsne_df
+        
+        return res_dict
+    
+# ---------------------------------- Class ClusteringResult ---------------
+class ClusteringResult:
+    '''
+    Holds final, and intermediate results of searches
+    for the best Tsne perplexity and best KMeans n_clusters.
+    Instances are just a convenient place to have everything
+    organized during a search, and to easily access results.
+    
+    The results encapsulated are:
+    
+            kmeans_objs      : {n_clusters1 : <kmeans-obj-from-n_clusters1>,
+                                n_clusters2 : <kmeans-obj-from-n_clusters2>,
+                                      ...
+                                }
+            add_silhouette      : {n_clusters1 : <silhouette-coefficient1>,
+                                n_clusters2 : <silhouette-coefficient2>,
+                                      ...
+                                }   
+            tsne_df          : the passed-in Tsne dataframe
+            best_n_clusters  : the list of cluster labels from the kmeans
+                               that yielded the best result, i.e. the 
+                               highest silhouette coefficient.
+                               None if caller provided an n_cluster
+            best_kmeans      : the KMeans object that yielded the highest
+                               silhouette coefficient. 
+            best_silhouette  : maximum silhouette achieved: the one
+                               for best_n_cluster
+            cluster_pops     : point populations for each cluster when
+                               using best_nclusters for the KMeans population
+
+    Get and set methods are provided for the kmeans_objs attribute.
+    '''
+    
+    #------------------------------------
+    # Constructor
+    #-------------------
+    
+    def __init__(self):
+        
+        # Map of n_cluster to kmeans objects:
+        self._kmeans_objs    = {}
+        # Map of n_cluster to resulting add_silhouette coefficient
+        self._silhouettes    = {}
+        
+        self.tsne_df         = None 
+        self.best_n_clusters = None 
+        self.best_silhouette = None
+        self.cluster_pops    = None
+
+    #------------------------------------
+    # get_silhouette
+    #-------------------
+    
+    def get_silhouette(self, n_clusters):
+        if type(n_clusters) != int:
+            raise TypeError(f"Must pass number of clusters as an int, not {n_clusters}")
+        return self._silhouettes[n_clusters]
+
+    #------------------------------------
+    # add_silhouette
+    #-------------------
+    
+    def add_silhouette(self, n_clusters, silhouette):
+        if type(n_clusters) != int:
+            raise TypeError(f"Must integer n_clusters not {n_clusters}")
+        self._silhouettes[n_clusters] = silhouette
+
+    #------------------------------------
+    # silhouettes_dict
+    #-------------------
+    
+    def silhouettes_dict(self):
+        '''
+        Returns the dict {n_clusters : silhouette-coefficient}
+        '''
+        return self._silhouettes
+
+    #------------------------------------
+    # max_silhouette_n_cluster
+    #-------------------
+    
+    def max_silhouette_n_cluster(self):
+        '''
+        Returns the n_clusters value that yielded the 
+        maximum silhouette.
+        '''
+        
+        silhouettes = list(self._silhouettes.values())
+        max_sil_pos = silhouettes.index(max(silhouettes))
+        best_n_clusters = list(self._silhouettes.keys())[max_sil_pos]
+        return best_n_clusters
+    
+    #------------------------------------
+    # get_kmeans_obj
+    #-------------------
+    
+    def get_kmeans_obj(self, n_clusters):
+        if type(n_clusters) != int:
+            raise TypeError(f"Must pass number of clusters as an int, not {n_clusters}")
+        return self._kmeans_objs[n_clusters]
+
+    #------------------------------------
+    # add_kmeans_obj
+    #-------------------
+    
+    def add_kmeans_obj(self, n_clusters, kmeans_obj):
+        if type(n_clusters) != int:
+            raise TypeError(f"Must pass int for n_clusters, not {n_clusters}")
+        
+        self._kmeans_objs[n_clusters] = kmeans_obj
+
+    #------------------------------------
+    # __repr__
+    #-------------------
+    
+    def __repr__(self):
+        repr_str = f"ClusteringResult (kmeans run: {len(self._kmeans_objs)}) at {hex(id(self))}"
+        return repr_str
+
+    #------------------------------------
+    # __str__
+    #-------------------
+    
+    def __str__(self):
+        return self.__repr__()
+
+    
+# ---------------------------------- Class DataCalcs ---------------
+
+class DataCalcs:
+    '''
+    Convert or extract data from transformer chirp 
+    prediction outputs, and SonoBat classification 
+    output data. Uses of the resulting outputs are
+    clustering in various dimensions, and transformer
+    output variance analysis
+    '''
+
+    sorted_mnames = [
+        'LdgToFcAmp','HiFtoUpprKnAmp','HiFtoKnAmp','HiFtoFcAmp','UpprKnToKnAmp','KnToFcAmp',
+        'Amp4thQrtl','Amp2ndQrtl','Amp3rdQrtl','PrecedingIntrvl','PrcntKneeDur','Amp1stQrtl',
+        'PrcntMaxAmpDur','AmpK@start','FFwd32dB','Bndw32dB','StartF','HiFreq','UpprKnFreq',
+        'FFwd20dB','FreqKnee','FFwd15dB','Bndwdth','FFwd5dB','FreqMaxPwr','FreqCtr','FBak5dB',
+        'FreqLedge','AmpK@end','Fc','FBak15dB','FBak32dB','EndF','FBak20dB','LowFreq',
+        'Bndw20dB','CallsPerSec','EndSlope','SteepestSlope','StartSlope','Bndw15dB',
+        'HiFtoUpprKnSlp','HiFtoKnSlope','DominantSlope','Bndw5dB','PreFc500','PreFc1000',
+        'PreFc3000','KneeToFcSlope','TotalSlope','PreFc250','CallDuration','CummNmlzdSlp',
+        'DurOf32dB','SlopeAtFc','LdgToFcSlp','DurOf20dB','DurOf15dB','TimeFromMaxToFc','KnToFcDur',
+        'HiFtoFcExpAmp','AmpKurtosis','LowestSlope','KnToFcDmp','HiFtoKnExpAmp','DurOf5dB','KnToFcExpAmp',
+        'RelPwr3rdTo1st','LnExpBStartAmp','Filter','HiFtoKnDmp','LnExpBEndAmp','HiFtoFcDmp','AmpSkew',
+        'LedgeDuration','KneeToFcResidue','PreFc3000Residue','AmpGausR2','PreFc1000Residue','Amp1stMean',
+        'LdgToFcExp','FcMinusEndF','Amp4thMean','HiFtoUpprKnExp','HiFtoKnExp','KnToFcExp','UpprKnToKnExp',
+        'Kn-FcCurviness','Quality','Amp2ndMean','HiFtoFcExp','LnExpAEndAmp','RelPwr2ndTo1st','LnExpAStartAmp',
+        'HiFminusStartF','Amp3rdMean','PreFc500Residue','Kn-FcCurvinessTrndSlp','PreFc250Residue',
+        'AmpVariance','AmpMoment','meanKn-FcCurviness','Preemphasis','MinAccpQuality','Max#CallsConsidered',
+        'MaxSegLnght','AmpStartLn60ExpC','AmpEndLn60ExpC'        
+        ]
+
+    #------------------------------------
+    # Constructor
+    #-------------------
+
+    def __init__(self, measures_root, inference_root, fid_col='file_id'):
+        '''
+        Calculations for analyzing processed SonoBat data.
+        These data are normalized results from SonoBat classification
+        runs. Those contain measurements that characterize each chirp.
+        
+        Other data are next-chirp predictions.
+        
+        :param measures_root: root directory of normalized 
+            SonoBat measurements in 'split' files (split1.feather, 
+            split2.feather, etc) 
+        :type measures_root: str
+        :param inference_root: root directory of transformer next-chirp
+            predictions
+        :type inference_root: src
+        :param fid_col: name of column that uniquely identifies the 
+            .wav file of a chirp. That file name includes the
+            recording date and time
+        :type fid_col: str
+        '''
+
+        self.measures_root = measures_root
+        self.inference_root = inference_root
+        self.fid_col = fid_col
+        
+        self.log = LoggingService()
+        
+        # Prepare a list of paths to all split files:
+        split_fname_pat = re.compile(r'^split[\d]*$')
+
+        # Filter split files from other files in the measures_root:        
+        def split_name_detector(fname):
+            fname_stem = Path(fname).stem
+            return split_fname_pat.match(fname_stem) is not None
+        
+        # Get just the split file names from the measures dir
+        split_fnames = filter(split_name_detector, os.listdir(measures_root))
+        
+        # Get dict mapping a split file ID (a running int) to 
+        # the full pathname of a split file:
+        self.split_fpaths = {i : os.path.join(self.measures_root, split_fname)
+                             for i, split_fname
+                             in enumerate(split_fnames)}
+        
+        # Create self.fid2split_dict for mapping a file id
+        # to the split file that contains the data for that
+        # file id:
+        
+        self._make_fid2split_dict()
+        
+        # Cache of dfs of measures split files we had 
+        # to open so far: maps split id to df:
+        self.split_file_dfs_cache = {}
+
+    #------------------------------------
+    # _make_fid2split_dict
+    #-------------------
+    
+    def _make_fid2split_dict(self):
+        '''
+        Create a dict mapping measures file identifier ints
+        to the measures split file that contains the measure
+        created from the file identified by the file id. Like
+        
+            10 : '/foo/bar/split40.feather',
+            43 : '/foo/bar/split4.feather',
+                      ...
+                      
+        This dict is used, for example, to retrieve the chirp measures 
+        that correspond to a given T-sne point.
+        
+        The result will be in self.fid2split_dict.
+        '''
+        
+        self.fid2split_dict = {}
+        for fpath in self.split_fpaths.values():
+            fids_df = pd.read_feather(fpath, columns=[self.fid_col])
+            # Get list of file ids in this split file as a list:
+            fids = fids_df.file_id.values
+            
+            # Add all this split file's file ids to the
+            # fid2split_dict:
+            self.fid2split_dict.update({fid : fpath for fid in fids})
+
+    #------------------------------------
+    # measures_from_fid
+    #-------------------
+    
+    def measures_from_fid(self, fid):
+        '''
+        Given a measures file id, return a pandas
+        Series with the measures.
+        
+        :param fid: file id that identifies the row
+            in a dataset where the related chirp measures
+            are stored.
+        :type fid: int
+        :return the chirp measures created by SonoBat
+        :rtype pd.Series
+        '''
+        
+        try:
+            df = self.split_file_dfs_cache[fid]
+            measures = df.loc[fid]
+            return measures
+        except KeyError:
+            # Df not available yet:
+            pass
+        
+        split_path = self.fid2split_dict[fid]
+        df = pd.read_feather(split_path)
+        
+        # Copy the file id column to the index
+        df.index = df[self.fid_col]
+        
+        measures = df.loc[fid]
+        return measures   
+    
+    #------------------------------------
+    # sort_by_variance
+    #-------------------
+    
+    @classmethod
+    def sort_by_variance(cls, measures, delete_non_measures=True):
+        '''
+        Given a list of measure names (i.e. SonoBat classifier-produced
+        column names), return a new list of the same names, 
+        sorted by decreasing variance in the overall data. 
+        
+        Treatment of columns that are not SonoBat measures depends 
+        on the value of delete_non_measures. If it is true, such
+        columns won't be in the returned sorted list. If False, 
+        the non_measure elements will be at the end of the list. 
+        
+        :param measures: list of measure names to sort
+        :type measures: lisg[str]
+        :param delete_non_measures: whether or not to delete columns
+            that are not SonoBat measures
+        :rtype bool
+        :return names sorted by decreasing variance
+        :rtype list[str]
+        '''
+        
+        # List of columns that are not known SonoBat measurements
+        non_measure_els = []
+        # For informative error msg if name
+        # is passed in that is not a SonoBat measure:
+        global curr_el
+        def key_func(el):
+            # Initialize curr_el to be the 
+            # element currently being sorted:
+            global curr_el
+            curr_el = el
+            try:
+                return cls.sorted_mnames.index(el)
+            except ValueError:
+                # Given name is not in the list 
+                # of top SonoBat chirp measures.
+                # Put it at the end of the result
+                # list for now (we delete them later
+                # if requested):
+                non_measure_els.append(el)
+                return float("inf") 
+            
+        sorted_list_unabridged = sorted(measures, key=key_func)
+        if delete_non_measures:
+            new_list = [el
+                        for el in sorted_list_unabridged
+                        if el not in non_measure_els
+                        ]
+        else:
+            new_list = sorted_list_unabridged 
+            
+        return new_list
+    
+    #------------------------------------
+    # measures_by_var_rank
+    #-------------------
+    
+    @classmethod
+    def measures_by_var_rank(cls, 
+                             src_info, 
+                             min_var_rank,
+                             cols_to_keep=None
+                             ):
+        '''
+        Given either a dataframe, or the path to a .csv/.feather file,
+        return a new dataframe that is a subset of the given df, and
+        contains data only for the measure names of sufficient variance.
+        The min_var_rank specifies the variance threshold. Only measures
+        with a variance rank greater than min_var_rank are included in the
+        returned df.
+        
+        Example:
+        
+        src_info:
+
+               'HiFtoKnAmp'  'LdgToFcAmp'   'HiFtoUpprKnAmp'
+            0     10              20            30 
+            1     100            200           300
+            
+        min_var_rank = 2
+        
+        Returns:
+               'LdgToFcAmp','HiFtoUpprKnAmp'
+            0      20            30
+            1     200           300
+            
+        Because the three measures have variance rank order
+        
+           'LdgToFcAmp','HiFtoUpprKnAmp','HiFtoKnAmp'
+           
+        so the first column is not retained.
+        
+        The cols_to_keep argument may list columns to retain. These
+        might be non-measure columns, such as identifiers, datetimes, etc.
+          
+        :param src_info: either a dataframe, or the path to a .csv or .feather file
+        :type src_info: union[pd.DataFrame | str]
+        :return extracted dataframe
+        :rtype pd.DataFrame
+        '''
+        
+        if type(src_info) == str:
+            df_path = Path(src_info)
+            if df_path.suffix == '.feather':
+                df = pd.read_feather(df_path)
+            elif df_path.suffix == '.csv':
+                df = pd.read_csv(df_path)
+            else:
+                raise TypeError(f"Only .csv and .feather files are supported, not '{df_path.suffix}'")
+        elif type(src_info) == pd.DataFrame:
+            df = src_info
+        else:
+            raise TypeError(f"Dataframe source must be a path or a df, not {src_info}")
+            
+        given_cols = df.columns
+        
+        # Now that we have the df, check whether 
+        # caller wants columns to be kept in the returned
+        # df, which are not in the given df:
+        if cols_to_keep is not None:
+            if not all([col_nm in df.columns for col_nm in cols_to_keep]):
+                raise ValueError(f"The cols_to_keep list contains column(s) that are not in the dataframe")
+         
+        cols_by_variance = cls.sort_by_variance(given_cols)
+        try:
+            cols_wanted = cols_by_variance[:min_var_rank]
+        except IndexError:
+            # Desired minimum rank is larger than the 
+            # number of SonoBat measures, so use the whole
+            # source df:
+            cols_wanted = cols_by_variance
+            
+        # Df of just the wanted measures:
+        new_df = df[cols_wanted]
+        
+        if cols_to_keep is not None:
+            # Pull the to-keep columns from the original df:
+            sub_df = df[cols_to_keep]
+            # 'Attach' the to-kept columns to the right of the measures:
+            new_df = pd.concat([new_df, sub_df], axis='columns')
+        return new_df
+
+    #------------------------------------
+    # run_tsne
+    #-------------------
+    
+    def run_tsne(self,
+                 df,
+                 num_points=10000, 
+                 num_dims=50,
+                 point_id_col=None,
+                 perplexity=None,
+                 sort_by_bat_variance=True,
+                 cols_to_keep=[]
+                 ):
+        '''
+        Infile must be a .feather, .csv. or .csv.gz file
+        of SonoBat measures. The file is loaded into a DataFrame. 
+        
+        This function pulls the first num_dims columns from that
+        df, and limits the T-sne embedding input to those columns.
+        If num_dims is None, all input columns are retained. 
+        
+        If sort_by_bat_variance is True, columns must be SonoBat
+        program bat chirp measurement names. With that switch 
+        being True, the columns of the input df are sorted by 
+        decreasing variance over the Jasper Ridge bat recordings.
+        The num_dims columns are then taken from that sorted list
+        of measurement result columns. 
+        
+        after sorting the columns by decreasing variance.
+        That is the num_dims'th ranked variance measures are used
+        for each chirp. 
+        
+        Uses the min(num_points, dfsize) (i.e. num_points rows) from the df.
+        
+        After running the number of points will be in:
+        
+                self.effective_num_points
+        
+        Tsne is run over the resulting num_points x num_dims dataframe.  
+        
+        :param df: the dataframe to examine
+        :type df: pd.DataFrame
+        :param num_points: number of chirps to include from the 
+            given self.infile.
+        :type num_points: int
+        :param num_dims: number of measures of each chirp to use.
+            I.e. how many columns.
+        :type num_dims:
+        :param point_id_col: name of column to use for identifying each
+            data point in the clustering. The values of that column will
+            be placed into the df index. If None, the index will be the
+            default (0,1,2,...)
+        :type point_id_col: union[None | str]
+        :param perplexity: the perplexity hyper parameter value.
+            If None, the TSNE constructor's default is chosen: 30 or
+            one less than the length of the df.
+        :type perplexity: union[None | float]
+        :param sort_by_bat_variance: if True, all column names must
+            be SonoBat measure names. The num_dims number of columns
+            will be selected from the input dataframe such that they
+            have highest rank in variance over the bat recordings.
+        :type sort_by_bat_variance: bool
+        :param cols_to_keep: list of columns from the df that is being
+            tsne-fied that should be carried over unchanged to the tsne df,
+            which usually only has two cols: tsne_x, and tsne_y
+        :param cols_to_keep: union[None | list[str]
+        :result the T-sne embeddings
+        :rtype pd.DataFrame
+        '''
+        
+        if cols_to_keep is None:
+            cols_to_keep = []
+        else:
+            # Check whether caller wants columns to be kept in the returned
+            # df, which are not in the given df:
+            if not all([col_nm in df.columns for col_nm in cols_to_keep]):
+                raise ValueError(f"The cols_to_keep list contains column(s) that are not in the dataframe")
+        
+        # Sort by variance, and cut off below-threshold
+        # columns:
+        if sort_by_bat_variance:
+            
+            self.log.info(f"Tsne: sorting cols; selecting {num_dims}")
+            df_all_rows = DataCalcs.measures_by_var_rank(df, 
+                                                         min_var_rank=num_dims,
+                                                         cols_to_keep=cols_to_keep
+                                                         )
+            
+        else:
+            df_all_rows = df
+        
+        # Keep only the wanted rows:
+        if type(num_points) == int: 
+            df = df_all_rows.iloc[0:num_points]
+            # Get the key column for these num_points rows:
+            if point_id_col is not None:
+                file_ids = df[point_id_col].iloc[0:num_points]
+            else:
+                # Use the index of the original df, since
+                # caller did not specify a key column:
+                file_ids = list(df.index[0:num_points])
+        elif num_points is None:
+            df = df_all_rows
+            # Get all of the original file_id column: 
+            file_ids = list(df.index)
+        else:
+            raise TypeError(f"The num_points arg must be None or an integer, not {num_points}")
+
+        # Perplexity must be less than number of points:
+        if perplexity is not None:
+            if type(perplexity) != float:
+                raise TypeError(f"Perplexity must be None, or float, not {perplexity}")
+            if perplexity >= len(df):
+                perplexity = float(len(df) - 1)
+        else:
+            # Mirror the TSNE constructor's default:
+            perplexity = min(30.0, len(df)-1)
+
+        effective_num_points = len(df)
+        log_msg = (f"Running tsne; perplexity '{perplexity}';"
+                   f"num_dims: {num_dims};"
+                   f"num_points: {effective_num_points}")
+        self.log.info(log_msg)
+
+        tsne_obj = TSNE(n_components=2, init='pca', perplexity=perplexity)
+        embedding_arr = tsne_obj.fit_transform(df)
+        
+        # For each embedding point, add the point identifier,
+        # which is a column from the original df, i.e. 
+        # which is the value in the given point_id_col:
+        tsne_df_abbridged = pd.DataFrame(embedding_arr, index=file_ids, columns=['tsne_x', 'tsne_y'])
+        keeper_df = df[cols_to_keep]
+        keeper_df.index = tsne_df_abbridged.index
+        tsne_df = pd.concat([tsne_df_abbridged, keeper_df], axis='columns')
+        return tsne_df
+    
+    #------------------------------------
+    # cluster_tsne
+    #-------------------
+    
+    def cluster_tsne(self, tsne_df, n_clusters=None, cluster_range=range(2,10)):
+        '''
+        Computes Kmeans on the tsne dataframe. The returned
+        Kmeans object can be interrogated for the assignment
+        of each Tsne-embedded data point to a cluster. Example
+        for a Tsne df of 10 rows (i.e. 10 datapoints in both the
+        orginal df, and the Tsne embedding). Something like this:
+        
+            kmeans-obj.labels_ => expected: [0, 0, 2, 0, 2, 1, 0, 2, 2, 1]
+            
+        The numbers are cluster labels.
+        
+        Cluster centers in Tsne space are available as:
+        
+            kmeans-obj.cluster_centers():
+          returns like: array([[ 17.117634 ,  23.18263  ],
+                               [  6.5119925, -38.010742 ],
+                               [-52.590286 ,   3.915401 ]], dtype=float32)
+      
+        If n_clusters is None, this method finds the best n_clusters by
+        the silhouette method, trying range(2,10), subject to 2 <= n_clusters <= numSamples-1
+        
+        In this case the silhouette coefficients for each tested n_clusters 
+        will be available in the 
+        
+                self.silhouettes
+                
+        attribute. If an n_cluster is provided by the caller, this attribute
+        will be undefined.
+        
+        Also in the case of the given n_clusters being None, the computed 
+        silhouette coefficient for each tried n_clusters will be available
+        in the list attribute:
+        
+                self.n_cluster_range
+        
+        The kMeans object will be available in:
+        
+                self.kmeans
+                
+        Sizes of clusters in number of contained points will be available in
+        
+                self.cluster_populations
+                
+        Returned is an instance of ClusteringResult, which contains
+            o a mapping of n_clusters to their kmeans objects
+            o a mapping of n_clusters to resulting silhouette coefficient
+            o the given tsne_df, 
+            o the best_kmeans object, the one for which n_clusters is best_n_clusters, 
+            o the best_n_clusters found, 
+            o the best_silhouette coefficient, the one corresponding to the best_n_clusters,
+            o the populations of each cluster for the optimal kmeans.
+                
+        :param tsne_df: dataframe of points in Tsne space, as returned
+            by the run_tsne() method.
+        :type tsne_df: pd.DataFrame
+        :param n_clusters: number of clusters to find. If None,
+            a silhouette analysis is performed over n_cluster in [2...10].
+            The n_cluster resulting in the largest average silhouette coefficient
+            is chosen as n_clusters 
+        :type n_clusters: UNION[None | int]
+        :param cluster_range: Used when n_clusters is None. The range of
+            n_cluster values to test for leading to optimal clustering.
+        :type cluster_range: range
+        :return: all results
+        :rtype ClusteringResult
+        '''
+
+        # Start filling in the result
+        result = ClusteringResult()
+        result.tsne_df = tsne_df
+
+
+        np_arr = tsne_df.to_numpy()
+        # Case: caller specified the number of
+        # clusters to find:
+        if n_clusters is not None:
+            
+            self.log.info(f"Clustering Tsne result to {n_clusters} clusters")
+            
+            kmeans = KMeans(n_clusters=n_clusters)
+            kmeans.fit(np_arr)
+            # Just one n_cluster/kmeans pair:
+            result.add_kmeans_obj(n_clusters, kmeans)
+            result.cluster_pops = np.bincount(kmeans.labels_)
+            
+            # Make the only kmeans object the 'best' one:
+            result.best_kmeans = kmeans
+
+            # Did not look for best n_cluster, since caller provided it:
+            result.best_n_clusters  = None
+            result.best_silhouette  = None
+
+            return result
+
+        # Need to find best number of clusters via
+        # silhouette method. Try different n_clusters
+        # as specified in the cluster_range arg:
+        
+        self.n_cluster_range = list(cluster_range)
+        num_samples = len(np_arr)
+                
+        # List of silhouette coefficients resulting
+        # from each n_cluster: 
+        self.silhouettes = []
+        
+        self.log.info(f"Finding best n_clusters...")
+        
+        for n_clusters in cluster_range:
+            
+            # n_clusters must be 2 <= n_clusters <= n_samples-1
+            # for silhouette coefficient to be define:
+            if not (2 <= n_clusters <= len(np_arr)-1):
+                warn = (f"Not trying n_clusters {n_clusters} to {self.n_cluster_range[-1]}, "
+                        f"because number of samples is {num_samples}, and "
+                        f"(2<=n_clusters<={num_samples}) must be true")
+                self.log.warn(warn)
+                break
+            
+            self.log.info(f"Computing KMeans for {n_clusters} clusters...")
+            kmeans = KMeans(n_clusters=n_clusters)
+            cluster_labels = kmeans.fit_predict(np_arr)
+            # Save the computed kmeans as the i'th iteration:
+            result.add_kmeans_obj(n_clusters, kmeans)
+            # Compute the silhouette coefficient for this kmeans,
+            # and append it to the silhouttes list in the i'th position: 
+            result.add_silhouette(n_clusters, silhouette_score(np_arr, cluster_labels))
+            
+        # Find the index of the largest (average) silhouette:
+        max_silhouette_n_clusters = result.max_silhouette_n_cluster()
+        # Now we know which of the kmeans results to use:
+        kmeans = result.get_kmeans_obj(max_silhouette_n_clusters)
+        # The best n_clusters:
+        result.best_n_clusters = len(set(kmeans.labels_))
+        result.best_kmeans     = kmeans
+        result.best_silhouette = result.get_silhouette(result.best_n_clusters)
+        
+        self.log.info(f"Best silhouette (-1 to 1; 1 is best): {result.best_silhouette}; n_clusters: {n_clusters}")
+        
+        self.kmeans = kmeans
+        self.cluster_populations = np.bincount(kmeans.labels_)
+        result.cluster_pops = np.bincount(kmeans.labels_)
+        
+        return result
+
+    #------------------------------------
+    # find_optimal_tsne_clustering
+    #-------------------
+    
+    def find_optimal_tsne_clustering(
+            self,
+            df, 
+            perplexities=[5.0, 10.0, 20.0, 30.0, 50.0],
+            n_clusters_to_try=list(range(2,10)),
+            outfile=None,
+            cols_to_keep=['Max#CallsConsidered', 'file_id', 'chirp_idx']
+            ):
+        '''
+        Determine the Tsne 'perplexity' hyper parameter, and
+        the optimal number of clusters for KMeans of Tsne 
+        embeddings.
+        
+        The cols_to_keep argument instructs the Tsne-returned to
+        include the provided columns from the data df. For example,
+        say, the original df includes column 'NodeID', and the caller
+        wishes later to identify points in Tsne space by NodeID, the
+        caller would make cols_to_keep be ['NodeID']. The returned
+        Tsne df will then include the NodeID for wach tsne-x/tsne-y pair.
+        If a column is requested for keeping that is not in the given
+        dataframe, a ValueError results.
+        
+        Returned is a PerplexitySearchResult that contains:
+        
+        PerplexitySearchResult:
+            o optimal_perplexity
+            o tsne_df(perplexity)          : access to dict {perplexity : TSNE result df}
+            o clustering_result(perplexity): access to dict {perplexity : ClusteringResult}
+            o silhouettes_df               : df of cluster_n x perplexity; cells are perplexity coefficients.
+        
+        where Clustering Result:    
+            o best_n_clusters
+            o kmeans_objs
+            o tsne_df
+            o best_kmeans
+            o best_silhouette
+            o cluster_pops
+        
+        :param df: the dataframe of normalized SonoBat measures
+            over which to run the analyses
+        :type df: pd.DataFrame
+        :param perplexities: the perplexity values for which to 
+            run Tsne analysis
+        :type perplexities: list[float]
+        :param n_clusters_to_try: the number of clusters to try
+            passing into KMeans.
+        :type n_clusters_to_try: list[int]
+        :param outfile: file to write the n_cluster x perplexities result matrix.
+            If None: df is not written out.
+        :rtype outfile: union[None | str]
+        :param cols_to_keep:
+        :type cols_to_keep: union[None | list[str]] 
+        :return a PerplexitySearchResult containing
+        :rtype PerplexitySearchResult
+        '''
+
+        if cols_to_keep not in (None, []):
+            # Check whether caller wants columns to be kept in the returned
+            # df, which are not in the given df:
+            if not all([col_nm in df.columns for col_nm in cols_to_keep]):
+                raise ValueError(f"The cols_to_keep list contains column(s) that are not in the dataframe")
+        num_samples = len(df)
+        # Perplexity must be less than number of samples:
+        good_perplexities = [perp for perp in perplexities if perp < num_samples]
+        # Give warning about skipping perplexities, if needed:
+        if good_perplexities != perplexities:
+            dropped_perps = set(perplexities).difference(set(good_perplexities))
+            self.log.warn(f"Not testing perplexities {sorted(dropped_perps)}, because they are larger than number of samples ({num_samples}).")
+
+        # Run multiple Tsne embedding calculations, each
+        # with a different perplexity. Result will be
+        # a dict mapping perplexities to TSNE embedding coordinate dataframes:
+        
+        result = PerplexitySearchResult(df)
+        
+        self.tsne_df   = {perp : self.run_tsne(df, perplexity=perp, cols_to_keep=cols_to_keep)
+                           for perp in good_perplexities}
+        
+        result.add_tsne_dfs(self.tsne_df)
+
+        # Run KMeans on each of the Tsne embeddings, noting
+        # the silhouette coefficient for each clustering.
+        # A coefficient of 1 indicates great clustering.
+                
+        # Save the (by default eight) silhouettes that each
+        # KMeans computation places into self.add_silhouette,
+        # creating a nested array 'silhouettes'
+        #       [[sil2Clusters, sil3Clusters,...], # for Tsne perplexity 5.0
+        #        [sil2Clusters, sil3Clusters,...], # for Tsen perplexity 20.0
+        #                  ...
+        #        ]
+        self.kmeans_objs = []
+        for perplexity, tsne_df in self.tsne_df.items():
+            # Run multiple kmeans, specifying different number of clusters:
+            clustering_result = self.cluster_tsne(tsne_df, cluster_range=n_clusters_to_try)
+        
+            result.add_clustering_result(perplexity, clustering_result)    
+
+        # Find the best tsne perplexity and n_clusters_to_try by
+        # building the following df:
+        #
+        #                     N_CLUSTERS
+        #                  2      3  ...  9
+        #    PERPLEXITY
+        #        5.0      0.3    0.8 ... 0.4
+        #       10.0           ...
+        #       20.0           ...
+        #       30.0           ...
+        #       50.0           ...
+        #        
+        # Then find the max cell, which is the highest 
+        # silhouette coefficient:
+
+        # Find the perlexity and n_clusters that correspond
+        # to the highest silhouette coefficient in the dataframe:
+        (result.optimal_perplexity, result.optimal_n_clusters) = \
+            Utils.max_df_coords(result.silhouettes_df)
+            
+        if outfile is not None:
+            result.silhouettes_df.to_csv(outfile, index_label='n_clusters')\
+    
+        return result
+    
+# -------------------------- run_experiments --- the main    
+
+#------------------------------------
+# run_experiments
+#-------------------
+
+def run_experiments(key_col='file_id'):
+    '''
+    Run different data analyses. Comment out what you
+    don't want. Maybe eventually make into a command
+    line interface utility with CLI args.
+    
+    :param key_col: name of column in SonoBat measures
+        split files that contains the file id to uniquely
+        identify  
+    :type key_col:
+    '''
+
+    outfile        = '/tmp/cluster_perplexity_matrix.csv'
+    measures_root  = '/Users/paepcke/quintus/home/vdesai/bats_data/new_dataset/splits'
+    inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
+    split_file = 'split5.feather'
+    truth_file     = '/Users/paepcke/quintus/home/vdesai/bats_data/new_dataset/splits/split_truth_values.feather'
+
+    path = os.path.join(measures_root, split_file)
+
+    calc = DataCalcs(measures_root, inference_root, fid_col=key_col)
+
+    with UniversalFd(path, 'r') as fd:
+        calc.df = fd.asdf()
+    
+    # Initialize self.optimal_perplexity, self.optimal_n_clusters:
+    hyperparms_search_res = calc.find_optimal_tsne_clustering(
+        calc.df, 
+        perplexities=[5.0, 10.0, 20.0, 30.0, 50.0],
+        n_clusters_to_try=list(range(2,10)),
+        outfile=outfile
+        )
+    print(f"Optimal perplexity: {hyperparms_search_res.optimal_perplexity}; Optimal n_clusters: {hyperparms_search_res.optimal_n_clusters}")
+    #viz.plot_perplexities_grid([5.0,10.0,20.0,30.0,50.0], show_plot=True)
+
+    
+# ------------------------ Main ------------
+if __name__ == '__main__':
+    run_experiments()

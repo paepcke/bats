@@ -84,7 +84,7 @@ class DataVizTester(unittest.TestCase):
         labels = kmeans.labels_
         #n_clusters = len(set(labels))
         
-        # Test how many silhouettes were computed. Since
+        # Test how many add_silhouette were computed. Since
         # we did not provide a cluster_range in the call to 
         # cluster_tsne(), we don't know the range (the default
         # of the current implementation might change):
@@ -96,10 +96,41 @@ class DataVizTester(unittest.TestCase):
         kmeans = viz.cluster_tsne(tsne_df, n_clusters=None, cluster_range=range(2,4))
         labels = kmeans.labels_
         #n_clusters = len(set(labels))
-        # We expect two silhouettes: one for n_clusters==2, and 
+        # We expect two add_silhouette: one for n_clusters==2, and 
         # one for n_clusters==3
-        self.assertEqual(len(viz.silhouettes), 2)
+        self.assertEqual(len(viz.add_silhouette), 2)
 
+        
+    #------------------------------------
+    # test_plot_tsne
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_plot_tsne(self):
+        
+        #**********
+        path = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/measures/split80.feather'
+        #***********
+        viz = DataViz(path)
+        #****viz = DataViz(self.df_file)
+        tsne_df = viz.run_tsne(sort_by_bat_variance=False)
+        #*****kmeans = viz.cluster_tsne(tsne_df, n_clusters=3)
+        kmeans = viz.cluster_tsne(tsne_df, n_clusters=None)
+        
+        # The sum of cluster populations should be equal
+        # to the number of rows in the tsne_df, and also
+        # to viz.effective_num_points:
+        
+        self.assertEqual(len(tsne_df), viz.effective_num_points)
+        sum_cluster_population = sum(viz.cluster_populations)
+        self.assertEqual(sum_cluster_population, len(tsne_df))
+        
+        #viz.plot_tsne(tsne_df)
+        viz.plot_tsne(tsne_df, kmeans)
+        
+        print()
+        
+        
         
     # ---------------------- Utilities ---------------
 

@@ -10,7 +10,7 @@ import pandas as pd  # pip install pyarrow
 import re
 import sys
 
-class DataCalcs:
+class DataCleaner:
     '''
     Imports Sonobat data, and provides several 
     services:
@@ -32,29 +32,36 @@ class DataCalcs:
        input, but with a single row that contains
        the variance of the respective data column.
     '''
-    FilterXlation = {
-        '5 kHz'               : 0,
-        '30 kHz anti-katydid' : 1,
-        '10 kHz cutoff'       : 2,
-        '20 kHz anti-katydid' : 3,
-        '25 kHz ant-katydid'  : 4,
-        '15 kHz cutoff'       : 5   
-       }
+    
     
 
     #------------------------------------
     # Constructor
     #-------------------
 
-    def __init__(self, 
-                 infile, 
-                 outfile=None,       # Use False for no output
-                 compute_stats=False,# True, or a filepath for saving stats
-                 cull_threshold=None,
-                 remove_nans=True,
-                 admin_cols=None,    # Give [] if no administrative cols
-                 unittesting=False
-                 ):
+    def __init__(self):
+        
+        # No statistics available yet:
+        self.stats_df = None
+        
+        # Initialized by load_sonobat_data(),
+        # but may be modified by clients:
+        self.df = None
+
+    #------------------------------------
+    # clean_sonobat_file
+    #-------------------
+        
+    def clean_sonobat_file(
+            self,
+            infile, 
+            outfile=None,       # Use False for no output
+            compute_stats=False,# True, or a filepath for saving stats
+            cull_threshold=None,
+            remove_nans=True,
+            admin_cols=None,    # Give [] if no administrative cols
+            unittesting=False
+            ):
         '''
         Load the df from infile. Remove purely administrative
         columns. If admin_cols kwarg is None, the SonoBats 
@@ -66,6 +73,8 @@ class DataCalcs:
         numeric values. E.g.: '0.5 sec' is turned into float 0.5.
         
         Columns with only NaNs are removed.
+        
+        self.df will hold the cleaned dataframe
         
         If:
             o an outfile path is provided, the modified
@@ -88,10 +97,21 @@ class DataCalcs:
               
         If unittesting is True, none of the above operations
         are performed in this constructor.   
-        '''
         
-        # No statistics available yet:
-        self.stats_df = None
+        :param infile: .csv SonoBat file to clean
+        :type infile: str
+        :param outfile: where to place the cleaned dataframe. If None,
+            file statistics are printed to the console
+        :type outfile: union[None | str]
+        :param remove_nans: whether or not to remove columns that
+            are NaN throughout
+        :type remove_nans: bool
+        :param admin_cols: names of columns that are purely administrative,
+            and should be removed.
+        :type admin_cols: list[str]
+        :return cleaned dataframe (also stored in self.df)
+        :rtype pd.DataFrame
+        '''
         
         # Standard SonoBat administrative columns:
         if admin_cols is None:
@@ -118,7 +138,7 @@ class DataCalcs:
 
         # Turn values like '0.5 sec', which are partly string
         # typed into numbers
-        self.df = self.make_numeric(df)
+        df = self.make_numeric(df)
         
         if compute_stats:
             # The resulting stats dataframe
@@ -131,19 +151,19 @@ class DataCalcs:
                 not (0.0 <= cull_threshold <= 1.0): 
                 raise ValueError(f"Cull threshold must be a number between 0.0 and 1.0, not {cull_threshold}")
             
-            self.df = self.cull_columns(self.df, cull_threshold)
+            df = self.cull_columns(df, cull_threshold)
 
         # Output results or not: outfile may be None, False, or a path:
         if outfile is None:
             # Print summary to console:
-            print(self.df)
+            print(df)
             
         elif os.path.exists(outfile) and type(outfile) == str:
             # Ask user whether OK to overwrite:
             decision = input(f"Output file {outfile} exists; overwrite? (y/n)")            
             if decision == 'y':
                 try:
-                    self.df.to_csv(outfile, index=False)
+                    df.to_csv(outfile, index=False)
                 except Exception as e:
                     print(f"Could not write df to {outfile}: {e}") 
             else:
@@ -152,10 +172,10 @@ class DataCalcs:
         elif type(outfile) == str:
             # Assume that the outfile string is a path:
             try:
-                self.df.to_csv(outfile, index=False)
+                df.to_csv(outfile, index=False)
             except Exception as e:
                 print(f"Could not write df to {outfile}: {e}")
-        # Else, no output for self.df at all
+        # Else, no output for df at all
         
         # Client asked to output stats to a file.
         
@@ -176,16 +196,15 @@ class DataCalcs:
             else:
                 print('No stats written, but available via <cleaner>.stats_df')
        
-        elif compute_stats == True:
-            # Just output to console:
-            print(self.stats_df)
-                
         elif type(compute_stats) == str:
             # Compute_stats is a path, which does not yet exist:
             try:
                 self.stats_df.to_csv(compute_stats, index=True)
             except Exception as e:
                 print(f"Could not save stats to {compute_stats}: {e}")
+
+        self.df = df
+        return df
         
     #------------------------------------
     # load_sonobat_data
@@ -216,7 +235,7 @@ class DataCalcs:
         # the .csv file was a raw SonoBat file, or
         # a SonoBat file that we previously processed,
         # and saved via df.to_csv():
-        df = self._normalize_frame(df)
+        df = self._normalize_frame_format(df)
         
         # Be nice, and handle user supplied administrative
         # columns are not present:
@@ -245,7 +264,8 @@ class DataCalcs:
                       how='all',
                       subset=cols_to_incl, 
                       inplace=True)
-            
+         
+        self.df = df   
         return df
 
     #------------------------------------
@@ -384,6 +404,16 @@ class DataCalcs:
     #-------------------
     
     def _fix_preemph(self, df):
+        '''
+        The SonoBat data contains a string column 'Preemphasis'.
+        It contains 'low', 'medium', or 'high'. Replace these
+        with numeric values.
+        
+        :param df: dataframe to modify
+        :type df: pd.DataFrame
+        :return a modified dataframe
+        :rtype pd.DataFrame
+        '''
         
         if 'Preemphasis' not in df.columns:
             return df
@@ -408,14 +438,34 @@ class DataCalcs:
     #-------------------
     
     def _fix_filter(self, df):
+        '''
+        Convert the SonoBat 'Filter' column to 
+        a numeric value.
+        
+        :param df: dataframe to fix
+        :type df: pd.DataFrame
+        :return a df with the Filter column made numeric
+        :rtype pd.DataFrame
+        '''
 
         if 'Filter' not in df.columns:
             return df
         
+        # For translating the SonoBat frequency filter
+        # column from strings to numeric values:
+        FilterXlation = {
+            '5 kHz'               : 0,
+            '30 kHz anti-katydid' : 1,
+            '10 kHz cutoff'       : 2,
+            '20 kHz anti-katydid' : 3,
+            '25 kHz ant-katydid'  : 4,
+            '15 kHz cutoff'       : 5   
+           }
+        
         # Convert Filter column into floats:
         def from_filter(col_val):
             try:
-                numeric = self.FilterXlation[col_val]
+                numeric = FilterXlation[col_val]
             except KeyError:
                 raise ValueError(f"Expected filter spec, got '{col_val}'")
             return numeric
@@ -429,6 +479,16 @@ class DataCalcs:
     #-------------------
 
     def _fix_max_seg_length(self, df):
+        '''
+        Turn the string SonoBat MaxSegLnght (sic) into
+        a numeric value. Raw data has '0.5 secs' or 'sec'
+        and other irregularities
+        
+        :param df: dataframe to treat
+        :type df: pd.DataFrame
+        :return dataframe with MaxSegLnght column values numeric
+        :rtype pd.DataFrame
+        '''
 
         if 'MaxSegLnght' not in df.columns:
             return df
@@ -452,7 +512,7 @@ class DataCalcs:
     #-------------------
 
     @staticmethod
-    def _normalize_frame(df):
+    def _normalize_frame_format(df):
         '''
         Used to modify df as needed, so that 
         a .csv file imported from raw, SonoBat-generated
@@ -518,8 +578,8 @@ if __name__ == '__main__':
 
     # *****************
     # fpath = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/data.csv'
-    # df = DataCalcs(fpath)
-    # variances = DataCalcs(fpath, compute_variance=True)
+    # df = DataCleaner(fpath)
+    # variances = DataCleaner(fpath, compute_variance=True)
     # sys.exit(0)
     # *****************
 
@@ -613,7 +673,7 @@ if __name__ == '__main__':
         if decision != 'y':
             print('Aborting')
 
-    DataCalcs(args.infile, 
+    DataCleaner(args.infile, 
               args.outfile,
               compute_stats=do_stats
               )
