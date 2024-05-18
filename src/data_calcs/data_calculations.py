@@ -7,20 +7,25 @@ Created on Apr 27, 2024
 from collections import namedtuple
 from data_calcs.universal_fd import UniversalFd
 from data_calcs.utils import Utils
+from datetime import datetime
+from enum import Enum
 from io import StringIO
 from logging_service.logging_service import LoggingService
 from pathlib import Path
 from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
+#import openTSNE
 from sklearn.metrics import silhouette_score
-from sympy.physics.secondquant import Fd
+from tempfile import NamedTemporaryFile
 import csv
 import json
 import numpy as np
 import os
 import pandas as pd
+import random
 import re
-from sympy.physics.quantum.density import fidelity
+import shutil
+import time
 
 # ---------------------------------- namedtuple ChirpID ---------------
 
@@ -251,6 +256,15 @@ class PerplexitySearchResult:
             
             optimal_cluster_res = self.clustering_result(self.optimal_perplexity)
             optimal_tsne_df     = self.tsne_df(self.optimal_perplexity)
+            
+            # If the df has datetime column(s), convert them to ISO strings: 
+            # The filter expression below returns names of columns whose first-row
+            # data's type is datetime. The body of the loop pulls each of
+            # these columns from the df, and converts each of the resulting Series'
+            # values to an ISO date string: 
+            for colname in filter(lambda colname: isinstance(optimal_tsne_df[colname][0], datetime), optimal_tsne_df.columns):
+                optimal_tsne_df[colname] = optimal_tsne_df[colname].apply(lambda date: date.isoformat())
+            
             optimal_kmeans_obj  = optimal_cluster_res.get_kmeans_obj(self.optimal_n_clusters)
             res_dict = {}
             res_dict['optimal_perplexity']  = self.optimal_perplexity
@@ -548,7 +562,8 @@ class DataCalcs:
         self.log = LoggingService()
         
         # Read the mapping of .wav file to file_id values in 
-        # the measurements file_id column:
+        # the measurements file_id column. The header
+        # is ['Filename', 'file_id']
         map_file = os.path.join(measures_root, 'split_filename_to_id.csv')
         with open(map_file, 'r') as fd:
             fname_id_pairs = list(csv.reader(fd))
@@ -559,10 +574,10 @@ class DataCalcs:
         #    ]
         # Build id -> fname dict:
         # We need the reverse dict: ID-->wav_fname
-        
+        # (the fname_id_pairs[1:] skips over the header:
         self.fid_to_fname_dict = {int(fid) : fname
                                   for fname, fid
-                                  in fname_id_pairs
+                                  in fname_id_pairs[1:]
                                   } 
         
         # Prepare a list of paths to all split files:
@@ -798,15 +813,17 @@ class DataCalcs:
         else:
             raise TypeError(f"Dataframe source must be a path or a df, not {src_info}")
             
-        given_cols = df.columns
-        
         # Now that we have the df, check whether 
         # caller wants columns to be kept in the returned
         # df, which are not in the given df:
         if cols_to_keep is not None:
             if not all([col_nm in df.columns for col_nm in cols_to_keep]):
                 raise ValueError(f"The cols_to_keep list contains column(s) that are not in the dataframe")
-         
+
+        given_cols = df.columns
+
+        # Get (only true measures) columns, sorted by decreasing
+        # variance:        
         cols_by_variance = cls.sort_by_variance(given_cols)
         try:
             cols_wanted = cols_by_variance[:min_var_rank]
@@ -820,9 +837,11 @@ class DataCalcs:
         new_df = df[cols_wanted]
         
         if cols_to_keep is not None:
-            # Pull the to-keep columns from the original df:
-            sub_df = df[cols_to_keep]
-            # 'Attach' the to-kept columns to the right of the measures:
+            # 'Attach' the to-kept columns to the right of the measures,
+            # if they are not already in the df:
+            cols_to_attach = list(set(cols_to_keep) - set(cls.sorted_mnames))
+            # Pull the missing columns from the original df:
+            sub_df = df[cols_to_attach]
             new_df = pd.concat([new_df, sub_df], axis='columns')
         return new_df
 
@@ -866,10 +885,9 @@ class DataCalcs:
                   ]
     
         rec_times = list(map(lambda fname: Utils.time_from_fname(fname), fnames))
-    
-        # Adjust the column name:
-        df.rename({wav_file_col_nm : 'rec_datetime'}, axis='columns', inplace=True)
-        df['rec_datetime'] = rec_times
+        rec_times_series = pd.Series(rec_times, name='rec_datetime')
+        # Add recording times column:
+        df['rec_datetime'] = rec_times_series
     
         # Add a column 'daytime' with True or False, depending
         # on whether the recording was at daytime as seen at
@@ -887,7 +905,6 @@ class DataCalcs:
                  df,
                  num_points=10000, 
                  num_dims=50,
-                 point_id_col=None,
                  perplexity=None,
                  sort_by_bat_variance=True,
                  cols_to_keep=[]
@@ -972,18 +989,9 @@ class DataCalcs:
         
         # Keep only the wanted rows:
         if type(num_points) == int: 
-            df = df_all_rows.iloc[0:num_points]
-            # Get the key column for these num_points rows:
-            if point_id_col is not None:
-                file_ids = df[point_id_col].iloc[0:num_points]
-            else:
-                # Use the index of the original df, since
-                # caller did not specify a key column:
-                file_ids = list(df.index[0:num_points])
+            df = df_all_rows.loc[0:num_points-1, :]
         elif num_points is None:
             df = df_all_rows
-            # Get all of the original file_id column: 
-            file_ids = list(df.index)
         else:
             raise TypeError(f"The num_points arg must be None or an integer, not {num_points}")
 
@@ -1003,24 +1011,33 @@ class DataCalcs:
                    f"num_points: {effective_num_points}")
         self.log.info(log_msg)
 
-        tsne_obj = TSNE(n_components=2, init='pca', perplexity=perplexity)
+        tsne_obj = TSNE(n_components=2, 
+                        init='pca', 
+                        perplexity=perplexity,
+                        metric='cosine',
+                        n_jobs=8,
+                        random_state=3
+                        )
+        # tsne_obj = openTSNE.TSNE(
+        #         perplexity=perplexity,
+        #         initialization="pca",
+        #         metric="cosine",
+        #         n_jobs=8,
+        #         random_state=3,
+        #         )
         
         # Only use columns for TSNE computation that 
-        # are not carry-overs, and are therefore hoped
-        # to be included for the TSNE. The carry-overs
-        # will be added later to the TSNE output df:
-        
-        cols_to_use = set(df.columns) - set(cols_to_keep)
-        embedding_arr = tsne_obj.fit_transform(df.loc[:, list(cols_to_use)])
+        # are both, in the measures, and are wanted
+        # for carry-over:
+
+        cols_to_use = list(set(self.sorted_mnames).intersection(set(df.columns)))
+        embedding_arr = tsne_obj.fit_transform(df.loc[:, cols_to_use])
         
         # For each embedding point, add the cols_to_keep, after
         # turning the np.array TSNE result into a df:
         tsne_df_abbridged = pd.DataFrame(embedding_arr, columns=['tsne_x', 'tsne_y'])
-        keeper_df = df[cols_to_keep]
-        # Make the indexes the same, so that the subsequent concat() aligns;
-        # Don't copy the index into a column during this process (drop=True):
-        keeper_df.reset_index(inplace=True, drop=True)
-        tsne_df = pd.concat([tsne_df_abbridged, keeper_df], axis='columns')
+        # Attach the source df to the TSNE result:
+        tsne_df = pd.concat([tsne_df_abbridged, df], axis='columns')
         return tsne_df
     
     #------------------------------------
@@ -1100,7 +1117,7 @@ class DataCalcs:
         result.tsne_df = tsne_df
 
 
-        np_arr = tsne_df.to_numpy()
+        np_arr = tsne_df[['tsne_x', 'tsne_y']].to_numpy()
         # Case: caller specified the number of
         # clusters to find:
         if n_clusters is not None:
@@ -1164,7 +1181,7 @@ class DataCalcs:
         result.best_kmeans     = kmeans
         result.best_silhouette = result.get_silhouette(result.best_n_clusters)
         
-        self.log.info(f"Best silhouette (-1 to 1; 1 is best): {result.best_silhouette}; n_clusters: {n_clusters}")
+        self.log.info(f"Best silhouette (-1 to 1; 1 is best): {result.best_silhouette}; n_clusters: {result.best_n_clusters}")
         
         self.kmeans = kmeans
         self.cluster_populations = np.bincount(kmeans.labels_)
@@ -1223,9 +1240,9 @@ class DataCalcs:
         :param n_clusters_to_try: the number of clusters to try
             passing into KMeans.
         :type n_clusters_to_try: list[int]
-        :param outfile: file to write the n_cluster x perplexities result matrix.
-            If None: df is not written out.
-        :rtype outfile: union[None | str]
+        :param outfile: file to write the PerplexitySearchResult 
+            instance. If None: result is not written out, and is just returned.
+        :rtype outfile: union[None | str | file-like]
         :param cols_to_keep:
         :type cols_to_keep: union[None | list[str]] 
         :return a PerplexitySearchResult containing
@@ -1236,7 +1253,11 @@ class DataCalcs:
             # Check whether caller wants columns to be kept in the returned
             # df, which are not in the given df:
             if not all([col_nm in df.columns for col_nm in cols_to_keep]):
-                raise ValueError(f"The cols_to_keep list contains column(s) that are not in the dataframe")
+                wanted_set = set(cols_to_keep)
+                avail_set  = set(df.columns)
+                missing    = wanted_set - avail_set
+                self.log.warn(f"Wanted cols unavailable in split file: {missing}")
+                cols_to_keep = list(wanted_set - missing)
         num_samples = len(df)
         # Perplexity must be less than number of samples:
         good_perplexities = [perp for perp in perplexities if perp < num_samples]
@@ -1295,59 +1316,285 @@ class DataCalcs:
             Utils.max_df_coords(result.silhouettes_df)
             
         if outfile is not None:
-            result.silhouettes_df.to_csv(outfile, index_label='n_clusters')\
+            result.to_json(outfile)
     
         return result
     
 # -------------------------- run_experiments --- the mains options    
 
-#------------------------------------
-# run_experiments
-#-------------------
 
-def run_experiments(chirp_id_src=ChirpIdSrc('file_id', ['chirp_idx'])):
-    '''
-    Run different data analyses. Comment out what you
-    don't want. Maybe eventually make into a command
-    line interface utility with CLI args.
+
+# ---------------------------- Class MainActions ------------
+
+class Activities:
+
+    #------------------------------------
+    # Constructor
+    #-------------------
     
-    :param key_col: name of column in SonoBat measures
-        split files that contains the file id to uniquely
-        identify  
-    :type key_col:
-    '''
-
-    outfile        = '/tmp/cluster_perplexity_matrix.csv'
-    measures_root  = '/Users/paepcke/quintus/home/vdesai/bats_data/new_dataset/splits'
-    inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
-    split_file = 'split5.feather'
-    truth_file     = '/Users/paepcke/quintus/home/vdesai/bats_data/new_dataset/splits/split_truth_values.feather'
-
-    path = os.path.join(measures_root, split_file)
-
-    calc = DataCalcs(measures_root, inference_root, chirp_id_src=chirp_id_src)
-
-    with UniversalFd(path, 'r') as fd:
-        calc.df = fd.asdf()
+    def __init__(self,
+                 dst_dir,
+                 data_dir='/tmp',
+                 res_file_pref='preplexity_n_clusters_optimum'):
         
-    # Replace .wav file information in file_id column 
-    # with recording date/time. The file_id column name
-    # will be changed to 'rec_datetime', and an additional
-    # column: 'is_daytime' will be added:
-    calc.add_recording_datetime() 
-    
-    
-    # Initialize self.optimal_perplexity, self.optimal_n_clusters:
-    hyperparms_search_res = calc.find_optimal_tsne_clustering(
-        calc.df, 
-        perplexities=[5.0, 10.0, 20.0, 30.0, 50.0],
-        n_clusters_to_try=list(range(2,10)),
-        outfile=outfile
-        )
-    print(f"Optimal perplexity: {hyperparms_search_res.optimal_perplexity}; Optimal n_clusters: {hyperparms_search_res.optimal_n_clusters}")
-    #viz.plot_perplexities_grid([5.0,10.0,20.0,30.0,50.0], show_plot=True)
+        self.log = LoggingService()
+        self.dst_dir = dst_dir
+        self.data_dir = data_dir
+        self.res_file_pref = res_file_pref
 
+    #------------------------------------
+    # organize_results
+    #-------------------
+    
+    def organize_results(self):
+        
+        for fname in self._find_srch_results():
+            # Guard against 0-length files from aborted runs:
+            if os.path.getsize(fname) == 0:
+                self.log.warn(f"Empty hyperparm search result: {fname}")
+                continue
+            srch_res = PerplexitySearchResult.read_json(fname)
+            mod_time = self._modtimestamp(fname)
+            perp = srch_res['optimal_perplexity']
+            n_clusters = srch_res['optimal_n_clusters']
+            
+            dst_json_nm   = f"perp_p{perp}_n{n_clusters}_{mod_time}.json"
+            dst_json_path = os.path.join(self.dst_dir, dst_json_nm)
+            
+            dst_csv_nm = f"{Path(dst_json_path).stem}.csv"
+            dst_csv_path = Path(dst_json_path).parent.joinpath(dst_csv_nm)          
+            
+            src_path = os.path.join(self.data_dir, fname)
+            shutil.move(src_path, dst_json_path)
+            
+            # Write the TSNE df to csv:
+            tsne_df = srch_res['tsne_df']
+            
+            tsne_df.to_csv(dst_csv_path, index=False)
+            
+            #print(srch_res)
+            print(dst_json_nm)
+
+    #------------------------------------
+    # hyper_parm_search
+    #-------------------
+    
+    def hyper_parm_search(self):
+
+        # Offer to remove old search results to avoid confusion.
+        # Asks for OK. 
+        # If return of False, user aborted.
+        if not self.remove_search_res_files():
+            return
+        
+        # Repeate hyperparameter search three times, 
+        # each time with a different measurements split file:
+        #**********repeats = 3
+        repeats = 1
+        
+        measurement_split_num = random.sample(range(0,10), repeats)
+         
+        for split_num in measurement_split_num:
+            split_file = f"split{split_num}.feather"
+            start_time = time.monotonic()
+            
+            with NamedTemporaryFile(dir='/tmp', 
+                                    prefix=self.res_file_pref,
+                                    suffix='.json',
+                                    delete=False
+                                    ) as fd:
+            
+                self._run_hypersearch(search_res_outfile=fd.name, split_file=split_file)
+                
+                stop_time = time.monotonic()
+                duration = stop_time - start_time
+                print(f"Runtime measurement file split{split_num}.feather: {int(duration)} seconds")
+                print(f"... {int(duration / 60)} minutes")
+                print(f"...{duration / 3600} hours")
+
+    #------------------------------------
+    # remove_search_res_files
+    #-------------------
+    
+    def remove_search_res_files(self):
+
+        # Check whether any hyper search results even exist:
+        fnames = self._find_srch_results()
+        if len(fnames) == 0:
+            # Nothing to do
+            return True
+
+        # There are search result files to remove; double check with user:        
+        resp = input("Remove previous search results? (Yes/no): ")
+        if resp != 'Yes':
+            print('Aborting, nothing done.')
+            return False
+
+        for srch_res in fnames:
+            self.log.info(f"Removing {srch_res}")
+            os.remove(srch_res)
+            
+        return True
+
+    #------------------------------------
+    # _run_hypersearch
+    #-------------------
+    
+    def _run_hypersearch(self,
+                         chirp_id_src=ChirpIdSrc('file_id', ['chirp_idx']),
+                        search_res_outfile=None,
+                        split_file='split5.feather'
+                        ):
+        '''
+        Run different data analyses. Comment out what you
+        don't want. Maybe eventually make into a command
+        line interface utility with CLI args.
+        
+        The search_res_outfile may be provided if the hyperparameter
+        search result should be saved as JSON. It can be recovered
+        via PerplexitySearchResult.read_json(). The value of this
+        arg may be a file path string, a file-like object, like an
+        open file descriptor, or None. If None, no output.
+        
+        :param chirp_id_src: name of columns in SonoBat measures
+            split files that contain the file id and any other
+            columns in the measurements df that together uniquely identify
+            each chirp
+        :type key_col: ChirpIdSrc
+        :param search_res_outfile: if provided, save the hyperparameter search
+            as JSON in the specified file
+        :type search_res_outfile: union[str | file-like | None]
+        :parm split_file: name of split file to use as measurements source.
+            File is just the file name, relative to the measures root.
+        :type split_file:
+        '''
+    
+        outfile        = '/tmp/cluster_perplexity_matrix.csv'
+        #measures_root  = '/Users/paepcke/quintus/home/vdesai/bats_data/new_dataset/splits'
+        measures_root = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
+        inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
+    
+        if Utils.is_file_like(search_res_outfile):
+            res_outfile = search_res_outfile.name 
+        elif type(search_res_outfile) == str:
+            # Make sure we can write there:
+            try:
+                with open(search_res_outfile, 'w') as fd:
+                    fd.write('foo')
+                os.remove(search_res_outfile)
+            except Exception:
+                raise ValueError(f"Cannot write to {search_res_outfile}")
+            # We'll be able to write the result:
+            res_outfile = search_res_outfile
+        else:
+            res_outfile = None
+    
+        path = os.path.join(measures_root, split_file)
+    
+        calc = DataCalcs(measures_root, inference_root, chirp_id_src=chirp_id_src)
+    
+        with UniversalFd(path, 'r') as fd:
+            calc.df = fd.asdf()
+            
+        # Use the .wav file information in file_id column to  
+        # obtain each chirp's recording date and time. The new
+        # column will be called 'rec_datetime', and an additional
+        # column: 'is_daytime' will be added. This is done inplace,
+        # so no back-assignment is needed:
+        calc.add_recording_datetime(calc.df) 
+        
+        # Find best self.optimal_perplexity, self.optimal_n_clusters:
+        # Perplexity for small datasets should be small:
+        if len(calc.df) < 100:
+            perplexities = [5.0, 10.0, 20.0, 30.0]
+        elif len(calc.df) < 2000:
+            perplexities = [30.0, 40.0, 50.0]
+        else:
+            perplexities = [40.0, 50.0, 60.0, 70.0, 100.0]
+    
+        print(f"Will try perplexities {perplexities}...")
+        
+        # The columns of the measurements file to retain in
+        # the final search result object's TSNE df: the measurements
+        # with high variance (DataCalcs.sorted_mnames), plus the
+        # composite chirp key, file_id, chirp_idx:
+        (important_cols := DataCalcs.sorted_mnames.copy()).extend(['file_id', 'chirp_idx', 'rec_datetime', 'is_daytime'])
+        hyperparms_search_res = calc.find_optimal_tsne_clustering(
+            calc.df, 
+            perplexities=perplexities,
+            n_clusters_to_try=list(range(2,10)),
+            cols_to_keep=important_cols,
+            outfile=outfile
+            )
+        print(f"Optimal perplexity: {hyperparms_search_res.optimal_perplexity}; Optimal n_clusters: {hyperparms_search_res.optimal_n_clusters}")
+        
+        if res_outfile is not None:
+            print(f"Saving hyperparameter search to {res_outfile}...")
+            hyperparms_search_res.to_json(res_outfile)
+        #viz.plot_perplexities_grid([5.0,10.0,20.0,30.0,50.0], show_plot=True)
+
+    #------------------------------------
+    # _find_srch_results
+    #-------------------
+    
+    def _find_srch_results(self):
+        fnames = filter(lambda fname: fname.startswith(self.res_file_pref),
+                        os.listdir(self.data_dir))
+        full_paths = [os.path.join(self.data_dir, fname)
+                      for fname 
+                      in fnames]
+        return full_paths
+
+    #------------------------------------
+    # _modtimestamp
+    #-------------------
+    
+    def _modtimestamp(self, fname):
+        
+        # Get float formatted file modification time,
+        # and turn into int:
+        mod_timestamp = int(os.path.getmtime(fname))
+        # Make into a datetime object:
+        moddt = datetime.fromtimestamp(mod_timestamp)
+        # Get a datetime ISO formatted str, and remove
+        # the dash and colon chars to get like
+        #   '20240416T152351' 
+        stamp = moddt.isoformat().replace('-', '').replace(':', '')
+        return stamp
+
+    #------------------------------------
+    # main
+    #-------------------
+    
+    def main(self, action):
+
+        if action == Action.ORGANIZE:
+            self.organize_results()
+            
+        elif action == Action.HYPER_SEARCH:
+            self.hyper_parm_search()
+            
+        elif action == Action.CLEAR_RESULTS:
+            self.remove_search_res_files()
+            
+        else:
+            raise ValueError(f"Unknown action: {action}")
+            
+            
+class Action(Enum):
+    ORGANIZE      = 0
+    HYPER_SEARCH  = 1
+    CLEAR_RESULTS = 2
     
 # ------------------------ Main ------------
 if __name__ == '__main__':
-    run_experiments()
+
+    proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+    dst_dir = os.path.join(proj_dir, 'results/hyperparm_searches')
+
+    #*******action  = Action.HYPER_SEARCH
+    action  = Action.ORGANIZE
+        
+    activities = Activities(dst_dir)
+    activities.main(action)
+        

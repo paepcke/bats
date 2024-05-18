@@ -142,3 +142,7 @@ dmypy.json
 data*.csv
 .pydevproject
 .project
+src/powerflock/tests/quad_sig_calibrator_experiment/
+.DS_Store
+.settings/
+doc/ScalingProcedureBatsData/
