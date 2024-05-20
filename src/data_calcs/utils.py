@@ -133,21 +133,56 @@ class Utils:
         return dt
 
     #------------------------------------
+    # timestamp_fname_safe
+    #-------------------
+    
+    @staticmethod
+    def timestamp_fname_safe(time=None):
+        '''
+        Returns date and time in a format safe for use 
+        in filenames
+        
+        :param time: optinally, a datetime to turn into a 
+            filename safe string. If None, current date and time
+            are used.
+        :type time: union[None | datetime.datetime]
+        :return timestamp for use in file names
+        :rtype str
+        '''
+
+        if time is not None and not isinstance(time, datetime):
+            raise TypeError(f"Time argument must of None or a datetime.datetime")
+                            
+        if time is None:
+            # Get like '2024-05-19T10:16:42.785678'
+            dt_str = datetime.now().isoformat()
+        else:
+            dt_str = time.isoformat()
+        # Remove dashes and colons
+        file_safe = dt_str.replace('-', '').replace(':', '')
+        return file_safe
+        
+
+    #------------------------------------
     # is_daytime_recording
     #-------------------
     
     @classmethod
-    def is_daytime_recording(cls, fname):
+    def is_daytime_recording(cls, time_src):
         '''
         Returns True or False, depending on whether the
-        file name encodes a recording time that was daylight
-        at Jasper Ridge on the Stanford campus.
+        time_src encodes a recording time that was daylight
+        at Jasper Ridge on the Stanford campus. If time_src
+        is a file name, it is assumed to be a .wav file name
+        that includes the datetime info. That filename is then
+        decoded from the fname string.
         
-        :param fname: .wav name from which to extract recording date and time 
-        :type fname: str
+        :param time_src: .wav name from which to extract recording date and time,
+            or a Python datetime or Pandas Timestamp
+        :type time_src: union[str | datetime.datetime | pd.Timestamp
         :return whether or not the recording time was during the day, or not.
         :rtype bool
         '''
-        res = cls.rec_time_util.is_daytime_recording(fname)
+        res = cls.rec_time_util.is_daytime_recording(time_src)
         return res
         

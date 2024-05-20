@@ -4,19 +4,9 @@ Created on Apr 28, 2024
 @author: paepcke
 '''
 
-from data_calcs.data_calculations import DataCalcs
-from data_calcs.universal_fd import UniversalFd
-from data_calcs.utils import Utils
-from logging_service import LoggingService
-from matplotlib.gridspec import GridSpec
 import matplotlib.pyplot as plt
-import numpy as np
-import os
-import pandas as pd
-import sys
-sys.path.pop(0)
-
-
+#import sys
+#sys.path.pop(0)
 
 class DataViz:
     '''
@@ -30,7 +20,7 @@ class DataViz:
     #-------------------
     
     @staticmethod
-    def plot_tsne(tsne_df, cluster_ids=None, show_plot=True):
+    def plot_tsne(tsne_df, cluster_ids=None, title=None, show_plot=True):
         '''
         Given the dataframe that is output by run_tsne(),
         create a scatterplot. If cluster_ids is a list that assigns
@@ -60,6 +50,8 @@ class DataViz:
             tsne_df has rows. Each id is a label for a cluster to which
             the respective Tsne point belongs.
         :type cluster_ids: union[None | list[int] | list[str]]
+        :param title: optional title for the plot
+        :type title: union[None | str]
         :param show_plot: whether or not this method should display
             the chart on the display
         :type show_plot: bool
@@ -88,83 +80,52 @@ class DataViz:
     # plot_perplexities_grid
     #-------------------
     
-    def plot_perplexities_grid(self, perplexities, show_plot=True, block_after_show=True):
+    @staticmethod
+    def plot_perplexities_grid(tsne_labels_title_dicts,
+                               show_plot=True, 
+                               block_after_show=True):
         '''
         Create multiple KMeans(Tsne) cluster charts, and
-        place them in a Figure grid. Each Tsne calculation is
-        performed with a different perplexity, as per the 
-        argument.
+        place them in a Figure grid.
         
         Returns the Figure.
         
-        :param perplexities: list of perplexities to use in 
-            different Tsne calculations
-        :type perplexities: list[float]
-        :param show_plot: whether or not to display the computed
-            figure grid.
-        :type show_plot: bool
+        :param perplexity_tsne_title_dicts: list of dicts. Each dict
+            has keys 'tsne_df', 'cluster_ids', and 'title'
+        :type perplexity_tsne_title_dicts: list[dict[str : union[pd.DataFrame | list[str] | str]]]  
         :return Figure object, ready to show
         :rtype Figure
         
         '''
-        
-        tsne_df   = [self.run_tsne(perplexity=perp)
-                      for perp in perplexities]
-        
-        # Save the (by default eight) add_silhouette that each
-        # KMeans computation places into self.add_silhouette;
-        # create a nested array:
-        add_silhouette = []
-        
-        kmeans_objs = []
-        clusters_to_try = list(range(2,10))
-        for tsne_df in tsne_df:
-            kmean = self.cluster_tsne(tsne_df, cluster_range=clusters_to_try)
-            kmeans_objs.append(kmean)
-            add_silhouette.append(self.add_silhouette)
-            
-        # Find the best tsne perplexity and n_clusters by
-        # building the following df:
-        #
-        #                     N_CLUSTERS
-        #                  2      3  ...  9
-        #    PERPLEXITY
-        #        5.0      0.3    0.8 ... 0.4
-        #       10.0           ...
-        #       20.0           ...
-        #       30.0           ...
-        #       50.0           ...
-        #        
-        # Then find the max cell, which is the highest 
-        # silhouette coefficient:
-        #******* Get best tsne_df from best-silhouette-kmean_obj
-        
-        silhouette_df = pd.DataFrame(add_silhouette, 
-                                     index=perplexities,
-                                     columns=clusters_to_try,
-                                     )
-        silhouette_df.index.name = 'Perplexity'
-        
-        (optimal_perplexity, optimal_n_clusters) = Utils.max_df_coords(silhouette_df)
 
+        # Get a 2x2 grid of axes, enough for 
+        # all plots:
+        num_axes = len(tsne_labels_title_dicts)
+        # Grid will be two cols; compute number of 
+        # rows needed:
+        num_axes_rows = int(num_axes / 2) + (1 if num_axes % 2 >0 else 0)
+        fig, axs = plt.subplots(nrows=num_axes_rows, ncols=2, layout='tight')
+        
+        # Last row of plots may not be populated:
+        populated_axes = axs.flatten()[:num_axes]
+        
+        # Draw the plots 
+        for ax, content_dict in zip(populated_axes, tsne_labels_title_dicts):
+            tsne_df, cluster_ids, title = content_dict.values()
+            if cluster_ids is None:
+                ax.scatter(tsne_df['tsne_x'], tsne_df['tsne_y'])
+            else:
+                ax.scatter(tsne_df['tsne_x'], 
+                           tsne_df['tsne_y'], 
+                           c=cluster_ids,
+                           cmap=DataViz.cmap
+                           )
+            ax.set_title(title, fontsize=9)
+        
+        fig.suptitle("Tsne Perplexities and KMeans n_cluster Values", fontweight='bold')
+        fig.show()
+        return fig
 
-        figs       = [self.plot_tsne(tsne_df, kmeans=kmeans, show_plot=False)
-                      for tsne_df, kmeans
-                      in zip(tsne_df, kmeans_objs)]
-        
-        fig = plt.figure(tight_layout=True)
-        fig.suptitle("Clustering Chirps With Varying Perplexities")
-        
-        # Use a grid of plots that leaves at most
-        # one unused field in the lower right of the grid:
-        grid_square_dims = int(np.ceil(np.sqrt(len(perplexities)))) 
-        grid_spec = GridSpec(grid_square_dims, grid_square_dims)
-        for fig in figs:
-            grid_spec.add_axes(fig.axes[0])
-        
-        if show_plot:
-            plt.show(block=block_after_show)
-        
         
 # ------------------------ Main ------------
 if __name__ == '__main__':

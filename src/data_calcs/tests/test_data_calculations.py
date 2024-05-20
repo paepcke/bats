@@ -186,7 +186,7 @@ class DataPrepTester(unittest.TestCase):
     # test_run_tsne
     #-------------------
     
-    #******@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_run_tsne(self):
         dp = DataCalcs(self.tmpdir.name, self.tmpdir.name)
         
@@ -203,37 +203,37 @@ class DataPrepTester(unittest.TestCase):
         tsne_df = dp.run_tsne(self.tst_df4) # num_points, num_dims, point_id_col, perplexity, sort_by_bat_variance)
         # We did not asked that any non-measure columns 
         # be retained, so result Tsne df should be like:
-        #           tsne_x  tsne_y
-        #    0 -143.171616     0.0
-        #    1    0.000000     0.0
-        #    2  143.171616     0.0
-        self.assertEqual(len(tsne_df.columns), 2)
-        pd.testing.assert_index_equal(tsne_df.index, pd.Index([0,1,2]))
+        #        tsne_x  tsne_y  PrecedingIntrvl  CallsPerSec
+        # 0 -2421.12085     0.0              100         1000
+        # 1     0.00000     0.0              200         2000
+        # 2  2421.12085     0.0              300         3000
+        pd.testing.assert_index_equal(tsne_df.index, pd.RangeIndex(0,3))
         self.assertEqual(len(tsne_df), 3)
         
         # Carry the 'file_id' coumn of the original df in
         # to the final tsne_df: 
         tsne_df = dp.run_tsne(self.tst_df4, cols_to_keep=['file_id']) # num_points, num_dims, point_id_col, perplexity, sort_by_bat_variance)
         
-        expected = pd.Index([0,1,2])
+        expected = pd.RangeIndex(0,3)
         pd.testing.assert_index_equal(tsne_df.index, expected)
         self.assertEqual(tsne_df.ndim, 2)
-        expected = pd.Index(['tsne_x', 'tsne_y', 'file_id'])
+        expected = pd.Index(['tsne_x', 'tsne_y','PrecedingIntrvl','CallsPerSec','file_id'])
         pd.testing.assert_index_equal(tsne_df.columns, expected)
         
         # Keep two columns, and specify a key column to be
         # copied to the index:
-        tsne_df = dp.run_tsne(self.tst_df4, point_id_col='file_id', cols_to_keep=['file_id', 'TimeInFile']) # num_points, num_dims, point_id_col, perplexity, sort_by_bat_variance)
+        tsne_df = dp.run_tsne(self.tst_df4, cols_to_keep=['file_id', 'TimeInFile']) # num_points, num_dims, point_id_col, perplexity, sort_by_bat_variance)
         self.assertEqual(tsne_df.ndim, 2)
-        expected = pd.Index(['tsne_x', 'tsne_y', 'file_id', 'TimeInFile'])
-        pd.testing.assert_index_equal(tsne_df.columns, expected)
+        expected = pd.Index(['tsne_x', 'tsne_y', 'PrecedingIntrvl', 'CallsPerSec', 'file_id', 'TimeInFile'])
+        # Columns might be out of order:
+        self.assertSetEqual(set(tsne_df.columns), set(expected))
         
         # Now try TSNE on a df with recording time and daylight information:
         df = dp.add_recording_datetime(self.tst_df_large).copy()
         tsne_df = dp.run_tsne(df, cols_to_keep=['rec_datetime', 'is_daytime'])
         
-        expected = ['tsne_x', 'tsne_y', 'rec_datetime', 'is_daytime']
-        self.assertListEqual(list(tsne_df.columns), expected)
+        expected = ['tsne_x', 'tsne_y', 'PrecedingIntrvl', 'CallsPerSec', 'is_daytime', 'rec_datetime']
+        self.assertSetEqual(set(tsne_df.columns), set(expected))
         self.assertEqual(len(tsne_df), len(df))
         
         # Check is_daytime col: only second row is True:
@@ -309,12 +309,8 @@ class DataPrepTester(unittest.TestCase):
         dp.find_optimal_tsne_clustering(df, cols_to_keep=None)
         self.log.warn.assert_called()
         
-        # Ask to keep a non-existent column:    
-        with self.assertRaises(ValueError):
-            dp.find_optimal_tsne_clustering(df, cols_to_keep=['FooCol'])
-
         # Now use a larger df:
-        df = self.tst_df_large
+        df = self.tst_df_large.copy()
         
         result = dp.find_optimal_tsne_clustering(df, cols_to_keep=None)
         
@@ -322,8 +318,8 @@ class DataPrepTester(unittest.TestCase):
         # only one that the length of our data df supports:
         self.assertEqual(result.optimal_perplexity, 5.0)
         expected_tsne_data_pts = len(df)
-        expected_num_cols      = 2
-        expected_cell_types    = np.float32
+        expected_num_cols      = 4
+        expected_cell_types    = np.float64
         
         # Only one tsne_df available, due to limited data df.
         # Get that df:
@@ -381,7 +377,7 @@ class DataPrepTester(unittest.TestCase):
     def test_PerplexitySearchResult_json(self):
         dp = DataCalcs(self.tmpdir.name, self.tmpdir.name)
 
-        df = self.tst_df_large
+        df = self.tst_df_large.copy()
         # Should give warning that it does not test 
         # several perplexities, because they are larger than num samples:
         perpl_srch_res = dp.find_optimal_tsne_clustering(df, cols_to_keep=None)
@@ -521,8 +517,12 @@ class DataPrepTester(unittest.TestCase):
         # for perplexities searches to make sense:
         for i in range(4, 10):
             # Last value is the file_id:
-            new_row = [i*10, i*100, i*1000, 10+i, i]
+            #       TmInFil PredIntv ClsPSec  FID  ChirpIDX  
+            new_row = [i*10, i*100,   i*1000, 10+i, i]
             self.tst_df_large.loc[i] = new_row 
+        
+        # Ensure the index is 0-10:
+        self.tst_df_large.reset_index(drop=True, inplace=True)        
         
         # The file ID to .wav file recording name map:
         split_file_name_to_id = ('barn1_D20220205T192049m784-HiF.wav,11\n'

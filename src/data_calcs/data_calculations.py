@@ -5,6 +5,7 @@ Created on Apr 27, 2024
 '''
 
 from collections import namedtuple
+from data_calcs.data_viz import DataViz
 from data_calcs.universal_fd import UniversalFd
 from data_calcs.utils import Utils
 from datetime import datetime
@@ -14,7 +15,6 @@ from logging_service.logging_service import LoggingService
 from pathlib import Path
 from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
-#import openTSNE
 from sklearn.metrics import silhouette_score
 from tempfile import NamedTemporaryFile
 import csv
@@ -26,6 +26,7 @@ import random
 import re
 import shutil
 import time
+#import openTSNE
 
 # ---------------------------------- namedtuple ChirpID ---------------
 
@@ -62,6 +63,8 @@ class PerplexitySearchResult:
 	Noteworthy methods:
 		           silhouettes_df()
 		           tsne_df(perplexity)
+		           iter_tsne_dfs()
+		           iter_cluster_results()
     '''
     
     #------------------------------------
@@ -178,6 +181,16 @@ class PerplexitySearchResult:
         return self._clustering_results[perplexity]
 
     #------------------------------------
+    # iter_cluster_results
+    #-------------------
+    
+    def iter_cluster_results(self):
+        '''
+        Returns an iterator of 2-tuples: (perplexity, <ClusterResult obj>)
+        '''
+        return self._clustering_results.items()
+
+    #------------------------------------
     # add_clustering_result
     #-------------------
     
@@ -200,6 +213,17 @@ class PerplexitySearchResult:
         if type(perplexity) != float:
             raise TypeError(f"Must pass perplexity as a float, not {perplexity}")
         return self._tsne_dfs[perplexity]
+
+    #------------------------------------
+    # iter_tsne_dfs
+    #-------------------
+    
+    def iter_tsne_dfs(self):
+        '''
+        Return an interator of all of this search result's tsne_dfs
+        '''
+        return self._tsne_dfs.values()
+    
 
     #------------------------------------
     # tsne_df: setter
@@ -577,7 +601,7 @@ class DataCalcs:
         # (the fname_id_pairs[1:] skips over the header:
         self.fid_to_fname_dict = {int(fid) : fname
                                   for fname, fid
-                                  in fname_id_pairs[1:]
+                                  in fname_id_pairs[0:]
                                   } 
         
         # Prepare a list of paths to all split files:
@@ -903,7 +927,8 @@ class DataCalcs:
     
     def run_tsne(self,
                  df,
-                 num_points=10000, 
+                 #******num_points=10000, 
+                 num_points=100,
                  num_dims=50,
                  perplexity=None,
                  sort_by_bat_variance=True,
@@ -1335,24 +1360,50 @@ class Activities:
     def __init__(self,
                  dst_dir,
                  data_dir='/tmp',
-                 res_file_pref='preplexity_n_clusters_optimum'):
+                 res_file_prefix='perplexity_n_clusters_optimum'):
         
         self.log = LoggingService()
         self.dst_dir = dst_dir
         self.data_dir = data_dir
-        self.res_file_pref = res_file_pref
+        self.res_file_prefix = res_file_prefix
 
     #------------------------------------
     # organize_results
     #-------------------
     
     def organize_results(self):
+        '''
+        Finds temporary files that hold PerplexitySearchResult
+        exports, and those that contain plots made for those
+        results. Moves all of them to self.dst_dir, under a 
+        name that reflects their content. 
+        
+        For example:
+        
+                       perplexity_n_clusters_optimum_3gth9tp.json in /tmp
+            may become 
+                       perp_p100.0_n2_20240518T155827.json
+            in self.dst__dir
+            
+        Plot figure png files, like perplexity_n_clusters_optimum_plot_20251104T204254.png
+        will transfer unchanged.
+        
+        For each search result, the tsne_df will be replicated into a
+        .csv file in self.dst_dir.
+            
+        '''
         
         for fname in self._find_srch_results():
             # Guard against 0-length files from aborted runs:
             if os.path.getsize(fname) == 0:
                 self.log.warn(f"Empty hyperparm search result: {fname}")
                 continue
+            
+            # Saved figures are just transfered:
+            if fname.endswith('.png'):
+                shutil.move(fname, self.dst_dir)
+                continue
+            
             srch_res = PerplexitySearchResult.read_json(fname)
             mod_time = self._modtimestamp(fname)
             perp = srch_res['optimal_perplexity']
@@ -1379,18 +1430,41 @@ class Activities:
     # hyper_parm_search
     #-------------------
     
-    def hyper_parm_search(self):
+    def hyper_parm_search(self, repeats=1, overwrite_previous=True):
+        '''
+        Runs through as many split files as specified in the repeats
+        argument. For each split file, computes TSNE with each 
+        perplexity (see hardcoded values in _run_hypersearch()). Then,
+        with each TSNE embedding, runs multiple clusterings with varying
+        n_clusters. Notes the silhouette coefficients. 
+        
+        Returns a PerplexitySearchResult with all the results.
+        
+        All search result summaries are saved in /tmp/perplexity_n_clusters_optimum*.json.
+        The Action.ORGANIZE moves those files to a more permanent
+        destination, under meaningful names. If this method is run
+        multiple times without intermediate Action.ORGANIZE, then the 
+        overwrite_previous arg controls whether users are warned about
+        the intermediate files in /tmp being overwritten.
+        
+        :param repeats: number different split files on which to
+            repeat the search
+        :type repeats: int
+        :param overwrite_previous: if True, silently overwrites previously
+            saved hyper search results in /tmp. Else, asks permisson
+        :type overwrite_previous: bool
+        :return an object that contains all the TSNE results, and all
+            the corresponding clusterings with different c_clusters.
+        :rtype PerplexitySearchResult
+        '''
 
         # Offer to remove old search results to avoid confusion.
         # Asks for OK. 
         # If return of False, user aborted.
-        if not self.remove_search_res_files():
+        if not overwrite_previous and not self.remove_search_res_files():
             return
         
-        # Repeate hyperparameter search three times, 
-        # each time with a different measurements split file:
-        #**********repeats = 3
-        repeats = 1
+        src_results = []
         
         measurement_split_num = random.sample(range(0,10), repeats)
          
@@ -1398,20 +1472,120 @@ class Activities:
             split_file = f"split{split_num}.feather"
             start_time = time.monotonic()
             
-            with NamedTemporaryFile(dir='/tmp', 
-                                    prefix=self.res_file_pref,
+            with NamedTemporaryFile(dir=self.data_dir, 
+                                    prefix=self.res_file_prefix,
                                     suffix='.json',
                                     delete=False
                                     ) as fd:
             
-                self._run_hypersearch(search_res_outfile=fd.name, split_file=split_file)
+                srch_res = self._run_hypersearch(search_res_outfile=fd.name, split_file=split_file)
                 
                 stop_time = time.monotonic()
                 duration = stop_time - start_time
+                src_results.append(srch_res)
                 print(f"Runtime measurement file split{split_num}.feather: {int(duration)} seconds")
                 print(f"... {int(duration / 60)} minutes")
                 print(f"...{duration / 3600} hours")
+        return src_results
 
+    #------------------------------------
+    # make_chirp_sample_file
+    #-------------------
+    
+    def make_chirp_sample_file(self, num_chirps, unittests=None):
+        '''
+        Opens each of the n measurements files in self.measures_root.
+        From each of the resulting df's randomly selects num_chirp/n
+        chirps (i.e. rows). Builds one df from the results.
+        
+        If 'save' is True, saves the df in .csv format in self.data_dir.
+        The file name will be:
+        
+                  <self.res_file_prefix>_samples_<timestamp>.csv
+          
+        If unittests is a list, then the list must contain dataframes
+        such as the ones that would normally be pulled from split files.
+        Those dfs will then be used for testing the implementation. If
+        unittests is None, then the paths to split files is used to 
+        obtain dataframes from which to sample. Those are in self.split_fpaths. 
+                
+        :param num_chirps: total number of chirps to sample across 
+            all split files.
+        :type num_chirps: int
+        :param unittests: whether or not to save the resulting df
+        :type unittests: union[None | list[pd.DataFrame]]
+        :return the constructed df
+        :rtype pd.DataFrame
+        '''
+
+        # Number of rows in each df:
+        fsizes = []
+
+        # Number of samples to take from each file:
+        samples_per_file = None
+        
+        # List of pd.Series that are chirp rows in split files:
+        sample_ser_list = []
+        
+        # Make copy of the split file path list,
+        # because we may need to go through the
+        # loop more than once, and want to randomize
+        # the list on rounds 2-plus:
+        if type(unittests) == list:
+            sample_paths = unittests
+        else:
+            sample_paths = self.split_fpaths.copy()
+        # Need num_chirps rows total:
+        rows_needed = num_chirps
+        
+        # Go through each split file, possibly multiple times:
+        while True:
+            for meas_path in sample_paths:
+                # Load the df:
+                df_one_split = UniversalFd(meas_path, 'r').asdf()
+                # Remember the number of rows in this df:
+                fsizes.append(len(df_one_split))
+                
+                # Have we estimated the number of samples
+                # to take from each split file yet?
+                if samples_per_file is None:
+                    # Number of samples to take per file:
+                    # Number of chirps in file divided by number of split files:
+                    samples_per_file = np.ceil(len(df_one_split) / len(sample_paths))
+    
+                # Get list of random row numbers to pull from this df:
+                row_nums = random.sample(range(0,len(df_one_split)), samples_per_file)
+    
+                # Pull out the lines:
+                extract = df_one_split.iloc[row_nums]
+    
+                # Add list of row series to accumulating rows:
+                sample_ser_list.append(extract)
+                
+                # Enough, or too many collected?
+                if len(sample_ser_list) >= num_chirps:
+                    break
+
+            num_samples = sum([len(row) for row in sample_ser_list])
+            # Do we have enough samples? Or maybe too many?
+            if num_samples > rows_needed:
+                # Randomly remove rows:
+                num_to_cull = num_chirps - num_samples
+                idxs = random.sample(range(0,num_samples), num_to_cull)
+                for idx in idxs:
+                    sample_ser_list.pop(idx)
+                break
+            else:
+                # Must add more samples:
+                rows_needed = num_chirps - num_samples
+                # 
+                samples_per_file = np.mean(fsizes) / rows_needed
+                continue
+
+        # Make a df from the samples:            
+        df = pd.DataFrame(sample_ser_list)
+        return df
+    
     #------------------------------------
     # remove_search_res_files
     #-------------------
@@ -1452,9 +1626,11 @@ class Activities:
         
         The search_res_outfile may be provided if the hyperparameter
         search result should be saved as JSON. It can be recovered
-        via PerplexitySearchResult.read_json(). The value of this
-        arg may be a file path string, a file-like object, like an
-        open file descriptor, or None. If None, no output.
+        via PerplexitySearchResult.read_json(), though in abbreviated
+        form. The value of this arg may be a file path string, a 
+        file-like object, like an open file descriptor, or None. If None, no output.
+        
+        A PerplexitySearchResult object with all results is returned.
         
         :param chirp_id_src: name of columns in SonoBat measures
             split files that contain the file id and any other
@@ -1467,6 +1643,8 @@ class Activities:
         :parm split_file: name of split file to use as measurements source.
             File is just the file name, relative to the measures root.
         :type split_file:
+        :returned all results packaged in a PerplexitySearchResult
+        :rtype PerplexitySearchResult
         '''
     
         outfile        = '/tmp/cluster_perplexity_matrix.csv'
@@ -1531,6 +1709,8 @@ class Activities:
         if res_outfile is not None:
             print(f"Saving hyperparameter search to {res_outfile}...")
             hyperparms_search_res.to_json(res_outfile)
+            
+        return hyperparms_search_res
         #viz.plot_perplexities_grid([5.0,10.0,20.0,30.0,50.0], show_plot=True)
 
     #------------------------------------
@@ -1538,7 +1718,15 @@ class Activities:
     #-------------------
     
     def _find_srch_results(self):
-        fnames = filter(lambda fname: fname.startswith(self.res_file_pref),
+        '''
+        Find the full paths of search results that have 
+        been saved in the data_dir directory. Done by
+        finding file names that start with self.res_file_prefix
+
+        :return all search result file paths
+        :rtype list[str]
+        '''
+        fnames = filter(lambda fname: fname.startswith(self.res_file_prefix),
                         os.listdir(self.data_dir))
         full_paths = [os.path.join(self.data_dir, fname)
                       for fname 
@@ -1559,32 +1747,80 @@ class Activities:
         # Get a datetime ISO formatted str, and remove
         # the dash and colon chars to get like
         #   '20240416T152351' 
-        stamp = moddt.isoformat().replace('-', '').replace(':', '')
+        stamp = Utils.timestamp_fname_safe(time=moddt)
         return stamp
+
+    #------------------------------------
+    # _plot_search_results
+    #-------------------
+    
+    def _plot_search_results(self, search_results):
+    
+        # The following will be a list: 
+        # [perplexity1, ClusteringResult (kmeans run: 8) at 0x13f197b90), 
+        #  perplexity2, ClusteringResult (kmeans run: 8) at 0x13fc6c2c0),
+        #            ...
+        #  ]
+        cluster_results = []
+        
+        # As filepath for saving the figure at the end,
+        # use the file prefix self.res_file_prefix, and
+        # the current date and time:
+        filename_safe_dt = Utils.timestamp_fname_safe()
+        fig_save_fname   = f"{self.res_file_prefix}_plots_{filename_safe_dt}.png"
+        fig_save_path    = os.path.join(self.data_dir, fig_save_fname) 
+        
+        # Collect all the cluster results from all search result objs
+        # into one list:
+        for srch_res in search_results:
+            cluster_results.extend(list(srch_res.iter_cluster_results()))        
+
+        plot_contents = []
+        for perplexity, cluster_res in cluster_results:
+            n_clusters = cluster_res.best_n_clusters
+            silhouette = round(cluster_res.best_silhouette, 2)
+            plot_contents.append({
+                'tsne_df'         : cluster_res.tsne_df,
+                'cluster_labels'  : cluster_res.best_kmeans.labels_,
+                'title'           : f"Perplexity: {perplexity}; n_clusters: {n_clusters}; silhouette: {silhouette:{4}.{2}}"
+                })
+        fig = DataViz.plot_perplexities_grid(plot_contents)
+        fig.savefig(fig_save_path)
+
+        input("Any key to erase figs and continue: ")
+            
 
     #------------------------------------
     # main
     #-------------------
     
-    def main(self, action):
+    def main(self, actions):
 
-        if action == Action.ORGANIZE:
-            self.organize_results()
+        if type(actions) != list:
+            actions = [actions]
             
-        elif action == Action.HYPER_SEARCH:
-            self.hyper_parm_search()
-            
-        elif action == Action.CLEAR_RESULTS:
-            self.remove_search_res_files()
-            
-        else:
-            raise ValueError(f"Unknown action: {action}")
+        for action in actions:
+            if action == Action.ORGANIZE:
+                self.organize_results()
+                
+            elif action == Action.HYPER_SEARCH:
+                srch_results= self.hyper_parm_search(repeats=1)
+                
+            elif action == Action.CLEAR_RESULTS:
+                self.remove_search_res_files()
+                
+            elif action == Action.PLOT:
+                self._plot_search_results(srch_results)
+                
+            else:
+                raise ValueError(f"Unknown action: {action}")
             
             
 class Action(Enum):
-    ORGANIZE      = 0
-    HYPER_SEARCH  = 1
-    CLEAR_RESULTS = 2
+    HYPER_SEARCH  = 0
+    PLOT          = 1
+    ORGANIZE      = 2
+    CLEAR_RESULTS = 3
     
 # ------------------------ Main ------------
 if __name__ == '__main__':
@@ -1592,9 +1828,9 @@ if __name__ == '__main__':
     proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
     dst_dir = os.path.join(proj_dir, 'results/hyperparm_searches')
 
-    #*******action  = Action.HYPER_SEARCH
-    action  = Action.ORGANIZE
+    actions = [Action.HYPER_SEARCH, Action.PLOT]
+    #*******actions  = Action.HYPER_SEARCH
+    #*******actions  = Action.ORGANIZE
         
     activities = Activities(dst_dir)
-    activities.main(action)
-        
+    activities.main(actions)
