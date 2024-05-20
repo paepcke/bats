@@ -601,7 +601,7 @@ class DataCalcs:
         # (the fname_id_pairs[1:] skips over the header:
         self.fid_to_fname_dict = {int(fid) : fname
                                   for fname, fid
-                                  in fname_id_pairs[0:]
+                                  in fname_id_pairs[1:]
                                   } 
         
         # Prepare a list of paths to all split files:
@@ -1344,6 +1344,182 @@ class DataCalcs:
             result.to_json(outfile)
     
         return result
+
+    #------------------------------------
+    # make_chirp_sample_file
+    #-------------------
+    
+    def make_chirp_sample_file(self, num_chirps, unittests=None):
+        '''
+        Opens each of the n measurements files in self.measures_root.
+        From each of the resulting df's randomly selects num_chirp/n
+        chirps (i.e. rows). Builds one df from the results.
+        
+        If 'save' is True, saves the df in .csv format in self.data_dir.
+        The file name will be:
+        
+                  <self.res_file_prefix>_samples_<timestamp>.csv
+          
+        If unittests is a list, then the list must contain dataframes
+        such as the ones that would normally be pulled from split files.
+        Those dfs will then be used for testing the implementation. If
+        unittests is None, then the paths to split files is used to 
+        obtain dataframes from which to sample. Those are in self.split_fpaths. 
+                
+        :param num_chirps: total number of chirps to sample across 
+            all split files.
+        :type num_chirps: int
+        :param unittests: whether or not to save the resulting df
+        :type unittests: union[None | list[pd.DataFrame]]
+        :return the constructed df
+        :rtype pd.DataFrame
+        '''
+
+        # Number of rows in each df:
+        fsizes = {}
+
+        # Make copy of the split file path list,
+        # because we may need to go through the
+        # loop more than once, and want to randomize
+        # the list on rounds 2-plus:
+        if type(unittests) == list:
+            sample_paths = unittests
+        else:
+            sample_paths = self.split_fpaths.copy()
+        # Need num_chirps rows total:
+        rows_needed = num_chirps
+        
+        # Numpy array for final result rows:
+        res_np_arr = None
+        
+        res_cols = None
+        
+        # Place to remember the true number of
+        # rows in each file:
+        fsizes_true = {}
+        
+        # Must sample without replacement from each df:
+        # dict mapping nth df to set of row indices already
+        # pulled:
+        row_idxs_taken = {nth : set() for nth in range(len(sample_paths))}
+        
+        # Go through each split file, possibly multiple times.
+        # During unittests, sample_paths are actually dataframes
+        # pre-loaded from actual split files: 
+        while True:
+            for ith_src, measure_src in enumerate(sample_paths):
+                if type(measure_src) == str:
+                    # Load the df:
+                    df_one_split = UniversalFd(measure_src, 'r').asdf()
+                else:
+                    df_one_split = measure_src
+                
+                # First time through loop:
+                if res_cols is None:
+                    # All cols are the same across splits:
+                    res_cols = df_one_split.columns
+                    # Make an empty np array with proper dimensions
+                    # into which we will collect rows:
+                    res_np_arr = np.empty((0, len(res_cols)), float)
+                
+                    # Estimate how may rows to take from each file,
+                    # assuming for now that all files have as many
+                    # rows as the first df that we just read:
+                    fsizes = {nth : len(df_one_split)
+                              for nth 
+                              in range(len(sample_paths))
+                              }
+                    to_take = self._allocate_sample_takes(fsizes, rows_needed, row_idxs_taken)
+
+
+                rows_in_this_df = len(df_one_split)
+                # Remember the true number of rows in this df:
+                fsizes_true[ith_src] = rows_in_this_df
+                
+                # Get list of random row numbers to pull from this df,
+                # taking care not to pull rows we pulled in an earlier
+                # run through the loop:
+                taken = row_idxs_taken[ith_src]
+                elligible    = list(set(range(rows_in_this_df)) - taken)
+                num_to_take  = min(len(elligible), to_take[ith_src])
+                row_nums = random.sample(elligible, num_to_take)
+                # Update what we've already taken from this file:
+                row_idxs_taken[ith_src].update(row_nums)
+    
+                # Pull out the lines:
+                res_np_arr = np.concatenate([res_np_arr, df_one_split.iloc[row_nums].to_numpy()])
+    
+            num_samples = len(res_np_arr)
+            
+            # Do we have enough samples? Or maybe too many?
+            if num_samples == rows_needed:
+                break
+            elif num_samples > rows_needed:
+                # Randomly remove rows:
+                num_to_cull = num_samples - num_chirps
+                # Select
+                idxs = random.sample(range(num_samples), num_to_cull)
+                res_np_arr = np.delete(res_np_arr, idxs, axis=0)
+                break
+            else:
+                # Must add more samples:
+                rows_needed = num_chirps - num_samples
+                # We now know the number of rows in all the files.
+                # So we can take the remainder of the samples from
+                # all files in equal proportion:
+                to_take = self._allocate_sample_takes(fsizes_true, rows_needed, row_idxs_taken)
+                
+                continue
+
+        # Make a df from the extraced samples:            
+        df = pd.DataFrame(res_np_arr, columns=res_cols)
+        df.reset_index(drop=True, inplace=True)
+        return df
+
+
+    #------------------------------------
+    # _allocate_sample_takes
+    #-------------------
+    
+    def _allocate_sample_takes(self, fsizes, rows_needed, rows_taken):
+        '''
+        Given a dict (fsizes), which maps {nth : num_of_rows},
+        where nth is the index into a list of files from which
+        to sample, and num_of_rows is the number of rows available
+        in that file.
+        
+        Given also a number of needed samples of rows. Return a
+        new dict {nth : num_to_take}, that contains the number
+        of rows to select from the nth file.
+        
+        :param fsizes: dict mapping df-source index to number of
+            rows in the df_source
+        :type fsizes: dict[int : int]
+        :param rows_needed: total number of rows to sample
+        :type rows_needed: int
+        :param rows_taken: dict mapping df-source index to set
+            of row indexes already taken
+        :type rows_taken: dict[str : set[int]]
+        :return dict mapping df_source to number rows to take from
+            that source
+        :rtype {int : int}
+        '''
+        
+        total_in_dfs  = sum(fsizes.values())
+        already_taken = sum([len(taken_set) for taken_set in rows_taken.values()])
+        total_avail   = total_in_dfs - already_taken
+        
+        if total_avail <= 0:
+            raise ValueError(f"Asking for more samples than are available across all files.")
+        # Percentage of samples needed relative to the total
+        # number of available rows:
+        percentage_needed = rows_needed / total_avail
+        to_take = {i : int(np.ceil(percentage_needed * rows_in_file))
+                   for i, rows_in_file
+                   in fsizes.items()
+                   }
+        return to_take
+
     
 # -------------------------- run_experiments --- the mains options    
 
@@ -1487,104 +1663,6 @@ class Activities:
                 print(f"... {int(duration / 60)} minutes")
                 print(f"...{duration / 3600} hours")
         return src_results
-
-    #------------------------------------
-    # make_chirp_sample_file
-    #-------------------
-    
-    def make_chirp_sample_file(self, num_chirps, unittests=None):
-        '''
-        Opens each of the n measurements files in self.measures_root.
-        From each of the resulting df's randomly selects num_chirp/n
-        chirps (i.e. rows). Builds one df from the results.
-        
-        If 'save' is True, saves the df in .csv format in self.data_dir.
-        The file name will be:
-        
-                  <self.res_file_prefix>_samples_<timestamp>.csv
-          
-        If unittests is a list, then the list must contain dataframes
-        such as the ones that would normally be pulled from split files.
-        Those dfs will then be used for testing the implementation. If
-        unittests is None, then the paths to split files is used to 
-        obtain dataframes from which to sample. Those are in self.split_fpaths. 
-                
-        :param num_chirps: total number of chirps to sample across 
-            all split files.
-        :type num_chirps: int
-        :param unittests: whether or not to save the resulting df
-        :type unittests: union[None | list[pd.DataFrame]]
-        :return the constructed df
-        :rtype pd.DataFrame
-        '''
-
-        # Number of rows in each df:
-        fsizes = []
-
-        # Number of samples to take from each file:
-        samples_per_file = None
-        
-        # List of pd.Series that are chirp rows in split files:
-        sample_ser_list = []
-        
-        # Make copy of the split file path list,
-        # because we may need to go through the
-        # loop more than once, and want to randomize
-        # the list on rounds 2-plus:
-        if type(unittests) == list:
-            sample_paths = unittests
-        else:
-            sample_paths = self.split_fpaths.copy()
-        # Need num_chirps rows total:
-        rows_needed = num_chirps
-        
-        # Go through each split file, possibly multiple times:
-        while True:
-            for meas_path in sample_paths:
-                # Load the df:
-                df_one_split = UniversalFd(meas_path, 'r').asdf()
-                # Remember the number of rows in this df:
-                fsizes.append(len(df_one_split))
-                
-                # Have we estimated the number of samples
-                # to take from each split file yet?
-                if samples_per_file is None:
-                    # Number of samples to take per file:
-                    # Number of chirps in file divided by number of split files:
-                    samples_per_file = np.ceil(len(df_one_split) / len(sample_paths))
-    
-                # Get list of random row numbers to pull from this df:
-                row_nums = random.sample(range(0,len(df_one_split)), samples_per_file)
-    
-                # Pull out the lines:
-                extract = df_one_split.iloc[row_nums]
-    
-                # Add list of row series to accumulating rows:
-                sample_ser_list.append(extract)
-                
-                # Enough, or too many collected?
-                if len(sample_ser_list) >= num_chirps:
-                    break
-
-            num_samples = sum([len(row) for row in sample_ser_list])
-            # Do we have enough samples? Or maybe too many?
-            if num_samples > rows_needed:
-                # Randomly remove rows:
-                num_to_cull = num_chirps - num_samples
-                idxs = random.sample(range(0,num_samples), num_to_cull)
-                for idx in idxs:
-                    sample_ser_list.pop(idx)
-                break
-            else:
-                # Must add more samples:
-                rows_needed = num_chirps - num_samples
-                # 
-                samples_per_file = np.mean(fsizes) / rows_needed
-                continue
-
-        # Make a df from the samples:            
-        df = pd.DataFrame(sample_ser_list)
-        return df
     
     #------------------------------------
     # remove_search_res_files
@@ -1785,8 +1863,9 @@ class Activities:
                 'title'           : f"Perplexity: {perplexity}; n_clusters: {n_clusters}; silhouette: {silhouette:{4}.{2}}"
                 })
         fig = DataViz.plot_perplexities_grid(plot_contents)
+        self.log.info(f"Saving plots to {fig_save_path}")
         fig.savefig(fig_save_path)
-
+        fig.show()
         input("Any key to erase figs and continue: ")
             
 
