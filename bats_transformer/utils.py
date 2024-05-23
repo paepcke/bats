@@ -13,28 +13,6 @@ import tqdm
 import requests
 import os
 
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"];
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"];
-      
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
-    response = requests.post(url, data=data)
-    return response.json()
-
-def send_telegram_image(image_path):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    data = {
-        "chat_id": CHAT_ID,
-    }
-    files = {
-        "photo": open(image_path, "rb")
-    }
-    response = requests.post(url, data=data, files=files)
-    return response.json()
 
 def spacetimeformer_predict(
         model,

@@ -5,20 +5,26 @@ import pandas as pd
 import numpy as np
 import pytorch_lightning as pl
 from sklearn.preprocessing import StandardScaler
+import joblib #this is used to "unpickle" the scaler
 
 import spacetimeformer as stf
 
 import matplotlib.pyplot as plt
 
-
 '''
-Custom class for dealing with the special case of our sonobats dataset.
+This is the data loader class for the bats dataset. It is written so that it 
+can load data that is generated from the Sonobats software, and is then processed
+in a particular way, by the data/prepare_data.py script. A description of the 
+arguments is as follows:
+root_path: The path to the directory where the data is stored.
+prefix: The prefix of the files that are stored in the root_path directory.
+ignore_cols: A list of columns to ignore when loading the data.
+target_cols: A list of columns that are the target columns (the columns that we want to predict).
+time_col_name: The name that we want to give to the time column.
 '''
-
-
-class BatsCSVDataset(Dataset):
+class BatsCSVDataset(torch.utils.data.Dataset):
     def __init__(self, 
-                 root_path = '/home/vdesai/bats_data/training_files/splits',
+                 root_path = '/home/vdesai/bats_data/new_dataset/splits',
                  prefix = 'split',
                  ignore_cols = [],
                  target_cols = [],
@@ -68,22 +74,25 @@ class BatsCSVDataset(Dataset):
         assert self.train_split > 0
 
         self.run_sanity_check()        
+        
+        self.mapping_df["cumulative_count"] = self.mapping_df["n_samples"].cumsum() - self.mapping_df["n_samples"]
 
-        self.mapping_df["cumulative_count"] = ((self.mapping_df["count"] // self.seq_length).cumsum() 
-                                             - (self.mapping_df["count"] // self.seq_length))
-
-        self.total_chirps = self.mapping_df["count"].sum() // self.seq_length        
+        self.total_chirps = self.mapping_df["n_samples"].sum()        
         self.train_chirps = int(self.total_chirps * self.train_split)
         self.val_chirps = int(self.total_chirps * self.val_split)
         self.test_chirps = int(self.total_chirps * self.test_split)                
 
-
-
+        ## Loading the scaler
+        self.scaler = joblib.load(f"{root_path}/{prefix}_scaler.pkl")
+        self.scaler.set_output(transform = "pandas")
+        self.scaler_cols = list(self.scaler.get_feature_names_out())
+        
         if not target_cols:
             target_cols = pd.read_feather(
                             os.path.join(self.root_path, self.mapping_df.iloc[0]["Filename"].split("/")[-1])
                         ).columns.tolist()
-            target_cols.remove(time_col_name)
+            if time_col_name in target_cols:
+                target_cols.remove(time_col_name)
             
             for col in ignore_cols:
                 if col in target_cols:
@@ -91,12 +100,13 @@ class BatsCSVDataset(Dataset):
         
         self.target_cols = target_cols
         self.split = split
+        self.file_id_to_samples = {}
 
     
     def run_sanity_check(self):
         #reading a single df to make sure the time column is in there.
         df = pd.read_feather(os.path.join(self.root_path, self.mapping_df.iloc[0]["Filename"].split("/")[-1]))
-        assert self.time_col_name in df.columns
+        #assert self.time_col_name in df.columns
 
         #check that every file in the mapping df actually exists
         for filename in self.mapping_df["Filename"]:
@@ -105,8 +115,11 @@ class BatsCSVDataset(Dataset):
         #check that the count in the mapping df actually is equal to the number of rows in the file
         for idx, row in self.mapping_df.iterrows():
             df = pd.read_feather(os.path.join(self.root_path, row["Filename"].split("/")[-1]))
-            assert row["count"] == df.shape[0]
-            assert df.shape[0] % (self.context_points + self.target_points) == 0
+            n_samples = row["n_samples"]
+            file_id_to_samples = df.groupby("file_id")["chirp_idx"].max().reset_index()
+            file_id_to_samples["n_samples"] = file_id_to_samples["chirp_idx"] - self.min_length + 2
+            total_samples = file_id_to_samples["n_samples"].sum()
+            assert n_samples == total_samples
         
     
     def __len__(self):
@@ -123,27 +136,46 @@ class BatsCSVDataset(Dataset):
                 torch.from_numpy(x.values).float().unsqueeze(1) if len(x.shape) == 1 
                 else torch.from_numpy(x.values).float() for x in dfs
             )
+    
+    def make_len(self, df, seq_len):
+        #pad with rows containing zeros to make df of length seq_len
+        if len(df) < seq_len:
+            df = pd.concat([pd.DataFrame(np.zeros((seq_len - len(df), len(df.columns))), columns = df.columns), df], axis = 0)
 
+        df[self.time_col_name] = StandardScaler().fit_transform(np.arange(seq_len).reshape(-1,1))
+        return df
+    
+    def get_file_id_to_samples(self, df, filename):
+        if filename in self.file_id_to_samples:
+            return self.file_id_to_samples[filename]
+        else:
+            file_id_to_samples = df.groupby("file_id")["chirp_idx"].max().reset_index()
+            file_id_to_samples["n_samples"] = file_id_to_samples["chirp_idx"] - self.min_length + 2
+            file_id_to_samples["cum_samples"] = file_id_to_samples["n_samples"].cumsum() - file_id_to_samples["n_samples"]
+            self.file_id_to_samples[filename] = file_id_to_samples
+            return file_id_to_samples
+        
     def __getitem__(self, idx):
         if self.split == "val":
             idx += self.train_chirps
         elif self.split == "test":
             idx += self.train_chirps + self.val_chirps
-        
-        #get the file index from mapping_df
-        file_idx = self.mapping_df[self.mapping_df["cumulative_count"] <= idx].index[-1]
-        chirp_idx = idx - self.mapping_df.iloc[file_idx]["cumulative_count"]
-        chirp_idx *= self.seq_length
 
-        filename = self.mapping_df.iloc[file_idx]["Filename"]
+        split_to_use = self.mapping_df[self.mapping_df["cumulative_count"] <= idx].iloc[-1]
+        filename = split_to_use["Filename"]
+        sample_idx = idx - split_to_use["cumulative_count"]
         df = pd.read_feather(os.path.join(self.root_path, filename.split("/")[-1]))
+        file_id_to_samples = self.get_file_id_to_samples(df, filename)
+        file_id_to_use_ = file_id_to_samples[file_id_to_samples["cum_samples"] <= sample_idx].iloc[-1]
+        file_id_to_use = file_id_to_use_["file_id"]
+        chirps_to_use = sample_idx - file_id_to_use_["cum_samples"]
+        df_slice = df[df.file_id == file_id_to_use].copy()
 
         if self.ignore_cols:
-            df.drop(columns=self.ignore_cols, inplace=True, errors = 'ignore')
-        
-        series_slice = df.reset_index(drop=True).iloc[chirp_idx:chirp_idx + self.context_points + self.target_points]
-        assert(len(series_slice) == self.context_points + self.target_points), f"{idx}, {file_idx}, {chirp_idx}, {filename}, {len(series_slice)}, {self.context_points + self.target_points}"
-        #print(self.time_col_name, self.context_points, series_slice)
+            df_slice.drop(columns=self.ignore_cols, inplace=True, errors = 'ignore')
+
+        series_slice = self.make_len(df_slice.iloc[:-chirps_to_use] if chirps_to_use > 0 else df_slice, self.seq_length)
+
         ctxt_slice, trgt_slice = (
             series_slice.iloc[: self.context_points],
             series_slice.iloc[self.context_points :]
@@ -157,13 +189,21 @@ class BatsCSVDataset(Dataset):
 
         return self._torch(ctxt_x, ctxt_y, trgt_x, trgt_y)
 
-    
-    
+    #Function which scales the data back into the original space
+    def scale_data(self, data):
+        return pd.DataFrame(
+                self.scaler.inverse_transform(pd.DataFrame(data, columns = self.scaler_cols), copy = True),
+                columns = self.scaler_cols,
+        )[data.columns]
 
 
-class BatsCSVDatasetWithMetadata(Dataset):
+'''
+Basically the same class, but support for metadata. Can be used 
+when generating predictions.
+'''
+class BatsCSVDatasetWithMetadata(BatsCSVDataset):
     def __init__(self, 
-                 root_path = '/home/vdesai/bats_data/training_files/splits',
+                 root_path = '/home/vdesai/bats_data/new_dataset/splits',
                  prefix = 'split',
                  ignore_cols = [],
                  target_cols = [],
@@ -175,132 +215,30 @@ class BatsCSVDatasetWithMetadata(Dataset):
                  target_points = 1,
                  split = "train"
     ):
-        assert root_path is not None
-        assert prefix is not None
-        assert len(metadata_cols) > 0, ("If you do not have any metadata to keep track of,"+
-                                        "just use BatsCSVDataset instead")
-        
-        self.root_path = root_path
-        self.prefix = prefix
-        
-        self.mapping_df = pd.read_csv(f"{root_path}/{prefix}_mapping.csv")
-        self.config_df = pd.read_csv(f"{root_path}/{prefix}_config.csv")
-
-        self.max_length = self.config_df[self.config_df.parameter == "max_length"]["value"].values[0]
-        self.min_length = self.config_df[self.config_df.parameter == "min_length"]["value"].values[0]
-
-        assert context_points is None or target_points is None
-
-        if context_points is None and target_points is None:
-            context_points = self.max_length - 1
-            target_points = 1
-
-        elif context_points is None:
-            context_points = self.max_length - target_points
-
-        else:
-            target_points = self.max_length - context_points
-                    
-        self.seq_length = context_points + target_points
-        self.time_col_name = time_col_name
-        self.ignore_cols = ignore_cols
-        self.context_points = context_points
-        self.target_points = target_points
-        self.split = split
+        super().__init__(root_path, prefix, ignore_cols, target_cols, time_col_name, val_split, test_split, context_points, target_points, split)
         self.metadata_cols = metadata_cols
-
-        self.val_split = val_split
-        self.test_split = test_split
-        self.train_split = 1 - val_split - test_split
-
-        assert self.train_split > 0
-
-        self.run_sanity_check()        
-
-        self.mapping_df["cumulative_count"] = ((self.mapping_df["count"] // self.seq_length).cumsum() 
-                                             - (self.mapping_df["count"] // self.seq_length))
-
-        self.total_chirps = self.mapping_df["count"].sum() // self.seq_length        
-        self.train_chirps = int(self.total_chirps * self.train_split)
-        self.val_chirps = int(self.total_chirps * self.val_split)
-        self.test_chirps = int(self.total_chirps * self.test_split)                
-
-
-
-        if not target_cols:
-            target_cols = pd.read_feather(
-                            os.path.join(self.root_path, self.mapping_df.iloc[0]["Filename"].split("/")[-1])
-                        ).columns.tolist()
-            target_cols.remove(time_col_name)
-            
-            for col in ignore_cols:
-                if col in target_cols:
-                    target_cols.remove(col)
-            
-            for col in metadata_cols:
-                if col in target_cols:
-                    target_cols.remove(col)
-
-        #assert that target_cols and metadata_cols have no entries in common
-        assert len(set(target_cols).intersection(set(metadata_cols))) == 0
-        assert len(set(target_cols).intersection(set(ignore_cols))) == 0
-        assert len(set(metadata_cols).intersection(set(ignore_cols))) == 0
-
-        self.target_cols = target_cols
-        self.split = split
-
-    
-    def run_sanity_check(self):
-        #reading a single df to make sure the time column is in there.
-        df = pd.read_feather(os.path.join(self.root_path, self.mapping_df.iloc[0]["Filename"].split("/")[-1]))
-        assert self.time_col_name in df.columns
-
-        #check that every file in the mapping df actually exists
-        for filename in self.mapping_df["Filename"]:
-            assert os.path.exists(os.path.join(self.root_path, filename.split("/")[-1]))
-        
-        #check that the count in the mapping df actually is equal to the number of rows in the file
-        for idx, row in self.mapping_df.iterrows():
-            df = pd.read_feather(os.path.join(self.root_path, row["Filename"].split("/")[-1]))
-            assert row["count"] == df.shape[0]
-            assert df.shape[0] % (self.context_points + self.target_points) == 0
-        
-    
-    def __len__(self):
-        return {
-            "train": self.train_chirps,
-            "val": self.val_chirps,
-            "test": self.test_chirps
-        }[self.split]
-        
-    
-    #add one more dimension to the tensor if only 1 dimensional
-    def _torch(self, *dfs):
-        return tuple(
-                torch.from_numpy(x.values).float().unsqueeze(1) if len(x.shape) == 1 
-                else torch.from_numpy(x.values).float() for x in dfs
-            )
     
     def __getitem__(self, idx):
         if self.split == "val":
             idx += self.train_chirps
         elif self.split == "test":
             idx += self.train_chirps + self.val_chirps
-        
-        #get the file index from mapping_df
-        file_idx = self.mapping_df[self.mapping_df["cumulative_count"] <= idx].index[-1]
-        chirp_idx = idx - self.mapping_df.iloc[file_idx]["cumulative_count"]
-        chirp_idx *= self.seq_length
 
-        filename = self.mapping_df.iloc[file_idx]["Filename"]
+        split_to_use = self.mapping_df[self.mapping_df["cumulative_count"] <= idx].iloc[-1]
+        filename = split_to_use["Filename"]
+        sample_idx = idx - split_to_use["cumulative_count"]
         df = pd.read_feather(os.path.join(self.root_path, filename.split("/")[-1]))
+        file_id_to_samples = self.get_file_id_to_samples(df, filename)
+        file_id_to_use_ = file_id_to_samples[file_id_to_samples["cum_samples"] <= sample_idx].iloc[-1]
+        file_id_to_use = file_id_to_use_["file_id"]
+        chirps_to_use = sample_idx - file_id_to_use_["cum_samples"]
+        df_slice = df[df.file_id == file_id_to_use].copy()
 
-        if self.ignore_cols:
-            df.drop(columns=self.ignore_cols, inplace=True, errors = 'ignore')
-        
-        series_slice = df.reset_index(drop=True).iloc[chirp_idx:chirp_idx + self.context_points + self.target_points]
-        assert(len(series_slice) == self.context_points + self.target_points), f"{idx}, {file_idx}, {chirp_idx}, {filename}, {len(series_slice)}, {self.context_points + self.target_points}"
-        #print(self.time_col_name, self.context_points, series_slice)
+        #if self.ignore_cols:
+        #    df_slice.drop(columns=self.ignore_cols, inplace=True, errors = 'ignore')
+
+        series_slice = self.make_len(df_slice.iloc[:-chirps_to_use] if chirps_to_use > 0 else df_slice, self.seq_length)
+
         ctxt_slice, trgt_slice = (
             series_slice.iloc[: self.context_points],
             series_slice.iloc[self.context_points :]
@@ -311,8 +249,8 @@ class BatsCSVDatasetWithMetadata(Dataset):
 
         ctxt_y = ctxt_slice[self.target_cols]
         trgt_y = trgt_slice[self.target_cols]
-        
-        
+
         metadata = trgt_slice[self.metadata_cols]
-        #print(ctxt_x.shape, ctxt_y.shape, trgt_x.shape, trgt_y.shape, file_idx, filename, chirp_idx)
+
         return self._torch(ctxt_x, ctxt_y, trgt_x, trgt_y, metadata)
+
