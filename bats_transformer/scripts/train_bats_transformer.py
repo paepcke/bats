@@ -5,11 +5,15 @@ parser = argparse.ArgumentParser(description='Train bats transformer model')
 parser.add_argument('--random_seeds', type=int, nargs='+', help='Random seeds to use for training')
 parser.add_argument('--gpu', type=int, help='GPU to use for training')
 parser.add_argument('--data_path', type=str, 
-                    default='/home/vdesai/bats_data/new_dataset/splits', 
+                    default='/home/vdesai/data/training_data/daytime/splits', 
                     help='Path to the data')
+parser.add_argument('--model_path', required = False)
+
 
 args = parser.parse_args()
 
+model_path = args.model_path if args.model_path is not None else f"bats_tranformer_seed_nodup_data"
+    
 d_model = 100;
 
 ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "FBak20dB", "LowFreq", "Bndw20dB", 
@@ -26,6 +30,9 @@ ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "
 
 for random_seed in args.random_seeds:
     print("Running for random seed ", random_seed)
-    run_train_py(run_name = f"bats_transformer_seed_nodup_data_{random_seed}", 
-                random_seed = random_seed, Dmodel = d_model, ignore_cols = ignore_cols, 
-                additional_flags = ["--telegram_updates"], gpus = args.gpu, data_path = args.data_path)
+    run_train_py(run_name = f"{model_path.split('/')[-1]}_{random_seed}", 
+                random_seed = random_seed, Dmodel = d_model, 
+                ignore_cols = ignore_cols, 
+                additional_flags = ["--telegram_updates"], 
+                gpus = args.gpu, data_path = args.data_path, 
+                model_path = args.model_path + "_" + str(random_seed) if args.model_path else None)

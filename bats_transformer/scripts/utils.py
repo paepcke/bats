@@ -11,7 +11,8 @@ def run_train_py(run_name,
                  originals_path = None,
                  mse_log_path = None,
                  log_file = None,
-                 additional_flags = None):
+                 additional_flags = None, 
+                 model_path = None):
     if data_path is None:
         data_path = "/home/vdesai/bats_data/training_files/splits_feather"
     
@@ -65,6 +66,10 @@ def run_train_py(run_name,
     
     if(additional_flags):
         command += additional_flags
+    
+    if(model_path):
+        command.append("--model_path")
+        command.append(model_path)
     #get output of subprocess on console
     subprocess.run(command)
 

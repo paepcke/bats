@@ -11,7 +11,7 @@ from data import preprocess
 import time
 import tqdm
 from itertools import chain
-from data.bats_dataset import *
+from data.bats_dataset_better import *
 from pytorch_lightning.callbacks import LearningRateMonitor
 
 from itertools import chain
@@ -31,7 +31,7 @@ parser.add_argument("--telegram_updates", action="store_true")
 config = parser.parse_args()
 print(f"Batch size: {config.batch_size}")
 args = config
-ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir"] + config.ignore_cols
+ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir", "file_id", "chirp_idx", "split"] + config.ignore_cols
 
 #This is like... complete hacks
 
@@ -42,7 +42,7 @@ data_module = stf.data.DataModule(
         "root_path": args.input_data_path,
         "prefix": "split",
         "ignore_cols": ignore_cols,
-        "metadata_cols": ["file_id", "cntxt_sz"],
+        "metadata_cols": ["file_id", "chirp_idx"],
         "time_col_name": "TimeIndex",
         "val_split": 0.05,
         "test_split": 0.05,
@@ -77,8 +77,8 @@ time_cols = [dummy_dataset.time_col_name]
 target_cols = dummy_dataset.target_cols
 metadata_cols = dummy_dataset.metadata_cols
 
-predictions = pd.DataFrame(columns = (time_cols + target_cols + metadata_cols))
 
+predictions_list = []
 for batch in tqdm.tqdm(chain(
                 data_module.train_dataloader(),
                 data_module.val_dataloader(), 
@@ -88,16 +88,17 @@ for batch in tqdm.tqdm(chain(
     x_c_batch, y_c_batch, x_t_batch, y_t_batch, metadata = batch
     y_hat_t = spacetimeformer_predict(model, x_c_batch, y_c_batch, x_t_batch)
 
-    predictions = pd.concat([predictions, 
-                             pd.DataFrame(
-                                 np.squeeze(np.concatenate((x_t_batch.numpy(), y_hat_t.numpy(), metadata.numpy()), axis=2)), 
-                                 columns = (time_cols + target_cols + metadata_cols)
-                            )
-                            ], ignore_index=True)
+    predictions_list += [np.squeeze(np.concatenate((x_t_batch.numpy(), y_hat_t.numpy(), metadata.numpy()), axis=2))]
+
+
+predictions = pd.concat(
+    [pd.DataFrame(d, columns = time_cols + target_cols + metadata_cols) for d in predictions_list], 
+    ignore_index = True
+)
 
 predictions["model_id"] = args.model_path    
 predictions.to_csv(args.log_file)
 
-#ping on telegram after training is done
+#ping on telegram after inference is done
 if(args.telegram_updates):
     send_telegram_message("inference for {} is done".format(args.model_path))
