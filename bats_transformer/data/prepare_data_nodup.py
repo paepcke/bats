@@ -58,7 +58,7 @@ filter_ = (lambda x: True)
 if(args.daytime):
     filter_ = (lambda S: (lambda s: S.is_daytime_recording(s)))(DaytimeFileSelector())
 
-df = get_df(get_files(args.input_data_path)).sort_values(["Filename", "TimeInFile"])
+df = get_df(get_files(args.input_data_path, filter = filter_)).sort_values(["Filename", "TimeInFile"])
 print("Done.")
 
 

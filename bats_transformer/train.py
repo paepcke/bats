@@ -15,6 +15,7 @@ from data.bats_dataset_better import BatsCSVDataset
 from pytorch_lightning.callbacks import LearningRateMonitor
 
 from utils import *
+from telegram_utils import *
 
 parser = ArgumentParser()
 stf.spacetimeformer_model.Spacetimeformer_Forecaster.add_cli(parser)
@@ -44,6 +45,7 @@ parser.add_argument("--pca_components", type=int, default=0)
 parser.add_argument("--construct_full_output", action ="store_true");
 parser.add_argument("--checkpoint_val_loss", action = 'store_true');
 parser.add_argument("--telegram_updates", action="store_true")
+parser.add_argument("--model_path", required=False)
 
 #take a list of string as input from cli
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
@@ -211,15 +213,18 @@ print(f"Time taken to train: {end - start} seconds")
 print("With config: ")
 print(config)
 
-with open(args.log_file, "a") as f:
-    f.write(f"Ignore cols: {ignore_cols}\n")
-    f.write(f"Time taken to train: {end - start} seconds\n")
-    f.write("With config: \n")
-    f.write(f"{config}\n")
+#with open(args.log_file, "a") as f:
+#    f.write(f"Ignore cols: {ignore_cols}\n")
+#    f.write(f"Time taken to train: {end - start} seconds\n")
+#    f.write("With config: \n")
+#    f.write(f"{config}\n")
 
 
 # Saving model checkpoint
-model_path = f"/home/vdesai/bats_data/transformer/models/{args.run_name}.ckpt"
+if not args.model_path:
+    model_path = f"/home/vdesai/bats_data/transformer/models/{args.run_name}.ckpt"
+else:
+    model_path = args.model_path
 trainer.save_checkpoint(model_path)
 print(model.device)
 
