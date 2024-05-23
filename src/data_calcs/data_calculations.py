@@ -7,7 +7,7 @@ Created on Apr 27, 2024
 from collections import namedtuple
 from data_calcs.data_viz import DataViz
 from data_calcs.universal_fd import UniversalFd
-from data_calcs.utils import Utils
+from data_calcs.utils import Utils, TimeGranularity
 from datetime import datetime
 from enum import Enum
 from io import StringIO
@@ -17,6 +17,7 @@ from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
 from tempfile import NamedTemporaryFile
+from itertools import chain
 import csv
 import json
 import numpy as np
@@ -26,7 +27,18 @@ import random
 import re
 import shutil
 import time
-#import openTSNE
+
+
+# ----------------------------- Enum Action ---------------
+
+# Members of the Action enum are passed to main
+# to specify which task the program is to perform: 
+class Action(Enum):
+    HYPER_SEARCH  = 0
+    PLOT          = 1
+    ORGANIZE      = 2
+    CLEAR_RESULTS = 3
+    SAMPLE_CHIRPS = 4
 
 # ---------------------------------- namedtuple ChirpID ---------------
 
@@ -630,6 +642,28 @@ class DataCalcs:
         # Cache of dfs of measures split files we had 
         # to open so far: maps split id to df:
         self.split_file_dfs_cache = {}
+        
+        # Make lookup dicts to find all possible (sin, cos) pairs for
+        # any time granularity. Example:
+        self.trig_secs_lookup    = {sec : Utils.cycle_time(sec, TimeGranularity.SECONDS)
+                                    for sec in range(1, 60)}
+        self.trig_mins_lookup    = {min_ : Utils.cycle_time(min_, TimeGranularity.MINUTES)
+                                    for min_ in range(1, 60)}
+        self.trig_hrs_lookup     = {hr : Utils.cycle_time(hr, TimeGranularity.HOURS)
+                                    for hr in range(0, 24)}
+        self.trig_days_lookup    = {day : Utils.cycle_time(day, TimeGranularity.DAYS)
+                                    for day in range(1, 32)}
+        self.trig_months_lookup  = {month : Utils.cycle_time(month, TimeGranularity.MONTHS)
+                                    for month in range(1, 13)}
+        self.trig_years_lookup   = {year : Utils.cycle_time(year, TimeGranularity.YEARS)
+                                    for year in range(0, 10)}
+
+        self.hr_dy_mn_yr_dicts = [self.trig_hrs_lookup,
+                                  self.trig_days_lookup,
+                                  self.trig_months_lookup,
+                                  self.trig_years_lookup
+                                  ]                                
+        
 
     #------------------------------------
     # _make_fid2split_dict
@@ -1349,26 +1383,41 @@ class DataCalcs:
     # make_chirp_sample_file
     #-------------------
     
-    def make_chirp_sample_file(self, num_chirps, unittests=None):
+    def make_chirp_sample_file(self, num_chirps, save_dir=None, unittests=None):
         '''
         Opens each of the n measurements files in self.measures_root.
         From each of the resulting df's randomly selects num_chirp/n
         chirps (i.e. rows). Builds one df from the results.
         
-        If 'save' is True, saves the df in .csv format in self.data_dir.
-        The file name will be:
-        
-                  <self.res_file_prefix>_samples_<timestamp>.csv
-          
         If unittests is a list, then the list must contain dataframes
         such as the ones that would normally be pulled from split files.
         Those dfs will then be used for testing the implementation. If
         unittests is None, then the paths to split files is used to 
-        obtain dataframes from which to sample. Those are in self.split_fpaths. 
+        obtain dataframes from which to sample. Those are in self.split_fpaths.
+        
+        Result df will have:
+             o All the columns in the split files
+             o Columns
+                	'sin_hr', 'cos_hr', 
+                	'sin_day', 'cos_day', 
+                	'sin_month', 'cos_month', 
+                	'sin_year', 'cos_year'               
+               
+               which are each rec_datetime's hour, day, month, etc.
+               mapped onto a circle to detect periodicity.
+               
+        If 'save_dir' contains a directory, saves the df in .csv 
+        format in that directory. The file name will be:
+        
+                  <self.res_file_prefix>_samples_<timestamp>.csv
+         
                 
         :param num_chirps: total number of chirps to sample across 
             all split files.
         :type num_chirps: int
+        :param save_dir: if provided, save resulting df to
+            <save_dir>/<self.res_file_prefix>_samples_<timestamp>.csv
+        :type save_dir: union[None | src]
         :param unittests: whether or not to save the resulting df
         :type unittests: union[None | list[pd.DataFrame]]
         :return the constructed df
@@ -1476,6 +1525,60 @@ class DataCalcs:
         df.reset_index(drop=True, inplace=True)
         return df
 
+    #------------------------------------
+    # _add_trig_cols
+    #-------------------
+    
+    def _add_trig_cols(self, df, dt_col_nm):
+        '''
+        Given a df with a column named dt_col, add columns
+        
+                	'sin_hr', 'cos_hr', 
+                	'sin_day', 'cos_day', 
+                	'sin_month', 'cos_month', 
+                	'sin_year', 'cos_year'               
+               
+        which are each rec_datetime's hour, day, month, etc.
+        mapped onto a circle to detect periodicity.
+        
+        :param df: dataframe holding a datetime column for which
+            to add the trig function columns
+        :type df: pd.DataFrame
+        :param dt_col_nm: name of column that contains the 
+            datetime.datetime instances
+        :type dt_col_nm: str
+        :return dataframe with columns added on the right
+        :rtype pd.DataFrame
+        '''
+
+        # For each recording time, add sin and cos mappings for
+        # the times' hour, day, month, and year. I.e. add 
+        # eight additional columns:
+        cols = ['sin_hr', 'cos_hr', 
+                'sin_day', 'cos_day', 
+                'sin_month', 'cos_month', 
+                'sin_year', 'cos_year']  
+        # Build an array of pd.Series, each with the
+        # needed six trigonometric columns: 
+        trig_rows = list(map(self._sin_cos_cache, df[dt_col_nm]))
+        
+        new_df = pd.concat([df, pd.DataFrame(trig_rows, columns=cols)], axis='columns')
+        
+        return new_df
+
+
+    #------------------------------------
+    # _sin_cos_cache
+    #-------------------
+    
+    def _sin_cos_cache(self, dt):
+        
+        sin_cos_pairs = [trig_dict[time_val]
+                         for trig_dict, time_val 
+                         in zip(self.hr_dy_mn_yr_dicts, 
+                                (dt.hour, dt.day, dt.month, dt.year % 10))]
+        return tuple(chain(*sin_cos_pairs))
+            
 
     #------------------------------------
     # _allocate_sample_takes
@@ -1542,7 +1645,7 @@ class Activities:
         self.dst_dir = dst_dir
         self.data_dir = data_dir
         self.res_file_prefix = res_file_prefix
-
+        
     #------------------------------------
     # organize_results
     #-------------------
@@ -1867,13 +1970,22 @@ class Activities:
         fig.savefig(fig_save_path)
         fig.show()
         input("Any key to erase figs and continue: ")
-            
 
     #------------------------------------
     # main
     #-------------------
     
-    def main(self, actions):
+    def main(self, actions, **kwargs):
+        '''
+        Perform one task using class DataCalcs methods.
+        Keyword arguments are passed to the executing 
+        methods, if appropriate.
+
+        :param actions: one or more Actions to perform. If
+            multiple actions are specified, they are executed
+            in order.
+        :type actions: union[Action | list[Action]]
+        '''
 
         if type(actions) != list:
             actions = [actions]
@@ -1891,16 +2003,15 @@ class Activities:
             elif action == Action.PLOT:
                 self._plot_search_results(srch_results)
                 
+            elif action == Action.SAMPLE_CHIRPS:
+                # Possible kwarg: num_chirps, which is
+                # the number of chirp
+                self._sample_chirps(kwargs)
+                
             else:
                 raise ValueError(f"Unknown action: {action}")
             
             
-class Action(Enum):
-    HYPER_SEARCH  = 0
-    PLOT          = 1
-    ORGANIZE      = 2
-    CLEAR_RESULTS = 3
-    
 # ------------------------ Main ------------
 if __name__ == '__main__':
 

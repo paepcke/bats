@@ -146,3 +146,4 @@ src/powerflock/tests/quad_sig_calibrator_experiment/
 .DS_Store
 .settings/
 doc/ScalingProcedureBatsData/
+src/data_calcs/tests/tmp_tst_data/

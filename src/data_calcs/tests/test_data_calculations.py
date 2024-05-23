@@ -4,17 +4,19 @@ Created on Apr 27, 2024
 @author: paepcke
 '''
 
-from data_calcs.data_calculations import DataCalcs, PerplexitySearchResult
+from data_calcs.data_calculations import DataCalcs, PerplexitySearchResult, \
+    Activities
 from data_calcs.daytime_file_selection import DaytimeFileSelector
+from data_calcs.utils import Utils, TimeGranularity
+from datetime import datetime
 from logging_service.logging_service import LoggingService
 from pandas.testing import assert_frame_equal
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock
-from datetime import datetime
+import numpy as np
 import os
 import pandas as pd
 import unittest
-import numpy as np
 
 TEST_ALL = True
 #TEST_ALL = False
@@ -448,6 +450,85 @@ class DataPrepTester(unittest.TestCase):
             samples = dp.make_chirp_sample_file(samples_wanted, unittests=tst_dfs)
 
 
+    #------------------------------------
+    # test__sin_cos_cache
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test__sin_cos_cache(self):
+        
+        dc = DataCalcs(self.tmpdir.name, self.tmpdir.name)
+        dt = datetime(2024, 1, 1, 1, 1, 1)
+        # The numeric, rounded tuples in the asserts below
+        # come from the following _trig result. They were
+        # manually transferred. The _trig is otherwise
+        # unused:
+        _trig = dc._sin_cos_cache(dt)
+        
+        
+        self.assertEqual(tuple(map(lambda trig: round(trig, 4), 
+                                   Utils.cycle_time(1, TimeGranularity.HOURS))),
+                         (0.2588, 0.9659))
+        self.assertEqual(tuple(map(lambda trig: round(trig, 4),
+                                   Utils.cycle_time(1, TimeGranularity.DAYS))),
+                                   (0.2079, 0.9781))
+        self.assertEqual(tuple(map(lambda trig: round(trig, 4),
+                                   Utils.cycle_time(1, TimeGranularity.MONTHS))),                           
+                                   (0.5, 0.8660))
+        self.assertEqual(tuple(map(lambda trig: round(trig, 4),
+                                   Utils.cycle_time(1, TimeGranularity.YEARS))),
+                                   (0.5878, 0.8090))
+        
+    #------------------------------------
+    # test__add_trig_cols
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test__add_trig_cols(self):
+        
+        dc = DataCalcs(self.tmpdir.name, self.tmpdir.name)
+        df_start = pd.DataFrame(
+            {'foo' : [1,2,3,4],#Yr  Mn Dy Hr mn  Sec
+             'dt'  : [datetime(2023, 1, 1, 1, 1, 1),
+                      datetime(2023, 1, 1, 18, 1, 1),
+                      datetime(2023, 1, 23, 1, 1, 1),
+                      datetime(2023, 9, 1, 1, 1, 1),
+                      ]
+             })
+        df = dc._add_trig_cols(df_start, 'dt')
+        # Got all the cols?
+        cols = ['foo', 'dt',
+                'sin_hr', 'cos_hr', 
+                'sin_day', 'cos_day', 
+                'sin_month', 'cos_month', 
+                'sin_year', 'cos_year']
+        # The 'list()' is needed b/c df.columns is of
+        # type pd.Index, not list:               
+        self.assertListEqual(list(df.columns), cols)
+        self.assertEqual(len(df), len(df_start))
+        
+        # Just test one dt, since similar methods are
+        # tested elsewhere:
+        dt_check = df_start.dt.iloc[0]
+        self.assertEqual((round(df.sin_hr[0], 4), 
+                          round(df.cos_hr[0], 4)), 
+                         tuple(map(lambda trig: round(trig, 4), 
+                                   Utils.cycle_time(dt_check.hour, TimeGranularity.HOURS))))
+         
+        self.assertEqual((round(df.sin_day[0], 4),
+                          round(df.cos_day[0], 4)),
+                         tuple(map(lambda trig: round(trig, 4), 
+                                   Utils.cycle_time(dt_check.day, TimeGranularity.DAYS))))
+        
+        self.assertEqual((round(df.sin_month[0], 4),
+                          round(df.cos_month[0], 4)),
+                         tuple(map(lambda trig: round(trig, 4), 
+                                   Utils.cycle_time(dt_check.month, TimeGranularity.MONTHS))))
+
+        self.assertEqual((round(df.sin_year[0], 4),
+                          round(df.cos_year[0], 4)), 
+                         tuple(map(lambda trig: round(trig, 4),
+                                   Utils.cycle_time(dt_check.year, TimeGranularity.YEARS))))
 
     # ----------------------- Utilities ----------------
 
