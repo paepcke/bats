@@ -5,11 +5,14 @@ Created on Apr 22, 2024
 '''
 
 from _datetime import timedelta, datetime
+from data_calcs.daytime_file_selection import DaytimeFileSelector
 
 class Utils:
     '''
     classdocs
     '''
+
+    rec_time_util = DaytimeFileSelector()
 
     #------------------------------------
     # round_time
@@ -51,3 +54,135 @@ class Utils:
         rounding = (seconds+roundTo/2) // roundTo * roundTo
         return dt + timedelta(0,rounding-seconds,-dt.microsecond)
   
+    #------------------------------------
+    # max_df_coords
+    #-------------------
+    
+    @staticmethod
+    def max_df_coords(df):
+        '''
+        Returns the row name and column name of
+        the given dataframe that locate the largest
+        element of the df.
+        
+        All elements must be comparable via ">"
+        
+        WARNING: The approach is brute force. Use only for small
+        dfs. df.idxmax(axis=n) is likely significantly faster,
+        but more confusing than this nested loop.
+        
+        :param df: dataframe whose largest element is to be found
+        :type df: pd.DataFrame
+        :return the name of the row index element and the name of
+            the column index element that address the largest
+            element
+        :rtype: tuple[any, any]
+        
+        '''
+
+        max_el = 0
+        best_row = None
+        best_col = None
+        for row in df.index:
+            for col in df.columns:
+                new_el = df.loc[row].loc[col]
+                if new_el > max_el:
+                    max_el = new_el
+                    best_row = row
+                    best_col = col
+        return (best_row, best_col)
+        
+    #------------------------------------
+    # is_file_like
+    #-------------------
+    
+    @staticmethod
+    def is_file_like(value):
+        '''
+        Return True if value is a file-like, such 
+        as a file descriptor or io.StringIO. Works
+        by checking whether value has an attribute
+        'write', which is a callable.
+        
+        :param value: value to examine
+        :type value: any
+        :return True if value is file-like
+        :rtype bool
+        '''
+        try:
+            return callable(value.write)
+        except AttributeError:
+            return False
+
+    #------------------------------------
+    # time_from_fname
+    #-------------------
+    
+    @classmethod
+    def time_from_fname(cls, fname):
+        '''
+        Given a SonoBat recording .wav filename, 
+        extract, and return the recording time
+        
+        :param fname: .wav file name from which to extract recording time
+        :type fname: str
+        :return recording date and time
+        :rtype: datetime.datetime
+        '''
+        dt = cls.rec_time_util.time_from_fname(fname)
+        return dt
+
+    #------------------------------------
+    # timestamp_fname_safe
+    #-------------------
+    
+    @staticmethod
+    def timestamp_fname_safe(time=None):
+        '''
+        Returns date and time in a format safe for use 
+        in filenames
+        
+        :param time: optinally, a datetime to turn into a 
+            filename safe string. If None, current date and time
+            are used.
+        :type time: union[None | datetime.datetime]
+        :return timestamp for use in file names
+        :rtype str
+        '''
+
+        if time is not None and not isinstance(time, datetime):
+            raise TypeError(f"Time argument must of None or a datetime.datetime")
+                            
+        if time is None:
+            # Get like '2024-05-19T10:16:42.785678'
+            dt_str = datetime.now().isoformat()
+        else:
+            dt_str = time.isoformat()
+        # Remove dashes and colons
+        file_safe = dt_str.replace('-', '').replace(':', '')
+        return file_safe
+        
+
+    #------------------------------------
+    # is_daytime_recording
+    #-------------------
+    
+    @classmethod
+    def is_daytime_recording(cls, time_src):
+        '''
+        Returns True or False, depending on whether the
+        time_src encodes a recording time that was daylight
+        at Jasper Ridge on the Stanford campus. If time_src
+        is a file name, it is assumed to be a .wav file name
+        that includes the datetime info. That filename is then
+        decoded from the fname string.
+        
+        :param time_src: .wav name from which to extract recording date and time,
+            or a Python datetime or Pandas Timestamp
+        :type time_src: union[str | datetime.datetime | pd.Timestamp
+        :return whether or not the recording time was during the day, or not.
+        :rtype bool
+        '''
+        res = cls.rec_time_util.is_daytime_recording(time_src)
+        return res
+        

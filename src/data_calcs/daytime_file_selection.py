@@ -6,7 +6,6 @@ Created on Apr 20, 2024
 '''
 from astral import geocoder, sun
 from data_calcs.universal_fd import UniversalFd
-from data_calcs.utils import Utils
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import csv
@@ -83,23 +82,33 @@ class DaytimeFileSelector:
     # is_daytime_recording
     #-------------------
     
-    def is_daytime_recording(self, fname):
+    def is_daytime_recording(self, rec_time_src):
         '''
-        Return True if the recording time that is encoded in
-        fname is between sunrise and sunset at the Stanford Jasper
-        Ridge Preserve. Filenames are expected to be of the form
+        Return True if the recording time that is provided
+        in rec_time_src was daytime at Stanford's Jasper Ridge
+        Preserve when the recording occurred.
+        
+        If rec_time_src is the name of a .wav recording, the 
+        datetime of the recording is extracted from the filename.
+        Else it is expected to be a datetime.datetime object.
+        Filenames are expected to be of the form
         
              barn1_D20220205T192049m784-HiF.wav
           
-        :param fname: file name from which to obtain recording
+        :param rec_time_src: file name from which to obtain recording
             date and time.
-        :type fname: str
+        :type rec_time_src: union[str | datetime.datetime]
         :return True if recording time is during daylight hours, else False
         :rtype bool
         :raise ValueError if given filename does not encode date and time
         '''
-        # Extract a datetime from the fname:
-        recording_time = self.time_from_fname(fname)
+        # Extract a datetime from the fname if necessary:
+        if type(rec_time_src) == str:
+            # Source is a filename:
+            recording_time = self.time_from_fname(rec_time_src)
+        else:
+            recording_time = rec_time_src
+
         sunrise, sunset = self.sunrise_sunset_times(
             recording_time, round_to_minute=True)
         if sunrise <= recording_time <= sunset:
@@ -228,7 +237,7 @@ class DaytimeFileSelector:
         
         if round_to_minute:
             # Round to nearest minute:
-            final_sunset = Utils.round_time(sunset, roundTo=60)
+            final_sunset = self.round_time(sunset, roundTo=60)
         else:
             final_sunset = sunset
             
@@ -236,7 +245,7 @@ class DaytimeFileSelector:
         
         if round_to_minute:
             # Round to nearest minute:
-            final_sunrise = Utils.round_time(sunrise, roundTo=60)
+            final_sunrise = self.round_time(sunrise, roundTo=60)
         else:
             final_sunrise = sunrise
             
@@ -284,6 +293,45 @@ class DaytimeFileSelector:
         dt = datetime(yr, mo, dy, hour=hr, minute=mi, second=sc, tzinfo=self.timezone)
         return dt
         
+    #------------------------------------
+    # round_time
+    #-------------------
+
+    @staticmethod
+    def round_time(dt=None, roundTo=60):
+        '''
+        Round a datetime object to any time lapse in seconds
+        Examples:
+        
+            roundTime(datetime.datetime(2012,12,31,23,44,59,1234),roundTo=60*60)
+               => 2013-01-01 00:00:00
+            
+            roundTime(datetime.datetime(2012,12,31,23,44,59,1234),roundTo=30*60)
+               => 2012-12-31 23:30:00
+            
+            roundTime(datetime(2012,12,31,23,44,29,1234),roundTo=60)
+               => 2012-12-31 23:44:00
+            
+            print(roundTime(datetime(2012,12,31,23,44,31,1234),roundTo=60)
+               => 2012-12-31 23:45:00
+            
+            roundTime(datetime(2012,12,31,23,44,30,1234),roundTo=60)
+               => 2012-12-31 23:45:00
+
+        Based on: Author: Thierry Husson 2012        
+
+        :param dt: datetime object to round, default: now.
+        :type dt: datetime.datetime
+        :param roundTo: Closest number of seconds to round to, default 1 minute.
+        :type roundTo: int
+        :return a rounded datetime
+        :rtype: datetime.datetime
+        '''
+
+        if dt == None : dt = datetime.now()
+        seconds = (dt.replace(tzinfo=None) - dt.min).seconds
+        rounding = (seconds+roundTo/2) // roundTo * roundTo
+        return dt + timedelta(0,rounding-seconds,-dt.microsecond)
         
 # --------------------- Class DataFrameRows -----------
 

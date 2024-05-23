@@ -3,7 +3,7 @@ Created on Feb 22, 2024
 
 @author: paepcke
 '''
-from data_calcs.data_calcs import DataCalcs
+from data_calcs.data_cleaning import DataCleaner
 from tempfile import TemporaryDirectory
 import pandas as pd
 import sys
@@ -16,7 +16,7 @@ TEST_ALL = True
 #TEST_ALL = False
 
 
-class BatCalcTester(unittest.TestCase):
+class DataCleanerTester(unittest.TestCase):
 
 
     def setUp(self):
@@ -55,7 +55,7 @@ class BatCalcTester(unittest.TestCase):
     @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_cleaning_sonobat_raw(self):
 
-        cleaner = DataCalcs(self.sono_raw_path, unittesting=True)
+        cleaner = DataCleaner()
         
         new_df = cleaner.load_sonobat_data(
             self.sono_raw_path,
@@ -86,11 +86,12 @@ class BatCalcTester(unittest.TestCase):
         #     1                3  4.0 sec        10 kHz cutoff          2
         #     2                1  4.0 sec        15 kHz cutoff          3        
 
-        cleaner = DataCalcs(self.sono_raw_path, unittesting=True)
+        cleaner = DataCleaner()
         new_df = cleaner.load_sonobat_data(
             self.sono_raw_path,
             exclude_cols=self.admin_cols,
-            remove_nans=True)
+            remove_nans=True,
+            )
 
         # To match SonoBat column names, change two names:
         conversion = {
@@ -143,11 +144,11 @@ class BatCalcTester(unittest.TestCase):
     def test__normalize_frame(self):
         
         df_raw = pd.read_csv(self.sono_raw_path, index_col=False)
-        df_raw_normal = DataCalcs._normalize_frame(df_raw)
+        df_raw_normal = DataCleaner._normalize_frame_format(df_raw)
         
         # Same for file saved from df with index info:
         df_df = pd.read_csv(self.sono_df_path, index_col=False)
-        df_df_normal = DataCalcs._normalize_frame(df_df)
+        df_df_normal = DataCleaner._normalize_frame_format(df_df)
         
         pd.testing.assert_frame_equal(df_raw_normal, df_df_normal)
 
@@ -161,7 +162,7 @@ class BatCalcTester(unittest.TestCase):
         # a raw sonobat csv file, or a csv file
         # stored from a dataframe by DataCalc, and
         # end up with the same data:
-        cleaner = DataCalcs(self.sono_df_path, unittesting=True)
+        cleaner = DataCleaner()
         
         df_df = cleaner.load_sonobat_data(
             self.sono_df_path,
@@ -182,11 +183,13 @@ class BatCalcTester(unittest.TestCase):
     @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_stats_computation(self):
         
-        cleaner = DataCalcs(self.sono_complex_path, 
-                            compute_stats=True,
-                            outfile=False,
-                            admin_cols=['Filename']
-                            )
+        cleaner = DataCleaner()
+        cleaner.clean_sonobat_file(
+            self.sono_complex_path, 
+            compute_stats=True,
+            outfile=False,
+            admin_cols=['Filename']
+            )
                 
         stats_df = cleaner.compute_stats(cleaner.df)
         
@@ -195,7 +198,7 @@ class BatCalcTester(unittest.TestCase):
         # below, independent of a machine's architecture,
         # truncate all values in stats_df to six digits:
         
-        stats_df_trunc = stats_df.apply(BatCalcTester.truncate_series)
+        stats_df_trunc = stats_df.apply(DataCleanerTester.truncate_series)
         
         pre_int = pd.Series([
             1025.345088,
@@ -260,11 +263,8 @@ class BatCalcTester(unittest.TestCase):
     @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_culling(self):
     
-        cleaner = DataCalcs(self.sono_complex_path, 
-                            compute_stats=True,
-                            outfile=False,
-                            admin_cols=['Filename']
-                            )
+        cleaner = DataCleaner()
+        cleaner.load_sonobat_data(self.sono_complex_path, exclude_cols=['Filename'])
         df = cleaner.df
 
         # Remove columns with normalized varience <0.4:
@@ -275,7 +275,7 @@ class BatCalcTester(unittest.TestCase):
         # below, independent of a machine's architecture,
         # truncate all values six digits:
         
-        df_culled_trunc = df_culled.apply(BatCalcTester.truncate_series)
+        df_culled_trunc = df_culled.apply(DataCleanerTester.truncate_series)
         
         # For 'expected', start with the original df:
         expected  = df.copy()
@@ -457,7 +457,7 @@ class BatCalcTester(unittest.TestCase):
             truncated to 6 digits.
         :rtype: pd.Series
         '''
-        return float_ser.apply(lambda x: BatCalcTester.truncate(x,6))
+        return float_ser.apply(lambda x: DataCleanerTester.truncate(x,6))
 
 
 # ----------------- Main -------------------
