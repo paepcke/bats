@@ -28,6 +28,9 @@ import re
 import shutil
 import time
 
+measures_root = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
+inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
+
 
 # ----------------------------- Enum Action ---------------
 
@@ -39,6 +42,7 @@ class Action(Enum):
     ORGANIZE      = 2
     CLEAR_RESULTS = 3
     SAMPLE_CHIRPS = 4
+    EXTRACT_COL   = 5
 
 # ---------------------------------- namedtuple ChirpID ---------------
 
@@ -1383,7 +1387,7 @@ class DataCalcs:
     # make_chirp_sample_file
     #-------------------
     
-    def make_chirp_sample_file(self, num_chirps, save_dir=None, unittests=None):
+    def make_chirp_sample_file(self, num_chirps, save_dir=None, prefix=None, unittests=None):
         '''
         Opens each of the n measurements files in self.measures_root.
         From each of the resulting df's randomly selects num_chirp/n
@@ -1409,7 +1413,7 @@ class DataCalcs:
         If 'save_dir' contains a directory, saves the df in .csv 
         format in that directory. The file name will be:
         
-                  <save_dir>/<self.res_file_prefix>_chirps_<timestamp>.csv
+                  <save_dir>/<prefix>_<num-chirps>_chirps_<timestamp>.csv
          
                 
         :param num_chirps: total number of chirps to sample across 
@@ -1418,12 +1422,16 @@ class DataCalcs:
         :param save_dir: if provided, save resulting df to
             <save_dir>/<self.res_file_prefix>_chirps_<timestamp>.csv
         :type save_dir: union[None | src]
+        :param prefix: prefix to use on the result file name
+        :type prefix: union[None | str]
         :param unittests: whether or not to save the resulting df
         :type unittests: union[None | list[pd.DataFrame]]
-        :return the constructed df
-        :rtype pd.DataFrame
+        :return dict: 'df' : the constructed df. 'out_file' : file where df was saved
+        :rtype dict[str : union[pd.DataFrame | str | None]
         '''
 
+        if prefix is None:
+            prefix = ''
         # Before investing time, check whether caller wants
         # to save the resulting df. If so, see whether we
         # succeed in finding, or creating the target directory:
@@ -1435,7 +1443,7 @@ class DataCalcs:
             else:
                 # Try to create the dir:
                 os.makedirs(save_dir, exist_ok=True)
-            save_fname = os.path.join(save_dir, f"{self.res_file_prefix}_chirps_{Utils.timestamp_fname_safe()}.csv")
+            save_fname = os.path.join(save_dir, f"{prefix}_{num_chirps}_chirps_{Utils.timestamp_fname_safe()}.csv")
         else:
             save_fname = None
 
@@ -1471,7 +1479,7 @@ class DataCalcs:
         # During unittests, sample_paths are actually dataframes
         # pre-loaded from actual split files: 
         while True:
-            for ith_src, measure_src in enumerate(sample_paths):
+            for ith_src, measure_src in sample_paths.items():
                 if type(measure_src) == str:
                     # Load the df:
                     df_one_split = UniversalFd(measure_src, 'r').asdf()
@@ -1536,13 +1544,19 @@ class DataCalcs:
                 continue
 
         # Make a df from the extraced samples:            
-        df = pd.DataFrame(res_np_arr, columns=res_cols)
+        df_raw = pd.DataFrame(res_np_arr, columns=res_cols)
+        # Replace file_id with recording datetime object, and
+        # add whether recording was daylight or not:
+        df_with_rectime = self.add_recording_datetime(df_raw)
+        # Add sin and cos columns for each granularity of rec_datetime:
+        df = self._add_trig_cols(df_with_rectime, 'rec_datetime')  
         df.reset_index(drop=True, inplace=True)
         
         if save_fname is not None:
             df.to_csv(save_fname, index=None)
         
-        return df
+        return {'df' : df,
+                'out_fname' : save_fname}
 
     #------------------------------------
     # _add_trig_cols
@@ -1578,7 +1592,8 @@ class DataCalcs:
                 'sin_month', 'cos_month', 
                 'sin_year', 'cos_year']  
         # Build an array of pd.Series, each with the
-        # needed six trigonometric columns: 
+        # needed six trigonometric columns. We use the cache
+        # for that:
         trig_rows = list(map(self._sin_cos_cache, df[dt_col_nm]))
         
         new_df = pd.concat([df, pd.DataFrame(trig_rows, columns=cols)], axis='columns')
@@ -1591,6 +1606,17 @@ class DataCalcs:
     #-------------------
     
     def _sin_cos_cache(self, dt):
+        '''
+        Given a datetime, return a tuple of
+        eight elements: the sin and cos for each
+        granularity of HOURS, DAYS, MONTHS, and YEARS.
+         
+        :param dt: a datetime instance
+        :type dt: datetime.datetime
+        :return sin and cos mappings for each granularity 
+            of HOURS, DAYS, MONTHS, and YEARS.
+        :rtype tuple[float]
+        '''
         
         sin_cos_pairs = [trig_dict[time_val]
                          for trig_dict, time_val 
@@ -1658,12 +1684,15 @@ class Activities:
     def __init__(self,
                  dst_dir,
                  data_dir='/tmp',
-                 res_file_prefix='perplexity_n_clusters_optimum'):
+                 res_file_prefix='perplexity_n_clusters_optimum',
+                 **kwargs
+                 ):
         
         self.log = LoggingService()
         self.dst_dir = dst_dir
         self.data_dir = data_dir
         self.res_file_prefix = res_file_prefix
+        self.kwargs = kwargs
         
     #------------------------------------
     # organize_results
@@ -1814,9 +1843,13 @@ class Activities:
     # _sample_chirps
     #-------------------
     
-    def sample_chirps(self, num_samples=None, save_dir=None):
-        pass #*************
-
+    def _sample_chirps(self, num_samples=None, save_dir=None):
+        data_calculator = DataCalcs(measures_root=measures_root,
+                                    inference_root=inference_root
+                                    )
+        res_dict = data_calculator.make_chirp_sample_file(num_samples, save_dir=save_dir)
+        _df, save_file = res_dict.values()
+        self.log.info(f"Saved {num_samples} chirps in {save_file}")
 
     #------------------------------------
     # _run_hypersearch
@@ -1856,9 +1889,6 @@ class Activities:
         '''
     
         outfile        = '/tmp/cluster_perplexity_matrix.csv'
-        #measures_root  = '/Users/paepcke/quintus/home/vdesai/bats_data/new_dataset/splits'
-        measures_root = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
-        inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
     
         if Utils.is_file_like(search_res_outfile):
             res_outfile = search_res_outfile.name 
@@ -1998,6 +2028,72 @@ class Activities:
         fig.show()
         input("Any key to erase figs and continue: ")
 
+
+    #------------------------------------
+    # _extract_column
+    #-------------------
+    
+    def _extract_column(self, df_src, col_name, dst_dir=None, prefix=None):
+        '''
+        Given either a dataframe, or a file the contains a dataframe
+        extract the column col_name, and return it as a pd.Series.
+        If dest_dir is non-None, it must be a destination dir. The
+        file name will be:
+        
+                <dst_dir>/<prefix>_<col_name>_<now-time>.csv
+                
+        Source files may be csv, csv.gz, or .feather
+        
+        :param df_src: either a df, or source file that holds a df
+        :type df_src: union[pd.DataFrame | src]
+        :param col_name: name of column to extract
+        :type col_name: src
+        :param dst_dir: directory to store the resulting pd.Series.
+            If None, Series is just returned, but not saved.
+        :type dst_dir: union[None | src]
+        :param prefix: prefix to place in destination file name
+        :type prefix: union[None | str]
+        :return: dict {'col' : the requested column,
+                       'out_file' : path where column was saved}
+        :rtype dic[str : union[str : union[None | pd.Series]
+        '''
+        
+        if type(df_src) == str:
+            if not os.path.exists(df_src):
+                raise FileNotFoundError(f"Did not find dataframe source file {df_src}")
+            else:
+                with UniversalFd(df_src, 'r') as fd:
+                    df = fd.asdf()
+        else:
+            if type(df_src) != pd.DataFrame:
+                raise TypeError(f"Dataframe source {df_src} is not a dataframe.")
+            df = df_src
+
+        if prefix is None:
+            prefix = ''
+            
+        try:
+            col = df[col_name]
+        except KeyError:
+            raise ValueError(f"Column {col_name} not found in dataframe")
+        
+        if dst_dir is not None:
+            # If caller passed a file, bad:
+            if os.path.isfile(dst_dir):
+                raise ValueError(f"Destination {dst_dir} is a file; should be a directory")
+            
+            os.makedirs(dst_dir, exist_ok=True)
+            
+            # Save the result:
+            filename_safe_dt = Utils.timestamp_fname_safe()
+            fname = os.path.join(dst_dir, f"{prefix}_column_{col_name}_{filename_safe_dt}.csv")
+            col.to_csv(fname)
+            self.log.info(f"Saved column {col_name} in {fname}")
+        else:
+            fname = None
+        return {'col' : col, 'out_file' : fname}
+
+
     #------------------------------------
     # main
     #-------------------
@@ -2033,8 +2129,13 @@ class Activities:
             elif action == Action.SAMPLE_CHIRPS:
                 # Possible kwarg: num_chirps, which is
                 # the number of chirp
-                self._sample_chirps(kwargs)
+                self._sample_chirps(**self.kwargs)
                 
+            elif action == Action.EXTRACT_COL:
+                _ser, _save_path_= self._extract_column(kwargs['df_src'], 
+                                                        kwargs['col_name'],
+                                                        dst_dir=kwargs['dst_dir']
+                                                        ).values()
             else:
                 raise ValueError(f"Unknown action: {action}")
             
@@ -2045,9 +2146,24 @@ if __name__ == '__main__':
     proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
     dst_dir = os.path.join(proj_dir, 'results/hyperparm_searches')
 
-    actions = [Action.HYPER_SEARCH, Action.PLOT]
+    #*******actions = [Action.HYPER_SEARCH, Action.PLOT]
     #*******actions  = Action.HYPER_SEARCH
     #*******actions  = Action.ORGANIZE
-        
-    activities = Activities(dst_dir)
-    activities.main(actions)
+    #*******actions  = Action.SAMPLE_CHIRPS   # 50,000 samples takes 15 seconds
+    actions = Action.EXTRACT_COL
+
+    chirp_sample_dst_dir = os.path.join(proj_dir, 'results/chirp_samples')
+    
+    #******activities = Activities(chirp_sample_dst_dir, num_samples=10, save_dir=chirp_sample_dst_dir)
+    #******activities = Activities(chirp_sample_dst_dir, num_samples=50000, save_dir=chirp_sample_dst_dir)
+    chirp_samples = os.path.join(proj_dir, 'results/chirp_samples/')
+    df_file = os.path.join(chirp_samples, '_50000_chirps_20240524T090814.107027.csv')
+    activities = Activities(chirp_samples)
+
+    start_time = time.perf_counter()    
+    activities.main(actions, 
+                    df_src=df_file , 
+                    col_name='rec_datetime',
+                    dst_dir=chirp_samples)
+    end_time = time.perf_counter()
+    print(f"Completed action {actions} in {end_time - start_time} seconds")

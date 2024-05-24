@@ -248,6 +248,11 @@ class Utils:
         
         NOTE: this method may be called many times. So no error checking
               is performed. Caveat caller.
+              
+        NOTE: the difference between this method and method cyclical_time_encoding()
+              is that this method only transforms a single value, and tries
+              to do that quickly. The cyclical_time_encoding() method operates
+              on an entire pd.Series, and adds zero registration. 
          
         :param date_time: a datetime object for which sin/cos
             are to be found, or an integer datetime component
@@ -320,6 +325,19 @@ class Utils:
         hours, or months. Returns a DataFrame of two columns: 
                 
                  <time_gran>_sin     <time_gran>_cos
+                 
+        The zero_registration indicates which time is to be considered 
+        the 0-radian position. For example, if time_granularity is 
+        TimeGranularity.HOURS, and zero_registration is 17, then any
+        datetime dt with dt.hour == 17 is considered to be angle 0,
+        i.e. in the 3-o'clock position. This feature could be used to
+        have each cycle start at sundown.
+        
+        NOTE: the difference between this method and method cycle_time()
+              is that this method operates on an entire pd.Series, and 
+              adds zero registration, while cycle_time only transforms a 
+              single value, and tries to do that quickly.  
+          
                  
         :param datetime_series: datetime values from which to extract
             time for encoding
