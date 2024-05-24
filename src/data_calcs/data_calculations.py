@@ -1409,20 +1409,35 @@ class DataCalcs:
         If 'save_dir' contains a directory, saves the df in .csv 
         format in that directory. The file name will be:
         
-                  <self.res_file_prefix>_samples_<timestamp>.csv
+                  <save_dir>/<self.res_file_prefix>_chirps_<timestamp>.csv
          
                 
         :param num_chirps: total number of chirps to sample across 
             all split files.
         :type num_chirps: int
         :param save_dir: if provided, save resulting df to
-            <save_dir>/<self.res_file_prefix>_samples_<timestamp>.csv
+            <save_dir>/<self.res_file_prefix>_chirps_<timestamp>.csv
         :type save_dir: union[None | src]
         :param unittests: whether or not to save the resulting df
         :type unittests: union[None | list[pd.DataFrame]]
         :return the constructed df
         :rtype pd.DataFrame
         '''
+
+        # Before investing time, check whether caller wants
+        # to save the resulting df. If so, see whether we
+        # succeed in finding, or creating the target directory:
+        if save_dir is not None:
+            if os.path.exists(save_dir):
+                # Ensure it's a dir:
+                if not os.path.isdir(save_dir):
+                    raise ValueError(f"A file with name {save_dir} exists; so cannot create a directory of that name")
+            else:
+                # Try to create the dir:
+                os.makedirs(save_dir, exist_ok=True)
+            save_fname = os.path.join(save_dir, f"{self.res_file_prefix}_chirps_{Utils.timestamp_fname_safe()}.csv")
+        else:
+            save_fname = None
 
         # Number of rows in each df:
         fsizes = {}
@@ -1523,6 +1538,10 @@ class DataCalcs:
         # Make a df from the extraced samples:            
         df = pd.DataFrame(res_np_arr, columns=res_cols)
         df.reset_index(drop=True, inplace=True)
+        
+        if save_fname is not None:
+            df.to_csv(save_fname, index=None)
+        
         return df
 
     #------------------------------------
@@ -1790,6 +1809,14 @@ class Activities:
             os.remove(srch_res)
             
         return True
+
+    #------------------------------------
+    # _sample_chirps
+    #-------------------
+    
+    def sample_chirps(self, num_samples=None, save_dir=None):
+        pass #*************
+
 
     #------------------------------------
     # _run_hypersearch
