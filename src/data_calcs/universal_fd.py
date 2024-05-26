@@ -128,6 +128,29 @@ class UniversalFd:
             else:
                 new_row = str_or_row
             self.table.append(new_row)
+    
+    #------------------------------------
+    # def write_df
+    #-------------------
+    
+    def write_df(self, df):
+        '''
+        Write the given df according to self.filetype: as
+        .csv, .csv.gz, or .feather
+        
+        :param df: dataframe to write
+        :type df: pd.DataFrame
+        '''
+        if self.filetype in ('csv', 'gz'):
+            df.to_csv(self.fname, compression='infer')
+        elif self.filetype == 'feather':
+            try:
+                df.to_feather(self.fname)
+            except Exception as e:
+                msg = f"Feather write error. Tip: columns written to .feather must have the same type. Ensure that this is true for all df columns. ({e})"
+                raise TypeError(msg)
+        else:
+            raise TypeError(f"Can only write df to .csv, .csv.gz, or .feather, not {self.filetype}")                
                 
     #------------------------------------
     # readline
@@ -202,8 +225,9 @@ class UniversalFd:
         
         if self.direction == 'write':
             # Must be a feather:
-            df = pd.DataFrame(self.table[1:], columns=self.table[0])
-            df.to_feather(self.out_name)
+            if len(self.table) > 0:
+                df = pd.DataFrame(self.table[1:], columns=self.table[0])
+                df.to_feather(self.out_name)
 
     #------------------------------------
     # line_num (property)
@@ -227,7 +251,54 @@ class UniversalFd:
     # asdf
     #-------------------
     
-    def asdf(self, n_rows=None):
+    def asdf(self, n_rows=None, index_col=None):
+        '''
+        Have the UniversalFd read the file straight into a
+        dataframe. Because of the initializations, this
+        method can handle all the supported file types
+        
+        If idex_column is provided, it must be the name of a
+        column, or the index to a column. Used only for 
+        .csv and .csv.gz. This information is needed for a 
+        following .csv file:
+           
+              Idx  Col1   Col2
+               0   'foo'  'bar'
+               1   'blue' 'green'
+               
+        where the intention for the resulting dataframe is:
+        
+                   Col1    Col2
+            Idx    
+             0     'foo'   'bar'
+             1     'blue'  'green'
+    
+        Similarly, when the original df's index did not have a name,
+        the .csv often looks like this:
+        
+              ,Col1   Col2
+               0   'foo'  'bar'
+               1   'blue' 'green'
+        
+        in which case the df can look like:
+        
+                  Unnamed   Col1    Col2
+                    
+             0      0    	'foo'   'bar'
+             1      1    	'blue'  'green'
+        
+        In this case, pass index_col=0, since no name is
+        available to designate as the index name:
+        
+        :param n_rows: how many rows to read. None means all.
+        :type n_rows: union[None | int]
+        :param index_col: which of the columns, if any, to use
+            as the name of the dataframe index, rather than a
+            regular column
+        :type index_col: union[None | str]
+        :return the dataframe that was read from the disk
+        :rtype pd.DataFrame
+        '''
         
         if n_rows is not None and type(n_rows) != int:
             raise TypeError(f"Argument n_rows must be None or integer, not {n_rows}")
@@ -241,7 +312,11 @@ class UniversalFd:
 
         elif self.filetype == 'csv':
             with open(self.fname, 'rt') as fd:
-                new_df = pd.read_csv(fd, header=0, index_col=None, engine='c')
+                try:
+                    new_df = pd.read_csv(fd, header=0, index_col=index_col, engine='c')
+                except ValueError:
+                    msg = f"Could not read {fd.name} with index_col={index_col}. Maybe '{index_col}' not present in file?"
+                    raise ValueError(msg)
             # Make any necessary column type adjustments:
             df_typed = self._type_map_df(new_df)
             if n_rows is not None:
@@ -252,7 +327,7 @@ class UniversalFd:
             
         elif self.filetype == 'gz':
             with gzip.open(self.fname, 'rt') as fd:
-                new_df = pd.read_csv(fd, header=0, index_col=None, engine='c')
+                new_df = pd.read_csv(fd, header=0, index_col=index_col, engine='c')
             # Make any necessary column type adjustments:                
             df_typed = self._type_map_df(new_df)
             if n_rows is not None:

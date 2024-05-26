@@ -9,8 +9,6 @@ from datetime import timedelta, datetime
 from enum import Enum, auto
 import numpy as np
 import pandas as pd
-from pandas.tests.groupby import test_timegrouper
-
 
 # ----------------------------- Class TimeGranularity ---------    
 

@@ -11,13 +11,13 @@ from data_calcs.utils import Utils, TimeGranularity
 from datetime import datetime
 from enum import Enum
 from io import StringIO
+from itertools import chain
 from logging_service.logging_service import LoggingService
 from pathlib import Path
 from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
 from tempfile import NamedTemporaryFile
-from itertools import chain
 import csv
 import json
 import numpy as np
@@ -26,10 +26,12 @@ import pandas as pd
 import random
 import re
 import shutil
+import tempfile
 import time
 
-measures_root = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
-inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
+class Localization:
+    measures_root = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
+    inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
 
 
 # ----------------------------- Enum Action ---------------
@@ -43,6 +45,14 @@ class Action(Enum):
     CLEAR_RESULTS = 3
     SAMPLE_CHIRPS = 4
     EXTRACT_COL   = 5
+    CONCAT        = 6
+
+class FileType(Enum):
+    FEATHER       = '.feather'
+    CSV           = '.csv'
+    CSV_GZ        = '.csv.gz'
+    
+# ---------------------------------- Enum FileType ---------------
 
 # ---------------------------------- namedtuple ChirpID ---------------
 
@@ -538,10 +548,11 @@ class DataCalcs:
     #-------------------
 
     def __init__(self,
-                 measures_root, 
-                 inference_root, 
+                 measures_root=None, 
+                 inference_root=None, 
                  chirp_id_src=ChirpIdSrc('file_id', ['chirp_idx']),
-                 cols_to_retain=None
+                 cols_to_retain=None,
+                 fid_map_file=None
                  ):
         '''
         Calculations for analyzing processed SonoBat data.
@@ -592,19 +603,89 @@ class DataCalcs:
         :param cols_to_retain: columns to carry over from measurements df to
             tsne df
         :type cols_to_retain: union[None | list[str]]
+        :param fid_map_file: path to file that maps bat file IDs to .wav file names.
+            if None, the default: measures_root/split_filename_to_id.csv
+        :type fid_map_file: union[None | str]
         '''
 
-        self.measures_root  = measures_root
-        self.inference_root = inference_root
+        if measures_root is None:
+            measures_root = Localization.measures_root
+        if inference_root is None:
+            inference_root = Localization.inference_root  # The Global one
+            
+        if fid_map_file is None:
+            self.fid_map_file = 'split_filename_to_id.csv'
+        else:
+            self.fid_map_file = fid_map_file
+
+        self.measures_root  = measures_root  # Either the arg, or the global one
+        self.inference_root = inference_root # Either the arg, or the global one
         self.chirp_id_src   = chirp_id_src
         self.cols_to_retain = cols_to_retain
         
         self.log = LoggingService()
         
+        # Cache of dfs of measures split files we had 
+        # to open so far: maps split id to df:
+        self.split_file_dfs_cache = {}
+        
+        # Make lookup dicts to find all possible (sin, cos) pairs for
+        # any time granularity. Example:
+        self.trig_secs_lookup    = {sec : Utils.cycle_time(sec, TimeGranularity.SECONDS)
+                                    for sec in range(1, 60)}
+        self.trig_mins_lookup    = {min_ : Utils.cycle_time(min_, TimeGranularity.MINUTES)
+                                    for min_ in range(1, 60)}
+        self.trig_hrs_lookup     = {hr : Utils.cycle_time(hr, TimeGranularity.HOURS)
+                                    for hr in range(0, 24)}
+        self.trig_days_lookup    = {day : Utils.cycle_time(day, TimeGranularity.DAYS)
+                                    for day in range(1, 32)}
+        self.trig_months_lookup  = {month : Utils.cycle_time(month, TimeGranularity.MONTHS)
+                                    for month in range(1, 13)}
+        self.trig_years_lookup   = {year : Utils.cycle_time(year, TimeGranularity.YEARS)
+                                    for year in range(0, 10)}
+
+        self.hr_dy_mn_yr_dicts = [self.trig_hrs_lookup,
+                                  self.trig_days_lookup,
+                                  self.trig_months_lookup,
+                                  self.trig_years_lookup
+                                  ]                                
+
+        # If measure_root is None, we cannot look for
+        # mappings of split file IDs to file names. So
+        # some functionality won't work until caller calls
+        # the initialization themselves:
+        
+        if measures_root is not None:
+            self.init_split_file_list(measures_root, inference_root)
+        
+        # Create self.fid2split_dict for mapping a split file id
+        # to the split file that contains the data for that
+        # file id:
+        
+        #self._make_fid2split_dict()
+        
+    #------------------------------------
+    # init_split_file_list
+    #-------------------
+    
+    def init_split_file_list(self, measures_root, inference_root):
+        '''
+        Finds files of the form split<n>.feather in measures_root,
+        and initializes self. split_fpaths, which is a list of all
+        those split measures files.
+        
+        Must be called before hyper parameter search related functionality.
+        
+        :param measures_root: root of measures split files
+        :type measures_root: list[str]
+        :param inference_root: root of transformer inference results
+        :type inference_root: union[None, list[str]]
+        '''
+        
         # Read the mapping of .wav file to file_id values in 
         # the measurements file_id column. The header
         # is ['Filename', 'file_id']
-        map_file = os.path.join(measures_root, 'split_filename_to_id.csv')
+        map_file = os.path.join(measures_root, self.fid_map_file)
         with open(map_file, 'r') as fd:
             fname_id_pairs = list(csv.reader(fd))
         # We now have:
@@ -637,36 +718,6 @@ class DataCalcs:
                              for i, split_fname
                              in enumerate(split_fnames)}
         
-        # Create self.fid2split_dict for mapping a split file id
-        # to the split file that contains the data for that
-        # file id:
-        
-        #self._make_fid2split_dict()
-        
-        # Cache of dfs of measures split files we had 
-        # to open so far: maps split id to df:
-        self.split_file_dfs_cache = {}
-        
-        # Make lookup dicts to find all possible (sin, cos) pairs for
-        # any time granularity. Example:
-        self.trig_secs_lookup    = {sec : Utils.cycle_time(sec, TimeGranularity.SECONDS)
-                                    for sec in range(1, 60)}
-        self.trig_mins_lookup    = {min_ : Utils.cycle_time(min_, TimeGranularity.MINUTES)
-                                    for min_ in range(1, 60)}
-        self.trig_hrs_lookup     = {hr : Utils.cycle_time(hr, TimeGranularity.HOURS)
-                                    for hr in range(0, 24)}
-        self.trig_days_lookup    = {day : Utils.cycle_time(day, TimeGranularity.DAYS)
-                                    for day in range(1, 32)}
-        self.trig_months_lookup  = {month : Utils.cycle_time(month, TimeGranularity.MONTHS)
-                                    for month in range(1, 13)}
-        self.trig_years_lookup   = {year : Utils.cycle_time(year, TimeGranularity.YEARS)
-                                    for year in range(0, 10)}
-
-        self.hr_dy_mn_yr_dicts = [self.trig_hrs_lookup,
-                                  self.trig_days_lookup,
-                                  self.trig_months_lookup,
-                                  self.trig_years_lookup
-                                  ]                                
         
 
     #------------------------------------
@@ -1454,7 +1505,7 @@ class DataCalcs:
         # because we may need to go through the
         # loop more than once, and want to randomize
         # the list on rounds 2-plus:
-        if type(unittests) == list:
+        if type(unittests) == dict:
             sample_paths = unittests
         else:
             sample_paths = self.split_fpaths.copy()
@@ -1685,13 +1736,29 @@ class Activities:
                  dst_dir,
                  data_dir='/tmp',
                  res_file_prefix='perplexity_n_clusters_optimum',
+                 fid_map_file=None,
                  **kwargs
                  ):
+        '''
+        
+        :param dst_dir: where generated data is to be placed
+        :type dst_dir: str
+        :param data_dir: where data is to be found by default
+        :type data_dir: str
+        :param res_file_prefix: prefix to include in generated filenames.
+            see csv.Reader.
+        :type res_file_prefix: union[None | str]
+        :param fid_map_file: path to file that maps bats measures file 
+            column file_id integers to .wav file names
+        :type fid_map_file: str
+        '''
         
         self.log = LoggingService()
         self.dst_dir = dst_dir
         self.data_dir = data_dir
         self.res_file_prefix = res_file_prefix
+        self.data_calcs = DataCalcs()
+        self.fid_map_file = fid_map_file
         self.kwargs = kwargs
         
     #------------------------------------
@@ -1844,8 +1911,9 @@ class Activities:
     #-------------------
     
     def _sample_chirps(self, num_samples=None, save_dir=None):
-        data_calculator = DataCalcs(measures_root=measures_root,
-                                    inference_root=inference_root
+        data_calculator = DataCalcs(measures_root=self.data_calcs.measures_root,
+                                    inference_root=self.data_calcs.inference_root,
+                                    fid_map_file=self.fid_map_file
                                     )
         res_dict = data_calculator.make_chirp_sample_file(num_samples, save_dir=save_dir)
         _df, save_file = res_dict.values()
@@ -1905,9 +1973,12 @@ class Activities:
         else:
             res_outfile = None
     
-        path = os.path.join(measures_root, split_file)
+        path = os.path.join(self.data_calcs.measures_root, split_file)
     
-        calc = DataCalcs(measures_root, inference_root, chirp_id_src=chirp_id_src)
+        calc = DataCalcs(self.data_calcs.measures_root, 
+                         self.data_calcs.inference_root, 
+                         chirp_id_src=chirp_id_src,
+                         fid_map_file=self.fid_map_file)
     
         with UniversalFd(path, 'r') as fd:
             calc.df = fd.asdf()
@@ -2095,10 +2166,140 @@ class Activities:
 
 
     #------------------------------------
+    # _concat_files
+    #-------------------
+    
+    def _concat_files(self, 
+                      df_sources,
+                      idx_columns=None, 
+                      dst_dir=None, 
+                      out_file_type=FileType.CSV, 
+                      prefix=None,
+                      augment=True):
+        '''
+        Given a list of sourcefiles that contain dataframes, create one df,
+        and save it to a file if requested. Control the output file type between
+        .feather, .csv, and .csv.gz via the out_file_type arg.
+        
+        The outfile will be of the form:
+        
+                <dst_dir>/<prefix>_chirps_<now-time>.csv
+        
+        If idx_columns is provided, it must be a list of columns
+        names with the same length as df_sources. If any of the
+        files are .feather files, place a None at that list slot.
+        This information is needed for a following .csv file:
+           
+              Idx  Col1   Col2
+               0   'foo'  'bar'
+               1   'blue' 'green'
+               
+        where the intention for the resulting dataframe is:
+        
+                   Col1    Col2
+            Idx    
+             0     'foo'   'bar'
+             1     'blue'  'green'
+        
+        :param df_sources: list of dataframe file sources
+        :type df_sources: union[str | list[str]]
+        :param idx_columns: if provided, a list of column names that are
+            to be used as names for the respective index, rather than
+            as a column name. Only used for .csv and .csv.gz
+        :type idx_columns: union[None | list[str]]
+        :param dst_dir: directory where combined file is placed. No saving, if None
+        :type dst_dir: union[None | str]
+        :param out_file_type: if saving to disk, which file type to use 
+        :type out_file_type: FileType
+        :param prefix: prefix to place in destination file name
+        :type prefix: union[None | str]
+        :param augment: if True, add columns for recording time, and
+            sin/cos of recording time for granularities HOURS, DAYS, MONTHS, and YEARS 
+        :type augment: bool
+        :return: a dict with fields 'df', and 'out_file'
+        :rtype dict[str : union[None | str]
+        '''
+
+        if type(df_sources) == str:
+            df_sources = [df_sources]
+            
+        if prefix is None:
+            prefix = ''
+        
+        supported_file_extensions = [file_type.value for file_type  in FileType]
+        
+        # Ensure that idx_columns are the same length as df_sources:
+        if idx_columns is not None:
+            if len(idx_columns) != len(df_sources):
+                raise ValueError(f"A non-None idx_columns arg must be same length as df_sources (lenght {len(df_sources)}, not {len(idx_columns)}")
+        else:
+            # For convenience, generate a list of None idx_column names:
+            idx_columns = [None]*len(df_sources)
+        
+        # Check that all files are of supported type, and exist:
+        for src_file in df_sources:
+            path = Path(src_file)
+            # Existence:
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Cannot find dataframe file {path}")
+            # File type:
+            if path.suffix not in supported_file_extensions: 
+                raise TypeError(f"Dataframe source files must be one of {supported_file_extensions}")
+            
+        # Check destination:
+        if dst_dir is not None:
+            # If caller passed a file, bad:
+            if os.path.isfile(dst_dir):
+                raise ValueError(f"Destination {dst_dir} is a file; should be a directory")
+            
+            os.makedirs(dst_dir, exist_ok=True)
+            
+            # Compose file to which to save the result:
+            filename_safe_dt = Utils.timestamp_fname_safe()
+            fname = os.path.join(dst_dir, f"{prefix}_chirps_{filename_safe_dt}{out_file_type.value}")
+        else:
+            fname = None
+        
+        dfs  = []
+        cols = None
+        for path, idx_col_nm in zip(df_sources, idx_columns):
+            with UniversalFd(path, 'r') as fd:
+                dfs.append(fd.asdf(index_col=idx_col_nm))
+            if cols is None:
+                cols = dfs[-1].columns 
+            else:
+                left_cols = dfs[-1].columns
+                if len(left_cols) != len(cols) or any(left_cols != cols):
+                    raise TypeError(f"Dataframe in file {path} does not have same columns as previous dfs; should be [{cols}]")
+
+        df_raw = pd.concat(dfs, axis='rows', ignore_index=True)
+        if augment:
+            # Get a DataCalc instance, not needing 
+            data_calc = DataCalcs(fid_map_file=self.fid_map_file)
+            # Use the .wav file information in file_id column to  
+            # obtain each chirp's recording date and time. The new
+            # column will be called 'rec_datetime', and an additional
+            # column: 'is_daytime' will be added. This is done inplace,
+            # so no back-assignment is needed:
+            df_with_rectime = data_calc.add_recording_datetime(df_raw)
+            df = data_calc._add_trig_cols(df_with_rectime, 'rec_datetime')  
+            df.reset_index(drop=True, inplace=True)
+        else:
+            df = df_raw
+ 
+        if fname is not None:
+            with UniversalFd(fname, 'w') as fd:
+                fd.write_df(df)
+            self.log.info(f"Concatenated {len(df_sources)} bat measures files with total of {len(df)} rows (chirps) to {fname}")
+
+        res_dict = {'df' : df, 'out_file' : fname}
+        return res_dict
+
+    #------------------------------------
     # main
     #-------------------
     
-    def main(self, actions, **kwargs):
+    def main(self, actions):
         '''
         Perform one task using class DataCalcs methods.
         Keyword arguments are passed to the executing 
@@ -2132,10 +2333,10 @@ class Activities:
                 self._sample_chirps(**self.kwargs)
                 
             elif action == Action.EXTRACT_COL:
-                _ser, _save_path_= self._extract_column(kwargs['df_src'], 
-                                                        kwargs['col_name'],
-                                                        dst_dir=kwargs['dst_dir']
-                                                        ).values()
+                _ser, _save_path_= self._extract_column(**self.kwargs).values()
+
+            elif action == Action.CONCAT:
+                _df, _save_path = self._concat_files(dst_dir=self.dst_dir, **self.kwargs)
             else:
                 raise ValueError(f"Unknown action: {action}")
             
@@ -2144,26 +2345,37 @@ class Activities:
 if __name__ == '__main__':
 
     proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-    dst_dir = os.path.join(proj_dir, 'results/hyperparm_searches')
+    
 
-    #*******actions = [Action.HYPER_SEARCH, Action.PLOT]
-    #*******actions  = Action.HYPER_SEARCH
-    #*******actions  = Action.ORGANIZE
-    #*******actions  = Action.SAMPLE_CHIRPS   # 50,000 samples takes 15 seconds
-    actions = Action.EXTRACT_COL
-
-    chirp_sample_dst_dir = os.path.join(proj_dir, 'results/chirp_samples')
+    #***actions = [Action.HYPER_SEARCH, Action.PLOT]
+    #********dst_dir = os.path.join(proj_dir, 'results/hyperparm_searches')
+    #***actions  = Action.HYPER_SEARCH
+    #********dst_dir = os.path.join(proj_dir, 'results/hyperparm_searches')    
+    #***actions  = Action.ORGANIZE
+    #***actions  = Action.SAMPLE_CHIRPS   # 50,000 samples takes 15 seconds
+    #********chirp_samples = os.path.join(proj_dir, 'results/chirp_samples/')
+    #********df_file = os.path.join(chirp_samples, '_50000_chirps_20240524T090814.107027.csv')
+    #***actions = Action.EXTRACT_COL
+    #*******chirp_sample_dst_dir = os.path.join(proj_dir, 'results/chirp_samples')
+    actions = Action.CONCAT
+    data_calc = DataCalcs()
+    all_split_files = data_calc.split_fpaths.values()
+    dst_dir = os.path.join(proj_dir, 'results/chirp_samples/')
+    
+    # Depending on the Action set above, different kwargs
+    # need to be passed into the Activities constructor:    
     
     #******activities = Activities(chirp_sample_dst_dir, num_samples=10, save_dir=chirp_sample_dst_dir)
     #******activities = Activities(chirp_sample_dst_dir, num_samples=50000, save_dir=chirp_sample_dst_dir)
-    chirp_samples = os.path.join(proj_dir, 'results/chirp_samples/')
-    df_file = os.path.join(chirp_samples, '_50000_chirps_20240524T090814.107027.csv')
-    activities = Activities(chirp_samples)
+    #******activities = Activities(chirp_samples)
+    # Don't write the index, which is just row numbers:
+    activities = Activities(df_sources=all_split_files, 
+                            dst_dir=dst_dir, 
+                            out_file_type=FileType.CSV,
+                            prefix=f"concat_{len(all_split_files)}_"
+                            )
 
     start_time = time.perf_counter()    
-    activities.main(actions, 
-                    df_src=df_file , 
-                    col_name='rec_datetime',
-                    dst_dir=chirp_samples)
+    activities.main(actions) 
     end_time = time.perf_counter()
     print(f"Completed action {actions} in {end_time - start_time} seconds")

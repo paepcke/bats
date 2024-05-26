@@ -313,7 +313,11 @@ class UniversalFdTester(unittest.TestCase):
             df = fd.asdf(n_rows=n_rows)
             pd.testing.assert_frame_equal(df, df_excerpt)
 
-
+        # Test passing a row index name:
+        with UniversalFd(self.csv_idx_named_fname, 'r',) as fd:
+            df = fd.asdf(index_col='Idx')
+            pd.testing.assert_frame_equal(df, self.df_idx_named_expected)
+        
     #------------------------------------
     # test_asdf_csvgz
     #-------------------
@@ -354,7 +358,25 @@ class UniversalFdTester(unittest.TestCase):
                          type_map=type_map) as fd:
             df = fd.asdf(n_rows=n_rows)
             pd.testing.assert_frame_equal(df, df_excerpt)
+         
+    #------------------------------------
+    # test_write_df
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_write_df(self):
+        df = self.df_expected
+        with tempfile.NamedTemporaryFile(suffix='.feather', prefix='write_df_tst_', dir='/tmp') as fd:
+            UniversalFd(fd.name, 'w').write_df(df)
+            df_recovered = UniversalFd(fd.name, 'r').asdf()
+            pd.testing.assert_frame_equal(df_recovered, df)
             
+        # Again, with .csv:
+        with tempfile.NamedTemporaryFile(suffix='.csv', prefix='write_df_tst_', dir='/tmp') as fd:
+            UniversalFd(fd.name, 'w').write_df(df)
+            df_recovered = UniversalFd(fd.name, 'r').asdf(index_col=0)
+            pd.testing.assert_frame_equal(df_recovered, df)
+      
         
 # ------------------------ Utilities ------------
 
@@ -435,6 +457,13 @@ class UniversalFdTester(unittest.TestCase):
         self.feather_fname = os.path.join(self.tmpdir.name, 'df.feather')
         feather.write_feather(df, self.feather_fname)
         self.df_expected = df
+        
+        # Create a .csv file with an index column:
+        df_idx_named = df.copy()
+        df_idx_named.index.name = 'Idx'
+        self.csv_idx_named_fname = os.path.join(self.tmpdir.name, 'df_idx_named.csv')
+        df_idx_named.to_csv(self.csv_idx_named_fname)
+        self.df_idx_named_expected = df_idx_named        
 
 # ------------------------ Main ------------
 
