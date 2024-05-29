@@ -5,47 +5,37 @@ Created on Apr 27, 2024
 '''
 
 from collections import namedtuple
-from data_calcs.data_viz import DataViz
 from data_calcs.universal_fd import UniversalFd
 from data_calcs.utils import Utils, TimeGranularity
 from datetime import datetime
 from enum import Enum
 from io import StringIO
-from itertools import chain
+from itertools import chain, accumulate
 from logging_service.logging_service import LoggingService
 from pathlib import Path
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
-from tempfile import NamedTemporaryFile
 import csv
+import joblib
 import json
 import numpy as np
 import os
 import pandas as pd
 import random
 import re
-import shutil
-import tempfile
-import time
 
 class Localization:
-    measures_root = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
+    # There is also a .csv version of the following .feather file:
+    all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.feather'
+    #all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.csv'
+    measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
     inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
 
 
 # ----------------------------- Enum Action ---------------
 
-# Members of the Action enum are passed to main
-# to specify which task the program is to perform: 
-class Action(Enum):
-    HYPER_SEARCH  = 0
-    PLOT          = 1
-    ORGANIZE      = 2
-    CLEAR_RESULTS = 3
-    SAMPLE_CHIRPS = 4
-    EXTRACT_COL   = 5
-    CONCAT        = 6
 
 class FileType(Enum):
     FEATHER       = '.feather'
@@ -718,96 +708,6 @@ class DataCalcs:
                              for i, split_fname
                              in enumerate(split_fnames)}
         
-        
-
-    #------------------------------------
-    # _make_fid2split_dict
-    #-------------------
-    
-    # def _make_fid2split_dict(self):
-    #     '''
-    #     Create a dict mapping measures file identifier ints
-    #     to the measures split file that contains the measure
-    #     created from the file identified by the file id. Like
-    #
-    #         10 : '/foo/bar/split40.feather',
-    #         43 : '/foo/bar/split4.feather',
-    #                   ...
-    #
-    #     This dict is used, for example, to retrieve the chirp measures 
-    #     that correspond to a given T-sne point.
-    #
-    #     The result will be in self.fid2split_dict.
-    #     '''
-    #
-    #     self.fid2split_dict = {}
-    #     for fpath in self.split_fpaths.values():
-    #         fids_df = pd.read_feather(fpath, columns=[self.chirp_id_src.wav_file_nm_col])
-    #         # Get list of file ids in this split file as a list:
-    #         fids = fids_df.file_id.values
-    #
-    #         # Add all this split file's file ids to the
-    #         # fid2split_dict:
-    #         self.fid2split_dict.update({fid : fpath for fid in fids})
-
-    #------------------------------------
-    # measures_from_fid
-    #-------------------
-    
-    # def measures_from_fid(self, fid):
-    #     '''
-    #     Given a measures file id, return a pandas
-    #     Series with the measures.
-    #
-    #     :param fid: file id that identifies the row
-    #         in a dataset where the related chirp measures
-    #         are stored.
-    #     :type fid: int
-    #     :return the chirp measures created by SonoBat
-    #     :rtype pd.Series
-    #     '''
-    #
-    #     try:
-    #         df = self.split_file_dfs_cache[fid]
-    #         measures = df.loc[fid]
-    #         return measures
-    #     except KeyError:
-    #         # Df not available yet:
-    #         pass
-    #
-    #     split_path = self.fid2split_dict[fid]
-    #     df = pd.read_feather(split_path)
-    #
-    #     # Take the .wav file names, extract 
-    #     # the recording datetime, and replace
-    #     # the values in the file_id column with
-    #     # date and time of the recording:
-    #     wav_file_col_nm = self.chirp_id_src.wav_file_nm_col 
-    #     # We now have a column of .wav file integer IDs. 
-    #     # Resolve those into their .wav file names:
-    #     fnames = [self.fid_to_fname_dict[fid]
-    #               for fid 
-    #               in df[wav_file_col_nm]
-    #               ]
-    #
-    #     rec_times = list(map(lambda fname: Utils.time_from_fname(fname), fnames))
-    #
-    #     # Adjust the column name:
-    #     df.rename({wav_file_col_nm : 'rec_datetime'}, axis='columns', inplace=True)
-    #     df['rec_datetime'] = rec_times
-    #
-    #     # Add a column 'daytime' with True or False, depending
-    #     # on whether the recording was at daytime as seen at
-    #     # Stanford's Jasper Ridge Preserve:
-    #     was_day_rec = df['rec_datetime'].apply(lambda dt: Utils.is_daytime_recording(dt))
-    #     df.loc[:, 'is_daytime'] = was_day_rec
-    #
-    #     # Use the default index of 0,1,2,...
-    #     # df.reset_index(drop=True, inplace=True)
-    #
-    #     measures = df.loc[fid]
-    #     return measures   
-    
     #------------------------------------
     # sort_by_variance
     #-------------------
@@ -964,13 +864,12 @@ class DataCalcs:
 
     def add_recording_datetime(self, df):
         '''
-        Modifies df in three ways:
+        Modifies df:
         
-            o Replaces the values of the .wav file id column
-              with datetime objects that hold the recording time
-              of the row's chirp
-            o Renames the column name for the .wav fname source
-              (by default 'file_id' with the name 'rec_datetime'
+            o Adds column 'rec_datetime', which is the recording
+              date and time of the chirp recording. That time is
+              extracted from the recording's .wav file name. 
+
             o Adds a new boolean column 'is_daytime' that indicates
               whether the chirp was recorded during daytime.
               
@@ -982,16 +881,15 @@ class DataCalcs:
         :rtype pd.DataFrame
         '''
         # Take the .wav file names, extract 
-        # the recording datetime, and replace
-        # the values in the file_id column with
-        # date and time of the recording. The column
+        # the recording datetime. The column
         # that names the .wav file of each row (i.e. of 
         # each chirp) contains integer file IDs for the
-        # .wav files. Resolve that first:
+        # .wav files. First, resolve file_id to a .wav
+        # filename:
         
         # Name of column with .wav file ID ints:
         wav_file_col_nm = self.chirp_id_src.wav_file_nm_col 
-        # Resolve those into their .wav file names:
+        # Resolve .wav file names:
         fnames = [self.fid_to_fname_dict[fid]
                   for fid 
                   in df[wav_file_col_nm]
@@ -1610,6 +1508,191 @@ class DataCalcs:
                 'out_fname' : save_fname}
 
     #------------------------------------
+    # pca_computation
+    #-------------------
+    
+    def pca_computation(self, df, n_components=None, columns=None, dst_fname=None):
+        '''
+        Given a dataframe, return an sklearn.PCA object that is fitted
+        to df, but df has not been transformed into the PCA component space.
+        The call must issue pca.transform() on the returned df to map df
+        into the PCA component space.
+                    
+        If columns is provided it must be a list of column names in the df. Only
+        those columns are included as input to the PCA. If columns is
+        None, then all of df's columns are included.
+        
+        n_components may be one of the following:
+        
+            o Int   : specifies the exact number of components desired
+            o Float : number between 0 and 1 indicates the desired percentage
+                      of variance explained by the PCA result. The number
+                      of components is automatically chosen accordingly.
+            o 'mle' : Minka's algorithm is use to select the best number
+                      of components. It is often better than the scree plot
+                      method (finding the elbow), or using a desired explained
+                      variance ratio threshold and cumulatively summing elements
+                      of the PCA's explained_variance_ratio_ list of variance
+                      explained by each component.
+                      
+        Returns a dict with keys 'pcs', 'weight_matrix', 'xformed_data'. The 
+        first is the sklearn.PCA object. The second is a dataframe whose columns a
+        names, and the row index is 'component1', 'component2', ... The rows 
+        re the measure are the weights assigned to each original feature.
+        
+        :param df: dataframe from which to construct principal components 
+        :type df: pd.DataFrame
+        :param n_components: target number of principal components. If None,
+            constructs as many components as there are columns
+        :type n_components: union[None | int)
+        :param columns: columns to include from the df. If None: all columns
+        :type columns: union[None, list[str]]
+        :param dst_fname: if dst_fname is not None, it must be a full path
+            to where the result PCA is to be stored. The format will be joblib,
+            and the the extension will always by .joblib. If this extension is
+            not the one in dst_fname, it is added.
+        :type dst_fname: union[None, str]
+        :return a PCA model, weight matrix, and transformed data
+        :rtype dict[str : union[sklearn.PCA, pd.DataFrame]xs
+        
+        '''
+        pca = PCA(n_components=n_components)
+        
+        if columns is None:
+            df_pca = df 
+        else:
+            df_pca = df[columns]
+            
+        # fit() returns the pca instance itself:
+        pca = pca.fit(df_pca)
+
+        # Transform the data into the component space:
+        xformed_np = pca.fit_transform(df_pca)
+        # Columns of transformed data will be 'comp<i>': 
+        col_names = [f"comp{i}" for i in range(pca.n_components_)]
+        # Transform the original data into the component space:
+        xformed_df = pd.DataFrame(xformed_np, columns=col_names)
+        
+        # Matrix components x features with each feature's weight in 
+        # each of the components (rows0;
+        weight_df = pd.DataFrame(pca.components_, columns=df_pca.columns)
+        weight_df.index.name = 'component_num'
+        
+        if dst_fname is not None:
+            self.dump_pca(pca, dst_fname)
+        
+        return {'pca' : pca, 
+                'weight_matrix' : weight_df,
+                'xformed_data'  : xformed_df,
+                'pca_save_file' : dst_fname
+                }
+        
+    #------------------------------------
+    # pca_needed_dims
+    #-------------------
+    
+    def pca_needed_dims(self, df, variance_threshold, columns=None):
+        '''
+        Given a fitted PCA object, return the number 
+        components needed to explain variance_threshold
+        percent of the total variance of the dataframe
+        provided to the pca_computation().
+        
+        The variance_threshold may either be:
+         
+                    1.0 < variance_threshold <= 100
+        
+        or:
+                    0 < variance_threshold <= 1
+                    
+        In either case, the number is used as a percentage, transforming
+        to 0...1.0 as needed.
+                
+        The algorithm is to find 
+        
+        An alternative is to pass n_components='mle' to the pca_computation()
+        method to have an optimal dimensionality chosen.
+        
+        :param df: data for which PCA is to be performed.
+        :type df: pd.DataFrame
+        :param variance_threshold: least amount of variance that
+            the combined components need to explain in percent.
+        :type variance_threshold: union[int, float]
+        :param columns: columns to use from the df
+        :type columns: union[None, list[str]
+        :return the number of dimensions required to reach 
+            variance_threshold percent explanation of variance
+        :rtype int
+        '''
+        
+        if variance_threshold > 1.0:
+            variance_threshold = variance_threshold / 100.
+            
+        pca_all = self.pca_computation(df, n_components=None, columns=columns)
+        for component_idx, var_explained in enumerate(accumulate(pca_all.explained_variance_ratio_)):
+            if var_explained >= variance_threshold:
+                return component_idx
+        return component_idx
+
+    #------------------------------------
+    # dump_pca
+    #-------------------
+    
+    def dump_pca(self, pca, dst_fname, force=False):
+        '''
+        Save the given sklearn.PCA object in dst_fname.
+        If force is True, then dst_fname is used even if
+        it would overwrite an existing file. Else user is
+        asked for confirmation on the console.
+        
+        If the file suffix of dst_fname is not '.joblib', that
+        suffix is added.
+        
+        Storage format is joblib.dump().  
+        
+        :param pca: the PCA to save
+        :type pca: sklearn.PCA
+        :param dst_fname: full path to where PCA is to be saved.
+        :type dst_fname: src
+        :param force: whether or not to overwrite dst_fname if a
+            file of that path already exists.
+        :type force: bool
+        '''
+        fpath = Path(dst_fname)
+        if fpath.is_dir():
+            raise ValueError(f"PCA save destination {dst_fname} is a directory; must be a file")
+        if force and fpath.exists():
+            if input(f"File {dst_fname} exists; overwrite? (Yes/no") != 'Yes':
+                return
+        if fpath.suffix != '.joblib':
+            fpath = Path(f"{fpath}.joblib")
+        joblib.dump(pca, str(fpath))
+
+    #------------------------------------
+    # load_pca
+    #-------------------
+    
+    def load_pca(self, src_fname):
+        '''
+        Returns an sklearn.PCA object that was previously 
+        saved in src_fname by self.dump_pca()
+        
+        To use the retrieved PCA to transform new data:
+           
+           transformed_data = loaded_pca.transform(new_data)
+        
+        :param src_fname: location of the saved PCA object
+        :type src_fname: str
+        :return the retrieved PCA instance. 
+        :rtype sklearn.PCA
+        '''
+        fpath = Path(src_fname)
+        if not fpath.exists():
+            raise FileNotFoundError(f"PCA file {src_fname} not found")
+        pca = joblib.load(str(fpath))
+        return pca
+
+    #------------------------------------
     # _add_trig_cols
     #-------------------
     
@@ -1719,663 +1802,4 @@ class DataCalcs:
                    }
         return to_take
 
-    
-# -------------------------- run_experiments --- the mains options    
 
-
-
-# ---------------------------- Class MainActions ------------
-
-class Activities:
-
-    #------------------------------------
-    # Constructor
-    #-------------------
-    
-    def __init__(self,
-                 dst_dir,
-                 data_dir='/tmp',
-                 res_file_prefix='perplexity_n_clusters_optimum',
-                 fid_map_file=None,
-                 **kwargs
-                 ):
-        '''
-        
-        :param dst_dir: where generated data is to be placed
-        :type dst_dir: str
-        :param data_dir: where data is to be found by default
-        :type data_dir: str
-        :param res_file_prefix: prefix to include in generated filenames.
-            see csv.Reader.
-        :type res_file_prefix: union[None | str]
-        :param fid_map_file: path to file that maps bats measures file 
-            column file_id integers to .wav file names
-        :type fid_map_file: str
-        '''
-        
-        self.log = LoggingService()
-        self.dst_dir = dst_dir
-        self.data_dir = data_dir
-        self.res_file_prefix = res_file_prefix
-        self.data_calcs = DataCalcs()
-        self.fid_map_file = fid_map_file
-        self.kwargs = kwargs
-        
-    #------------------------------------
-    # organize_results
-    #-------------------
-    
-    def organize_results(self):
-        '''
-        Finds temporary files that hold PerplexitySearchResult
-        exports, and those that contain plots made for those
-        results. Moves all of them to self.dst_dir, under a 
-        name that reflects their content. 
-        
-        For example:
-        
-                       perplexity_n_clusters_optimum_3gth9tp.json in /tmp
-            may become 
-                       perp_p100.0_n2_20240518T155827.json
-            in self.dst__dir
-            
-        Plot figure png files, like perplexity_n_clusters_optimum_plot_20251104T204254.png
-        will transfer unchanged.
-        
-        For each search result, the tsne_df will be replicated into a
-        .csv file in self.dst_dir.
-            
-        '''
-        
-        for fname in self._find_srch_results():
-            # Guard against 0-length files from aborted runs:
-            if os.path.getsize(fname) == 0:
-                self.log.warn(f"Empty hyperparm search result: {fname}")
-                continue
-            
-            # Saved figures are just transfered:
-            if fname.endswith('.png'):
-                shutil.move(fname, self.dst_dir)
-                continue
-            
-            srch_res = PerplexitySearchResult.read_json(fname)
-            mod_time = self._modtimestamp(fname)
-            perp = srch_res['optimal_perplexity']
-            n_clusters = srch_res['optimal_n_clusters']
-            
-            dst_json_nm   = f"perp_p{perp}_n{n_clusters}_{mod_time}.json"
-            dst_json_path = os.path.join(self.dst_dir, dst_json_nm)
-            
-            dst_csv_nm = f"{Path(dst_json_path).stem}.csv"
-            dst_csv_path = Path(dst_json_path).parent.joinpath(dst_csv_nm)          
-            
-            src_path = os.path.join(self.data_dir, fname)
-            shutil.move(src_path, dst_json_path)
-            
-            # Write the TSNE df to csv:
-            tsne_df = srch_res['tsne_df']
-            
-            tsne_df.to_csv(dst_csv_path, index=False)
-            
-            #print(srch_res)
-            print(dst_json_nm)
-
-    #------------------------------------
-    # hyper_parm_search
-    #-------------------
-    
-    def hyper_parm_search(self, repeats=1, overwrite_previous=True):
-        '''
-        Runs through as many split files as specified in the repeats
-        argument. For each split file, computes TSNE with each 
-        perplexity (see hardcoded values in _run_hypersearch()). Then,
-        with each TSNE embedding, runs multiple clusterings with varying
-        n_clusters. Notes the silhouette coefficients. 
-        
-        Returns a PerplexitySearchResult with all the results.
-        
-        All search result summaries are saved in /tmp/perplexity_n_clusters_optimum*.json.
-        The Action.ORGANIZE moves those files to a more permanent
-        destination, under meaningful names. If this method is run
-        multiple times without intermediate Action.ORGANIZE, then the 
-        overwrite_previous arg controls whether users are warned about
-        the intermediate files in /tmp being overwritten.
-        
-        :param repeats: number different split files on which to
-            repeat the search
-        :type repeats: int
-        :param overwrite_previous: if True, silently overwrites previously
-            saved hyper search results in /tmp. Else, asks permisson
-        :type overwrite_previous: bool
-        :return an object that contains all the TSNE results, and all
-            the corresponding clusterings with different c_clusters.
-        :rtype PerplexitySearchResult
-        '''
-
-        # Offer to remove old search results to avoid confusion.
-        # Asks for OK. 
-        # If return of False, user aborted.
-        if not overwrite_previous and not self.remove_search_res_files():
-            return
-        
-        src_results = []
-        
-        measurement_split_num = random.sample(range(0,10), repeats)
-         
-        for split_num in measurement_split_num:
-            split_file = f"split{split_num}.feather"
-            start_time = time.monotonic()
-            
-            with NamedTemporaryFile(dir=self.data_dir, 
-                                    prefix=self.res_file_prefix,
-                                    suffix='.json',
-                                    delete=False
-                                    ) as fd:
-            
-                srch_res = self._run_hypersearch(search_res_outfile=fd.name, split_file=split_file)
-                
-                stop_time = time.monotonic()
-                duration = stop_time - start_time
-                src_results.append(srch_res)
-                print(f"Runtime measurement file split{split_num}.feather: {int(duration)} seconds")
-                print(f"... {int(duration / 60)} minutes")
-                print(f"...{duration / 3600} hours")
-        return src_results
-    
-    #------------------------------------
-    # remove_search_res_files
-    #-------------------
-    
-    def remove_search_res_files(self):
-
-        # Check whether any hyper search results even exist:
-        fnames = self._find_srch_results()
-        if len(fnames) == 0:
-            # Nothing to do
-            return True
-
-        # There are search result files to remove; double check with user:        
-        resp = input("Remove previous search results? (Yes/no): ")
-        if resp != 'Yes':
-            print('Aborting, nothing done.')
-            return False
-
-        for srch_res in fnames:
-            self.log.info(f"Removing {srch_res}")
-            os.remove(srch_res)
-            
-        return True
-
-    #------------------------------------
-    # _sample_chirps
-    #-------------------
-    
-    def _sample_chirps(self, num_samples=None, save_dir=None):
-        data_calculator = DataCalcs(measures_root=self.data_calcs.measures_root,
-                                    inference_root=self.data_calcs.inference_root,
-                                    fid_map_file=self.fid_map_file
-                                    )
-        res_dict = data_calculator.make_chirp_sample_file(num_samples, save_dir=save_dir)
-        _df, save_file = res_dict.values()
-        self.log.info(f"Saved {num_samples} chirps in {save_file}")
-
-    #------------------------------------
-    # _run_hypersearch
-    #-------------------
-    
-    def _run_hypersearch(self,
-                         chirp_id_src=ChirpIdSrc('file_id', ['chirp_idx']),
-                        search_res_outfile=None,
-                        split_file='split5.feather'
-                        ):
-        '''
-        Run different data analyses. Comment out what you
-        don't want. Maybe eventually make into a command
-        line interface utility with CLI args.
-        
-        The search_res_outfile may be provided if the hyperparameter
-        search result should be saved as JSON. It can be recovered
-        via PerplexitySearchResult.read_json(), though in abbreviated
-        form. The value of this arg may be a file path string, a 
-        file-like object, like an open file descriptor, or None. If None, no output.
-        
-        A PerplexitySearchResult object with all results is returned.
-        
-        :param chirp_id_src: name of columns in SonoBat measures
-            split files that contain the file id and any other
-            columns in the measurements df that together uniquely identify
-            each chirp
-        :type key_col: ChirpIdSrc
-        :param search_res_outfile: if provided, save the hyperparameter search
-            as JSON in the specified file
-        :type search_res_outfile: union[str | file-like | None]
-        :parm split_file: name of split file to use as measurements source.
-            File is just the file name, relative to the measures root.
-        :type split_file:
-        :returned all results packaged in a PerplexitySearchResult
-        :rtype PerplexitySearchResult
-        '''
-    
-        outfile        = '/tmp/cluster_perplexity_matrix.csv'
-    
-        if Utils.is_file_like(search_res_outfile):
-            res_outfile = search_res_outfile.name 
-        elif type(search_res_outfile) == str:
-            # Make sure we can write there:
-            try:
-                with open(search_res_outfile, 'w') as fd:
-                    fd.write('foo')
-                os.remove(search_res_outfile)
-            except Exception:
-                raise ValueError(f"Cannot write to {search_res_outfile}")
-            # We'll be able to write the result:
-            res_outfile = search_res_outfile
-        else:
-            res_outfile = None
-    
-        path = os.path.join(self.data_calcs.measures_root, split_file)
-    
-        calc = DataCalcs(self.data_calcs.measures_root, 
-                         self.data_calcs.inference_root, 
-                         chirp_id_src=chirp_id_src,
-                         fid_map_file=self.fid_map_file)
-    
-        with UniversalFd(path, 'r') as fd:
-            calc.df = fd.asdf()
-            
-        # Use the .wav file information in file_id column to  
-        # obtain each chirp's recording date and time. The new
-        # column will be called 'rec_datetime', and an additional
-        # column: 'is_daytime' will be added. This is done inplace,
-        # so no back-assignment is needed:
-        calc.add_recording_datetime(calc.df) 
-        
-        # Find best self.optimal_perplexity, self.optimal_n_clusters:
-        # Perplexity for small datasets should be small:
-        if len(calc.df) < 100:
-            perplexities = [5.0, 10.0, 20.0, 30.0]
-        elif len(calc.df) < 2000:
-            perplexities = [30.0, 40.0, 50.0]
-        else:
-            perplexities = [40.0, 50.0, 60.0, 70.0, 100.0]
-    
-        print(f"Will try perplexities {perplexities}...")
-        
-        # The columns of the measurements file to retain in
-        # the final search result object's TSNE df: the measurements
-        # with high variance (DataCalcs.sorted_mnames), plus the
-        # composite chirp key, file_id, chirp_idx:
-        (important_cols := DataCalcs.sorted_mnames.copy()).extend(['file_id', 'chirp_idx', 'rec_datetime', 'is_daytime'])
-        hyperparms_search_res = calc.find_optimal_tsne_clustering(
-            calc.df, 
-            perplexities=perplexities,
-            n_clusters_to_try=list(range(2,10)),
-            cols_to_keep=important_cols,
-            outfile=outfile
-            )
-        print(f"Optimal perplexity: {hyperparms_search_res.optimal_perplexity}; Optimal n_clusters: {hyperparms_search_res.optimal_n_clusters}")
-        
-        if res_outfile is not None:
-            print(f"Saving hyperparameter search to {res_outfile}...")
-            hyperparms_search_res.to_json(res_outfile)
-            
-        return hyperparms_search_res
-        #viz.plot_perplexities_grid([5.0,10.0,20.0,30.0,50.0], show_plot=True)
-
-    #------------------------------------
-    # _find_srch_results
-    #-------------------
-    
-    def _find_srch_results(self):
-        '''
-        Find the full paths of search results that have 
-        been saved in the data_dir directory. Done by
-        finding file names that start with self.res_file_prefix
-
-        :return all search result file paths
-        :rtype list[str]
-        '''
-        fnames = filter(lambda fname: fname.startswith(self.res_file_prefix),
-                        os.listdir(self.data_dir))
-        full_paths = [os.path.join(self.data_dir, fname)
-                      for fname 
-                      in fnames]
-        return full_paths
-
-    #------------------------------------
-    # _modtimestamp
-    #-------------------
-    
-    def _modtimestamp(self, fname):
-        
-        # Get float formatted file modification time,
-        # and turn into int:
-        mod_timestamp = int(os.path.getmtime(fname))
-        # Make into a datetime object:
-        moddt = datetime.fromtimestamp(mod_timestamp)
-        # Get a datetime ISO formatted str, and remove
-        # the dash and colon chars to get like
-        #   '20240416T152351' 
-        stamp = Utils.timestamp_fname_safe(time=moddt)
-        return stamp
-
-    #------------------------------------
-    # _plot_search_results
-    #-------------------
-    
-    def _plot_search_results(self, search_results):
-    
-        # The following will be a list: 
-        # [perplexity1, ClusteringResult (kmeans run: 8) at 0x13f197b90), 
-        #  perplexity2, ClusteringResult (kmeans run: 8) at 0x13fc6c2c0),
-        #            ...
-        #  ]
-        cluster_results = []
-        
-        # As filepath for saving the figure at the end,
-        # use the file prefix self.res_file_prefix, and
-        # the current date and time:
-        filename_safe_dt = Utils.timestamp_fname_safe()
-        fig_save_fname   = f"{self.res_file_prefix}_plots_{filename_safe_dt}.png"
-        fig_save_path    = os.path.join(self.data_dir, fig_save_fname) 
-        
-        # Collect all the cluster results from all search result objs
-        # into one list:
-        for srch_res in search_results:
-            cluster_results.extend(list(srch_res.iter_cluster_results()))        
-
-        plot_contents = []
-        for perplexity, cluster_res in cluster_results:
-            n_clusters = cluster_res.best_n_clusters
-            silhouette = round(cluster_res.best_silhouette, 2)
-            plot_contents.append({
-                'tsne_df'         : cluster_res.tsne_df,
-                'cluster_labels'  : cluster_res.best_kmeans.labels_,
-                'title'           : f"Perplexity: {perplexity}; n_clusters: {n_clusters}; silhouette: {silhouette:{4}.{2}}"
-                })
-        fig = DataViz.plot_perplexities_grid(plot_contents)
-        self.log.info(f"Saving plots to {fig_save_path}")
-        fig.savefig(fig_save_path)
-        fig.show()
-        input("Any key to erase figs and continue: ")
-
-
-    #------------------------------------
-    # _extract_column
-    #-------------------
-    
-    def _extract_column(self, df_src, col_name, dst_dir=None, prefix=None):
-        '''
-        Given either a dataframe, or a file the contains a dataframe
-        extract the column col_name, and return it as a pd.Series.
-        If dest_dir is non-None, it must be a destination dir. The
-        file name will be:
-        
-                <dst_dir>/<prefix>_<col_name>_<now-time>.csv
-                
-        Source files may be csv, csv.gz, or .feather
-        
-        :param df_src: either a df, or source file that holds a df
-        :type df_src: union[pd.DataFrame | src]
-        :param col_name: name of column to extract
-        :type col_name: src
-        :param dst_dir: directory to store the resulting pd.Series.
-            If None, Series is just returned, but not saved.
-        :type dst_dir: union[None | src]
-        :param prefix: prefix to place in destination file name
-        :type prefix: union[None | str]
-        :return: dict {'col' : the requested column,
-                       'out_file' : path where column was saved}
-        :rtype dic[str : union[str : union[None | pd.Series]
-        '''
-        
-        if type(df_src) == str:
-            if not os.path.exists(df_src):
-                raise FileNotFoundError(f"Did not find dataframe source file {df_src}")
-            else:
-                with UniversalFd(df_src, 'r') as fd:
-                    df = fd.asdf()
-        else:
-            if type(df_src) != pd.DataFrame:
-                raise TypeError(f"Dataframe source {df_src} is not a dataframe.")
-            df = df_src
-
-        if prefix is None:
-            prefix = ''
-            
-        try:
-            col = df[col_name]
-        except KeyError:
-            raise ValueError(f"Column {col_name} not found in dataframe")
-        
-        if dst_dir is not None:
-            # If caller passed a file, bad:
-            if os.path.isfile(dst_dir):
-                raise ValueError(f"Destination {dst_dir} is a file; should be a directory")
-            
-            os.makedirs(dst_dir, exist_ok=True)
-            
-            # Save the result:
-            filename_safe_dt = Utils.timestamp_fname_safe()
-            fname = os.path.join(dst_dir, f"{prefix}_column_{col_name}_{filename_safe_dt}.csv")
-            col.to_csv(fname)
-            self.log.info(f"Saved column {col_name} in {fname}")
-        else:
-            fname = None
-        return {'col' : col, 'out_file' : fname}
-
-
-    #------------------------------------
-    # _concat_files
-    #-------------------
-    
-    def _concat_files(self, 
-                      df_sources,
-                      idx_columns=None, 
-                      dst_dir=None, 
-                      out_file_type=FileType.CSV, 
-                      prefix=None,
-                      augment=True):
-        '''
-        Given a list of sourcefiles that contain dataframes, create one df,
-        and save it to a file if requested. Control the output file type between
-        .feather, .csv, and .csv.gz via the out_file_type arg.
-        
-        The outfile will be of the form:
-        
-                <dst_dir>/<prefix>_chirps_<now-time>.csv
-        
-        If idx_columns is provided, it must be a list of columns
-        names with the same length as df_sources. If any of the
-        files are .feather files, place a None at that list slot.
-        This information is needed for a following .csv file:
-           
-              Idx  Col1   Col2
-               0   'foo'  'bar'
-               1   'blue' 'green'
-               
-        where the intention for the resulting dataframe is:
-        
-                   Col1    Col2
-            Idx    
-             0     'foo'   'bar'
-             1     'blue'  'green'
-        
-        :param df_sources: list of dataframe file sources
-        :type df_sources: union[str | list[str]]
-        :param idx_columns: if provided, a list of column names that are
-            to be used as names for the respective index, rather than
-            as a column name. Only used for .csv and .csv.gz
-        :type idx_columns: union[None | list[str]]
-        :param dst_dir: directory where combined file is placed. No saving, if None
-        :type dst_dir: union[None | str]
-        :param out_file_type: if saving to disk, which file type to use 
-        :type out_file_type: FileType
-        :param prefix: prefix to place in destination file name
-        :type prefix: union[None | str]
-        :param augment: if True, add columns for recording time, and
-            sin/cos of recording time for granularities HOURS, DAYS, MONTHS, and YEARS 
-        :type augment: bool
-        :return: a dict with fields 'df', and 'out_file'
-        :rtype dict[str : union[None | str]
-        '''
-
-        if type(df_sources) == str:
-            df_sources = [df_sources]
-            
-        if prefix is None:
-            prefix = ''
-        
-        supported_file_extensions = [file_type.value for file_type  in FileType]
-        
-        # Ensure that idx_columns are the same length as df_sources:
-        if idx_columns is not None:
-            if len(idx_columns) != len(df_sources):
-                raise ValueError(f"A non-None idx_columns arg must be same length as df_sources (lenght {len(df_sources)}, not {len(idx_columns)}")
-        else:
-            # For convenience, generate a list of None idx_column names:
-            idx_columns = [None]*len(df_sources)
-        
-        # Check that all files are of supported type, and exist:
-        for src_file in df_sources:
-            path = Path(src_file)
-            # Existence:
-            if not os.path.exists(path):
-                raise FileNotFoundError(f"Cannot find dataframe file {path}")
-            # File type:
-            if path.suffix not in supported_file_extensions: 
-                raise TypeError(f"Dataframe source files must be one of {supported_file_extensions}")
-            
-        # Check destination:
-        if dst_dir is not None:
-            # If caller passed a file, bad:
-            if os.path.isfile(dst_dir):
-                raise ValueError(f"Destination {dst_dir} is a file; should be a directory")
-            
-            os.makedirs(dst_dir, exist_ok=True)
-            
-            # Compose file to which to save the result:
-            filename_safe_dt = Utils.timestamp_fname_safe()
-            fname = os.path.join(dst_dir, f"{prefix}_chirps_{filename_safe_dt}{out_file_type.value}")
-        else:
-            fname = None
-        
-        dfs  = []
-        cols = None
-        for path, idx_col_nm in zip(df_sources, idx_columns):
-            with UniversalFd(path, 'r') as fd:
-                dfs.append(fd.asdf(index_col=idx_col_nm))
-            if cols is None:
-                cols = dfs[-1].columns 
-            else:
-                left_cols = dfs[-1].columns
-                if len(left_cols) != len(cols) or any(left_cols != cols):
-                    raise TypeError(f"Dataframe in file {path} does not have same columns as previous dfs; should be [{cols}]")
-
-        df_raw = pd.concat(dfs, axis='rows', ignore_index=True)
-        if augment:
-            # Get a DataCalc instance, not needing 
-            data_calc = DataCalcs(fid_map_file=self.fid_map_file)
-            # Use the .wav file information in file_id column to  
-            # obtain each chirp's recording date and time. The new
-            # column will be called 'rec_datetime', and an additional
-            # column: 'is_daytime' will be added. This is done inplace,
-            # so no back-assignment is needed:
-            df_with_rectime = data_calc.add_recording_datetime(df_raw)
-            df = data_calc._add_trig_cols(df_with_rectime, 'rec_datetime')  
-            df.reset_index(drop=True, inplace=True)
-        else:
-            df = df_raw
- 
-        if fname is not None:
-            with UniversalFd(fname, 'w') as fd:
-                fd.write_df(df)
-            self.log.info(f"Concatenated {len(df_sources)} bat measures files with total of {len(df)} rows (chirps) to {fname}")
-
-        res_dict = {'df' : df, 'out_file' : fname}
-        return res_dict
-
-    #------------------------------------
-    # main
-    #-------------------
-    
-    def main(self, actions):
-        '''
-        Perform one task using class DataCalcs methods.
-        Keyword arguments are passed to the executing 
-        methods, if appropriate.
-
-        :param actions: one or more Actions to perform. If
-            multiple actions are specified, they are executed
-            in order.
-        :type actions: union[Action | list[Action]]
-        '''
-
-        if type(actions) != list:
-            actions = [actions]
-            
-        for action in actions:
-            if action == Action.ORGANIZE:
-                self.organize_results()
-                
-            elif action == Action.HYPER_SEARCH:
-                srch_results= self.hyper_parm_search(repeats=1)
-                
-            elif action == Action.CLEAR_RESULTS:
-                self.remove_search_res_files()
-                
-            elif action == Action.PLOT:
-                self._plot_search_results(srch_results)
-                
-            elif action == Action.SAMPLE_CHIRPS:
-                # Possible kwarg: num_chirps, which is
-                # the number of chirp
-                self._sample_chirps(**self.kwargs)
-                
-            elif action == Action.EXTRACT_COL:
-                _ser, _save_path_= self._extract_column(**self.kwargs).values()
-
-            elif action == Action.CONCAT:
-                _df, _save_path = self._concat_files(dst_dir=self.dst_dir, **self.kwargs)
-            else:
-                raise ValueError(f"Unknown action: {action}")
-            
-            
-# ------------------------ Main ------------
-if __name__ == '__main__':
-
-    proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-    
-
-    #***actions = [Action.HYPER_SEARCH, Action.PLOT]
-    #********dst_dir = os.path.join(proj_dir, 'results/hyperparm_searches')
-    #***actions  = Action.HYPER_SEARCH
-    #********dst_dir = os.path.join(proj_dir, 'results/hyperparm_searches')    
-    #***actions  = Action.ORGANIZE
-    #***actions  = Action.SAMPLE_CHIRPS   # 50,000 samples takes 15 seconds
-    #********chirp_samples = os.path.join(proj_dir, 'results/chirp_samples/')
-    #********df_file = os.path.join(chirp_samples, '_50000_chirps_20240524T090814.107027.csv')
-    #***actions = Action.EXTRACT_COL
-    #*******chirp_sample_dst_dir = os.path.join(proj_dir, 'results/chirp_samples')
-    actions = Action.CONCAT
-    data_calc = DataCalcs()
-    all_split_files = data_calc.split_fpaths.values()
-    dst_dir = os.path.join(proj_dir, 'results/chirp_samples/')
-    
-    # Depending on the Action set above, different kwargs
-    # need to be passed into the Activities constructor:    
-    
-    #******activities = Activities(chirp_sample_dst_dir, num_samples=10, save_dir=chirp_sample_dst_dir)
-    #******activities = Activities(chirp_sample_dst_dir, num_samples=50000, save_dir=chirp_sample_dst_dir)
-    #******activities = Activities(chirp_samples)
-    # Don't write the index, which is just row numbers:
-    activities = Activities(df_sources=all_split_files, 
-                            dst_dir=dst_dir, 
-                            out_file_type=FileType.CSV,
-                            prefix=f"concat_{len(all_split_files)}_"
-                            )
-
-    start_time = time.perf_counter()    
-    activities.main(actions) 
-    end_time = time.perf_counter()
-    print(f"Completed action {actions} in {end_time - start_time} seconds")

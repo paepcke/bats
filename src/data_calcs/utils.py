@@ -7,8 +7,10 @@ Created on Apr 22, 2024
 from data_calcs.daytime_file_selection import DaytimeFileSelector
 from datetime import timedelta, datetime
 from enum import Enum, auto
+from pathlib import Path
 import numpy as np
 import pandas as pd
+import re
 
 # ----------------------------- Class TimeGranularity ---------    
 
@@ -148,6 +150,77 @@ class Utils:
             return False
 
     #------------------------------------
+    # file_timestamp
+    #-------------------
+    
+    @staticmethod
+    def file_timestamp(time=None):
+        '''
+        Returns date and time in a format safe for use 
+        in filenames. See safe_time_from_fname() to get
+        that timestamp from a file name whose timestamp
+        was created by this method.
+        
+        :param time: optinally, a datetime to turn into a 
+            filename safe string. If None, current date and time
+            are used.
+        :type time: union[None | datetime.datetime]
+        :return timestamp for use in file names
+        :rtype str
+        '''
+
+        if time is not None and not isinstance(time, datetime):
+            raise TypeError(f"Time argument must of None or a datetime.datetime")
+                            
+        if time is None:
+            # Get like '2024-05-19T10:16:42.785678'
+            dt_str = datetime.now().isoformat()
+        else:
+            dt_str = time.isoformat()
+            
+        # Remove the msecs part:
+        # Replace colons with underscores:
+        timestamp = dt_str
+        timestamp = re.sub(r'[.][0-9]{6}', '', timestamp)
+        timestamp = timestamp.replace(':', '_')
+        return timestamp
+
+    #------------------------------------
+    # extract_file_timestamp
+    #-------------------
+    
+    @staticmethod
+    def extract_file_timestamp(fname):
+        '''
+        Given a string---usually a filename---,
+        try to find an embedded timestamp formatted
+        the way the file_timestamp() method outputs.
+        
+        Return the timestamp string if found, else None.
+        
+        NOTE: this method works with timestamps created
+        by file_timestamp(), not with the timestamps 
+        used in SonoBat .wav files.
+        
+        :param fname: name to search
+        :type fname: str
+        :return the timestamp if found, else None
+        :rtype {None | str}
+        '''
+        
+        # Regex to find substrings created by
+        # the file_timestamp() method embedded
+        # in a string:
+        pat = re.compile(r'.*([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}_[0-9]{2}_[0-9]{2}).*')
+        
+        the_match = pat.match(fname)
+        if the_match is None:
+            return None
+        
+        # Return the extracted timestamp:
+        return the_match[1]
+                    
+    #------------------------------------
     # time_from_fname
     #-------------------
     
@@ -166,35 +239,53 @@ class Utils:
         return dt
 
     #------------------------------------
-    # timestamp_fname_safe
+    # mk_fpath_from_other
     #-------------------
     
     @staticmethod
-    def timestamp_fname_safe(time=None):
+    def _mk_fpath_from_other(self, 
+                             other_fname, 
+                             prefix='',
+                             suffix='',
+                             timestamp_from_other=False, 
+                             **name_components):
         '''
-        Returns date and time in a format safe for use 
-        in filenames
+        Given a filename with, or without a timestamp, a desired
+        prefix and suffix (fname extension incl. leading period),
+        create a new filename. The name_components is an optional
+        dict containing as keys filename fragments, whose values
+        are the number of those items are to be named in the 
+        filename.
         
-        :param time: optinally, a datetime to turn into a 
-            filename safe string. If None, current date and time
-            are used.
-        :type time: union[None | datetime.datetime]
-        :return timestamp for use in file names
-        :rtype str
+        Example:
+            other_fname == my_file
+        
+        :param other_fname:
+        :type other_fname:
+        :param prefix:
+        :type prefix:
+        :param suffix:
+        :type suffix:
+        :param timestamp_from_other:
+        :type timestamp_from_other:
         '''
-
-        if time is not None and not isinstance(time, datetime):
-            raise TypeError(f"Time argument must of None or a datetime.datetime")
-                            
-        if time is None:
-            # Get like '2024-05-19T10:16:42.785678'
-            dt_str = datetime.now().isoformat()
+        
+        if not isinstance(other_fname, Path):
+            other_fpath = Path(other_fname)
         else:
-            dt_str = time.isoformat()
-        # Remove dashes and colons
-        file_safe = dt_str.replace('-', '').replace(':', '')
-        return file_safe
-        
+            other_fpath = other_fname
+            
+        if timestamp_from_other:
+            timestamp = Utils.extract_file_timestamp(other_fname)
+        else:
+            timestamp = Utils.file_timestamp()
+
+        fname = f"{prefix}{timestamp}"
+        for name, quantity in name_components.items():
+            fname += f"_{quantity}{name}"
+        full_fpath = other_fpath.parent.join_path(f"{fname}{suffix}")
+        return full_fpath
+
 
     #------------------------------------
     # is_daytime_recording
