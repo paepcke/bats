@@ -20,9 +20,11 @@ nature of the content, if included in a trained model.
 '''
 from data_calcs.utils import TimeGranularity, Utils
 from datetime import datetime, timedelta
+from pathlib import Path
 import io
 import os
 import pandas as pd
+import tempfile
 import unittest
 
 
@@ -42,7 +44,7 @@ class UtilsTester(unittest.TestCase):
 
 
     def tearDown(self):
-        pass
+        self.tmpdir.cleanup()
 
     # ------------------------- Test Routines ----------------
     
@@ -239,6 +241,76 @@ class UtilsTester(unittest.TestCase):
 
         self.assertDictEqual(sin_cos_dict, expected)
 
+        
+    #------------------------------------
+    # test_find_file_by_timestamp
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_find_file_by_timestamp(self):
+        
+        
+        self.search_dir
+        time1 = Utils.extract_file_timestamp(self.search_fname1)
+        
+        # Just a timestamp of fname1, which is also the one forfname4;
+        # no prefix or suffix filter:
+
+        # Should retrieve fname1 and fname4: they have the
+        # same timestamp, and we set latest to False:
+        files = set(Utils.find_file_by_timestamp(self.search_dir, 
+                                                 timestamp=time1,
+                                                 latest=False
+                                                 )) 
+        expected = set([self.search_fname1, self.search_fname4])
+        self.assertSetEqual(files, expected)
+
+        # Now set latest to True, which should return
+        # only one of the two files whose timestamp matches:
+        files = Utils.find_file_by_timestamp(self.search_dir, 
+                                             timestamp=time1,
+                                             latest=True
+                                             )
+        # We expect one of these, but undefined
+        # which one: 
+        expected = set([self.search_fname1, self.search_fname4])
+        self.assertEqual(len(files), 1)
+        self.assertIn(files[0], expected)
+        
+        # Now, distinguish between fname1 and fname4 by adding
+        # prefix filter:        
+        files = set(Utils.find_file_by_timestamp(self.search_dir, 
+                                                 timestamp=time1,
+                                                 prefix='my_prefix' 
+                                                 ))
+        expected = set([self.search_fname1])
+        self.assertSetEqual(files, expected)
+        
+        # Only filter by the suffix:
+        files = set(Utils.find_file_by_timestamp(self.search_dir, 
+                                                 timestamp=time1,
+                                                 suffix='.txt' 
+                                                 ))
+        expected = set([self.search_fname4])
+        self.assertSetEqual(files, expected)
+        
+    #------------------------------------
+    # test_dt_timestamp_conversions 
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_dt_timestamp_conversions(self):
+        
+        str_stamp = '2023-02-14T14_23_40'
+        dt = Utils.datetime_from_timestamp(str_stamp)
+        expected = datetime(2023, 2, 14, 14,23, 40)
+        self.assertEqual(dt, expected)
+        
+        # And back:
+        str_stamp_recovered = Utils.timestamp_from_datetime(dt)
+        self.assertEqual(str_stamp_recovered, str_stamp)
+         
+
 # -------------------------- Utilities ------------------------
 
     #------------------------------------
@@ -250,6 +322,37 @@ class UtilsTester(unittest.TestCase):
         # Df with 2 minutes of 1-minute cycyles:
         buf = io.StringIO('{"minutes_sin":{"0":0.0,"1":0.1045284633,"2":0.2079116908,"3":0.3090169944,"4":0.4067366431,"5":0.5,"6":0.5877852523,"7":0.6691306064,"8":0.7431448255,"9":0.8090169944,"10":0.8660254038,"11":0.9135454576,"12":0.9510565163,"13":0.9781476007,"14":0.9945218954,"15":1.0,"16":0.9945218954,"17":0.9781476007,"18":0.9510565163,"19":0.9135454576,"20":0.8660254038,"21":0.8090169944,"22":0.7431448255,"23":0.6691306064,"24":0.5877852523,"25":0.5,"26":0.4067366431,"27":0.3090169944,"28":0.2079116908,"29":0.1045284633,"30":5.665538898e-16,"31":-0.1045284633,"32":-0.2079116908,"33":-0.3090169944,"34":-0.4067366431,"35":-0.5,"36":-0.5877852523,"37":-0.6691306064,"38":-0.7431448255,"39":-0.8090169944,"40":-0.8660254038,"41":-0.9135454576,"42":-0.9510565163,"43":-0.9781476007,"44":-0.9945218954,"45":-1.0,"46":-0.9945218954,"47":-0.9781476007,"48":-0.9510565163,"49":-0.9135454576,"50":-0.8660254038,"51":-0.8090169944,"52":-0.7431448255,"53":-0.6691306064,"54":-0.5877852523,"55":-0.5,"56":-0.4067366431,"57":-0.3090169944,"58":-0.2079116908,"59":0.0,"60":0.0,"61":0.1045284633,"62":0.2079116908,"63":0.3090169944,"64":0.4067366431,"65":0.5,"66":0.5877852523,"67":0.6691306064,"68":0.7431448255,"69":0.8090169944,"70":0.8660254038,"71":0.9135454576,"72":0.9510565163,"73":0.9781476007,"74":0.9945218954,"75":1.0,"76":0.9945218954,"77":0.9781476007,"78":0.9510565163,"79":0.9135454576,"80":0.8660254038,"81":0.8090169944,"82":0.7431448255,"83":0.6691306064,"84":0.5877852523,"85":0.5,"86":0.4067366431,"87":0.3090169944,"88":0.2079116908,"89":0.1045284633,"90":5.665538898e-16,"91":-0.1045284633,"92":-0.2079116908,"93":-0.3090169944,"94":-0.4067366431,"95":-0.5,"96":-0.5877852523,"97":-0.6691306064,"98":-0.7431448255,"99":-0.8090169944,"100":-0.8660254038,"101":-0.9135454576,"102":-0.9510565163,"103":-0.9781476007,"104":-0.9945218954,"105":-1.0,"106":-0.9945218954,"107":-0.9781476007,"108":-0.9510565163,"109":-0.9135454576,"110":-0.8660254038,"111":-0.8090169944,"112":-0.7431448255,"113":-0.6691306064,"114":-0.5877852523,"115":-0.5,"116":-0.4067366431,"117":-0.3090169944,"118":-0.2079116908,"119":0.0},"minutes_cos":{"0":1.0,"1":0.9945218954,"2":0.9781476007,"3":0.9510565163,"4":0.9135454576,"5":0.8660254038,"6":0.8090169944,"7":0.7431448255,"8":0.6691306064,"9":0.5877852523,"10":0.5,"11":0.4067366431,"12":0.3090169944,"13":0.2079116908,"14":0.1045284633,"15":2.832769449e-16,"16":-0.1045284633,"17":-0.2079116908,"18":-0.3090169944,"19":-0.4067366431,"20":-0.5,"21":-0.5877852523,"22":-0.6691306064,"23":-0.7431448255,"24":-0.8090169944,"25":-0.8660254038,"26":-0.9135454576,"27":-0.9510565163,"28":-0.9781476007,"29":-0.9945218954,"30":-1.0,"31":-0.9945218954,"32":-0.9781476007,"33":-0.9510565163,"34":-0.9135454576,"35":-0.8660254038,"36":-0.8090169944,"37":-0.7431448255,"38":-0.6691306064,"39":-0.5877852523,"40":-0.5,"41":-0.4067366431,"42":-0.3090169944,"43":-0.2079116908,"44":-0.1045284633,"45":-1.836970199e-16,"46":0.1045284633,"47":0.2079116908,"48":0.3090169944,"49":0.4067366431,"50":0.5,"51":0.5877852523,"52":0.6691306064,"53":0.7431448255,"54":0.8090169944,"55":0.8660254038,"56":0.9135454576,"57":0.9510565163,"58":0.9781476007,"59":1.0,"60":1.0,"61":0.9945218954,"62":0.9781476007,"63":0.9510565163,"64":0.9135454576,"65":0.8660254038,"66":0.8090169944,"67":0.7431448255,"68":0.6691306064,"69":0.5877852523,"70":0.5,"71":0.4067366431,"72":0.3090169944,"73":0.2079116908,"74":0.1045284633,"75":2.832769449e-16,"76":-0.1045284633,"77":-0.2079116908,"78":-0.3090169944,"79":-0.4067366431,"80":-0.5,"81":-0.5877852523,"82":-0.6691306064,"83":-0.7431448255,"84":-0.8090169944,"85":-0.8660254038,"86":-0.9135454576,"87":-0.9510565163,"88":-0.9781476007,"89":-0.9945218954,"90":-1.0,"91":-0.9945218954,"92":-0.9781476007,"93":-0.9510565163,"94":-0.9135454576,"95":-0.8660254038,"96":-0.8090169944,"97":-0.7431448255,"98":-0.6691306064,"99":-0.5877852523,"100":-0.5,"101":-0.4067366431,"102":-0.3090169944,"103":-0.2079116908,"104":-0.1045284633,"105":-1.836970199e-16,"106":0.1045284633,"107":0.2079116908,"108":0.3090169944,"109":0.4067366431,"110":0.5,"111":0.5877852523,"112":0.6691306064,"113":0.7431448255,"114":0.8090169944,"115":0.8660254038,"116":0.9135454576,"117":0.9510565163,"118":0.9781476007,"119":1.0}}')         
         self.two_min_df = pd.read_json(buf)
+        
+        self.tmpdir = tempfile.TemporaryDirectory(dir='/tmp', prefix='utils_tests_', delete=False)
+        self.search_dir = os.path.join(self.tmpdir.name, 'file_find_dir')
+        os.makedirs(self.search_dir)
+        
+        # Put two timestamped files, and one non-timestamped into the dir.
+        # Then add one file with the same timestamp as fname1:
+        #
+        # fname1 : my_prefix_<time>.csv
+        # fname2 : <time+1day>.txt
+        # fname3 : random_file
+        # fname4 : other_prefix_<time-of-fname1>.txt
+        
+        fname1_time = Utils.file_timestamp()
+        self.search_fname1 = os.path.join(self.search_dir, f"my_prefix_{fname1_time}.csv")
+        # Make the second timestamp a bit later than the one in fname1.
+        # The replace makes the timestamp work for datetime.isoformat():
+        fname2_dt = datetime.fromisoformat(fname1_time.replace('_', ':'))
+        fname2_dt += timedelta(days=1)
+        fname2_time = fname2_dt.strftime('%Y-%m-%d_%H_%M_%S')
+        
+        self.search_fname2 = os.path.join(self.search_dir, f"{fname2_time}.txt")
+        self.search_fname3 = os.path.join(self.search_dir, 'random_file')
+        # fname4 will be same timestamp as fname1:
+        timestamp_fname1 = Utils.extract_file_timestamp(self.search_fname1)
+        self.search_fname4 = os.path.join(self.search_dir, f"other_prefix_{timestamp_fname1}.txt")
+        
+        Path(self.search_fname1).touch()
+        Path(self.search_fname2).touch()
+        Path(self.search_fname3).touch()
+        Path(self.search_fname4).touch()
 
     #------------------------------------
     # make_three_hr_cookoo
@@ -305,7 +408,9 @@ class UtilsTester(unittest.TestCase):
         data.index.name = 'tick_number'
         data_fname = 'three_minutes.csv'
         data.to_csv(os.path.join(tst_data_dir, data_fname))
-
+    
+        
+        
 
 # -------------------------- Main ------------------------
 

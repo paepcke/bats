@@ -4,43 +4,125 @@ Created on May 28, 2024
 @author: paepcke
 '''
 from data_calcs.data_calculations import DataCalcs, PerplexitySearchResult, \
-    ChirpIdSrc, FileType
+    ChirpIdSrc, FileType, Localization
 from data_calcs.data_viz import DataViz
 from data_calcs.universal_fd import UniversalFd
 from data_calcs.utils import Utils
+from datetime import datetime
 from enum import Enum
 from logging_service.logging_service import LoggingService
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from datetime import datetime
+import itertools
 import os
 import pandas as pd
 import random
 import shutil
+import sys
 import time
 
-from data_calcs.data_calculations import Localization
 
 # Members of the Action enum are passed to run
 # to specify which task the program is to perform: 
 class Action(Enum):
-    HYPER_SEARCH  = 0
-    PLOT          = 1
-    ORGANIZE      = 2
-    CLEAR_RESULTS = 3
-    SAMPLE_CHIRPS = 4
-    EXTRACT_COL   = 5
-    CONCAT        = 6
-    PCA           = 7
+    HYPER_SEARCH    = 0
+    PLOT_SEARCH_RES = 1
+    ORGANIZE        = 2
+    CLEAR_RESULTS   = 3
+    SAMPLE_CHIRPS   = 4
+    EXTRACT_COL     = 5
+    CONCAT          = 6
+    PCA             = 7
 
 
 class MeasuresAnalysis:
-    
+            
     #------------------------------------
     # Constructor
     #-------------------
     
-    def __init__(self):
+    def __init__(self, action, **kwargs):
+        '''
+        Initializes various constants. Then, if action is 
+        one of the Action enum members, executes the requested
+        experiment.
+        
+        Each experiment generates a dictionary with relevant
+        results. These results are stored in the MeasuresAnalysis
+        experiment_result attribute. The action that identifies
+        the experiment done is in the action attribute. 
+        
+        For each type of experiment there may be required and/or
+        optional keyword arguments. Provide them all as kwargs,
+        though the args without a default below are mandatory:
+        
+            PCA:              n_components
+                returns       {'pca' : pca, 
+		                       'weight_matrix' 	 : weight_matrix, 
+		                       'xformed_data'  	 : xformed_data,
+		                       'pca_file'      	 : pca_dst_fname,
+		                       'weights_file'  	 : weight_fname,
+   	                           'xformed_data_fname' : xformed_data_fname                
+		                       }
+		   
+            
+            HYPER_SEARCH      repeats=1, 
+                              overwrite_previous=True
+                returns       PerplexitySearchResult instance
+                              
+            PLOT_SEARCH_RES   search_results  # result from prior HYPER_SEARCH
+                              data_dir
+                returns       <nothing>
+            
+            SAMPLE_CHIRPS     num_samples=None, 
+                              save_dir=None
+                returns       {'df' : the constructed df,
+                               'out_file' : to where the df was written}
+                              
+            CONCAT            df_sources,
+                        	  idx_columns=None, 
+                        	  dst_dir=None, 
+                        	  out_file_type=FileType.CSV, 
+                        	  prefix=None,
+                        	  augment=True,
+                        	  include_index=False
+                returns       {'df' : the constructed df,
+                               'out_file' : to where the df was written}
+            
+            EXTRACT_COL       df_src, 
+                              col_name, 
+                              dst_dir=None, 
+                              prefix=None
+                returns       {'col' : the requested column,
+                               'out_file' : path where column was saved}
+                              
+            CLEAR_RESULTS     <none>
+                returns       True
+            
+            ORGANIZE          <none>
+                returns       None
+        
+        :param action: action to perform
+        :type action: Action
+        '''
+        
+        self.log = LoggingService()
+        self.proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+        
+        # Default destination directory of analysis files:
+        self.analysis_dst = Localization.analysis_dst
+        self.chirps_dst   = Localization.sampling_dst
+        self.srch_res_dst = Localization.srch_res_dst
+        
+        self.action = action
+        
+        self.res_file_prefix = 'perplexity_n_clusters_optimum'
+        self.fid_map_file = 'split_filename_to_id.csv'
+        self.data_calcs = DataCalcs()
+        self.data_calcs = DataCalcs(measures_root=Localization.measures_root,
+                                    inference_root=Localization.inference_root,
+                                    fid_map_file=self.fid_map_file
+                                    )
         
         # All measures from 10 split files combined
         # into one df, and augmented with rec_datetime,
@@ -55,98 +137,163 @@ class MeasuresAnalysis:
         
         # Take out the administrative data:
         self.all_measures = all_measures_with_admins.drop(columns=['file_id', 'split','rec_datetime'])
-        activities = Activities()
+
         
-        # Task: obtain PCA information about all measures:
+        if action == Action.PCA:
+            self.log.info("Computing PCA")
+            res = self.pca_action(**kwargs)
+            
+        elif action == Action.ORGANIZE:
+            self.log.info("Organizing hyper-search results")
+            res = self.organize_results()            
+
+        elif action == Action.HYPER_SEARCH:
+            self.log.info("Starting TSNE hyperparameter search")
+            # Returns PerplexitySearchResult instance:
+            res = self.hyper_parm_search(**kwargs)
+
+        elif action == Action.PLOT_SEARCH_RES:
+            self.log.info("Plotting TSNE hyperparameter search results")
+            required_args = ['search_results']
+            if not all([kwarg_nm in kwargs.keys() for kwarg_nm in required_args]):
+                raise ValueError(f"Plotting hyper parameter search results requires args {required_args}")
+            
+            res = self._plot_search_results(**kwargs)
+
+        elif action == Action.SAMPLE_CHIRPS:
+            self.log.info("Sampling chirps from entire chirp collection")
+            required_args = ['num_samples']
+            if not all([kwarg_nm in kwargs.keys() for kwarg_nm in required_args]):
+                raise ValueError(f"Sampling chirps requires args {required_args}")
+            
+            if 'save_dir' not in kwargs.keys():
+                chirp_samples_dir = os.path.join(self.proj_dir, 'results/chirp_samples/')
+            else:
+                chirp_samples_dir = kwargs['save_dir']
+            kwargs['save_dir'] = chirp_samples_dir
+            
+            res = self._sample_chirps(**kwargs)
+            
+        elif action == Action.EXTRACT_COL:
+            required_args = ['df_src', 'col_name']
+            if not all([kwarg_nm in kwargs.keys() for kwarg_nm in required_args]):
+                raise ValueError(f"Column extraction requires args {required_args}")
+            self.log.info(f"Extracting column {kwargs['col_name']} from data")
+            
+            try:
+                dst_dir = kwargs['dst_dir']
+            except ValueError:
+                dst_dir = self.chirps_dst
+            kwargs['dst_dir'] = dst_dir
+            
+            try:    
+                prefix = kwargs['prefix']
+                if prefix is None:
+                    prefix = f"col_{kwargs['col_name']}_"
+            except KeyError:
+                prefix = f"col_{kwargs['col_name']}_"
+                
+            kwargs['prefix'] = prefix
+            res = self._extract_column(**kwargs)
+
+        elif action == Action.CONCAT:
+            self.log.info("Concatenating chirp files")
+            required_args = ['df_sources']
+            if not all([kwarg_nm in kwargs.keys() for kwarg_nm in required_args]):
+                raise ValueError(f"CONCAT requires args {required_args}")
+
+            try:
+                dst_dir = kwargs['dst_dir']
+            except KeyError:
+                dst_dir = self.chirps_dst
+                kwargs['dst_dir'] = dst_dir
+            
+            res = self._concat_files(**kwargs)
+            
+        elif action == Action.CLEAR_RESULTS:
+            self.log.info("Cleanung up TSNE hyper parameter search debris")
+            res = self.remove_search_res_files()
+
         
+        # Save the results, usually packaged as a dict:
+        self.experiment_result = res
+        
+    #------------------------------------
+    # pca_action
+    #-------------------
+    
+    def pca_action(self, n_components=None):
+        '''
+        Runs PCA on all chirp data. Saves PCA object, weight matrix,
+        and the transformed original data.
+         
+        Returns dict:
+        
+               {'pca' : pca, 
+                'weight_matrix' 	 : weight_matrix, 
+                'xformed_data'  	 : xformed_data,
+                'pca_file'      	 : pca_dst_fname,
+                'weights_file'  	 : weight_fname,
+                'xformed_data_fname' : xformed_data_fname                
+                }
+                
+        THe PCA object will have an attribute create_time. It
+        can be used to timestamp both the PCA object itself, and
+        related analysis files.
+        
+        :param n_components: number of components to which the
+            data is to be reduced
+        :type n_components: union[None, int]
+        :return: dict with pc, weight matrix, and transformed data, 
+            as well as the file names where they were saved.
+        :rtype dict[str : any]
+        '''
+        if n_components is None:
+            n_components = len(self.all_measures.columns)
+            
         # PCA returns a dict with keys 'pca', 'weight_matrix',
-        # and 'xformed_data':        
-        pca, weight_matrix, _xformed_data, pca_save_file = activities.run(
-            Action.PCA,
-            **{'df' : self.all_measures,
-               'n_components' : len(self.all_measures.columns)
-              }
+        # and 'xformed_data'. Also saves the PCA, returning the
+        # file path to the saved pca in a dict:
+        pca, weight_matrix, xformed_data, pca_save_file = self.data_calcs.pca_computation(
+            df=self.all_measures, 
+            n_components=n_components,
+            dst_dir=self.analysis_dst
             ).values()
 
         # Path where PCA was save is of the form:
         # <dir>/pca_20240528T161317.259849.joblib.
         # Get the timestamp:
-        timestamp = Utils.extract_file_timestamp(pca_save_file)
-        pca_path = Path(pca_save_file)
-        num_in_features = pca.n_features_in_
-        num_samples     = pca.n_samples_
-        weight_fname = pca_path.parent.joinpath(f"pca_weights_{timestamp}_{num_in_features}features_{num_samples}samples.feather")
-        weight_matrix.to_feather(weight_fname)
+        num_in_features  = pca.n_features_in_
+        num_samples      = pca.n_samples_
         
-        
-        print(pca)
-    
-        
-    #------------------------------------
-    # _mk_fpath_from_other
-    #-------------------
-    
-    def _mk_fpath_from_other(self, 
-                             other_fname, 
-                             prefix='',
-                             suffix='',
-                             timestamp_from_other=False, 
-                             **name_components):
-        '''
-        Given a filename with, or without a timestamp, a desired
-        prefix and suffix (fname extension incl. leading period),
-        create a new filename. The name_components is an optional
-        dict containing as keys filename fragments, whose values
-        are the number of those items are to be named in the 
-        filename.
-        
-        Example:
-            other_fname == my_file
-        
-        :param other_fname:
-        :type other_fname:
-        :param prefix:
-        :type prefix:
-        :param suffix:
-        :type suffix:
-        :param timestamp_from_other:
-        :type timestamp_from_other:
-        '''
-        
-        if not isinstance(other_fname, Path):
-            other_fpath = Path(other_fname)
-        else:
-            other_fpath = other_fname
-            
-        if timestamp_from_other:
-            timestamp = Utils.extract_file_timestamp(other_fname)
-        else:
-            timestamp = Utils.file_timestamp()
+        # Save the weights matrix with the same 
+        # timestamp as when the PCA object was saved:
+        weights_fname = Utils.mk_fpath_from_other(pca_save_file,
+                                                  prefix='pca_weights_', 
+                                                  suffix='.feather',
+                                                  features=num_in_features,
+                                                  samples=num_samples)
 
-        fname = f"{prefix}{timestamp}"
-        for name, quantity in name_components.items():
-            fname += f"_{quantity}{name}"
-        full_fpath = other_fpath.parent.join_path(f"{fname}{suffix}")
-        return full_fpath
-            
+        self.log.info(f"Saving weights matrix to {weights_fname}")
+        weight_matrix.to_feather(weights_fname)
         
+        # Save the transformed data:
+        xformed_data_fname = Utils.mk_fpath_from_other(pca_save_file,
+                                                       prefix='xformed', 
+                                                       suffix='.feather',
+                                                       components=n_components,
+                                                       samples=num_samples)
+        self.log.info(f"Saving transformed data to {xformed_data_fname}")
+        xformed_data.to_feather(xformed_data_fname)
         
-class Activities:
-
-    #------------------------------------
-    # Constructor
-    #-------------------
+        return {'pca' : pca, 
+                'weight_matrix' 	 : weight_matrix, 
+                'xformed_data'  	 : xformed_data,
+                'pca_file'      	 : pca_save_file,
+                'weights_file'  	 : weights_fname,
+                'xformed_data_fname' : xformed_data_fname
+                }
     
-    def __init__(self):
-        
-        self.log = LoggingService()
-        self.res_file_prefix = 'perplexity_n_clusters_optimum'
-        self.data_calcs = DataCalcs()
-        self.fid_map_file = 'split_filename_to_id.csv'
-        
-        self.data_dir = '/tmp'
-        
-        
     #------------------------------------
     # organize_results
     #-------------------
@@ -155,7 +302,7 @@ class Activities:
         '''
         Finds temporary files that hold PerplexitySearchResult
         exports, and those that contain plots made for those
-        results. Moves all of them to self.dst_dir, under a 
+        results. Moves all of them to self.srch_res_dst, under a 
         name that reflects their content. 
         
         For example:
@@ -169,7 +316,7 @@ class Activities:
         will transfer unchanged.
         
         For each search result, the tsne_df will be replicated into a
-        .csv file in self.dst_dir.
+        .csv file in self.srch_res_dst
             
         '''
         
@@ -181,7 +328,7 @@ class Activities:
             
             # Saved figures are just transfered:
             if fname.endswith('.png'):
-                shutil.move(fname, self.dst_dir)
+                shutil.move(fname, self.srch_dst_dir)
                 continue
             
             srch_res = PerplexitySearchResult.read_json(fname)
@@ -190,7 +337,7 @@ class Activities:
             n_clusters = srch_res['optimal_n_clusters']
             
             dst_json_nm   = f"perp_p{perp}_n{n_clusters}_{mod_time}.json"
-            dst_json_path = os.path.join(self.dst_dir, dst_json_nm)
+            dst_json_path = os.path.join(self.srch_dst_dir, dst_json_nm)
             
             dst_csv_nm = f"{Path(dst_json_path).stem}.csv"
             dst_csv_path = Path(dst_json_path).parent.joinpath(dst_csv_nm)          
@@ -450,7 +597,7 @@ class Activities:
     # _plot_search_results
     #-------------------
     
-    def _plot_search_results(self, search_results):
+    def _plot_search_results(self, search_results, dst_dir=None):
     
         # The following will be a list: 
         # [perplexity1, ClusteringResult (kmeans run: 8) at 0x13f197b90), 
@@ -462,9 +609,10 @@ class Activities:
         # As filepath for saving the figure at the end,
         # use the file prefix self.res_file_prefix, and
         # the current date and time:
-        filename_safe_dt = Utils.file_timestamp()
-        fig_save_fname   = f"{self.res_file_prefix}_plots_{filename_safe_dt}.png"
-        fig_save_path    = os.path.join(self.data_dir, fig_save_fname) 
+        if dst_dir is not None:
+            filename_safe_dt = Utils.file_timestamp()
+            fig_save_fname   = f"{self.res_file_prefix}_plots_{filename_safe_dt}.png"
+            fig_save_path    = os.path.join(dst_dir, fig_save_fname) 
         
         # Collect all the cluster results from all search result objs
         # into one list:
@@ -481,9 +629,10 @@ class Activities:
                 'title'           : f"Perplexity: {perplexity}; n_clusters: {n_clusters}; silhouette: {silhouette:{4}.{2}}"
                 })
         fig = DataViz.plot_perplexities_grid(plot_contents)
-        self.log.info(f"Saving plots to {fig_save_path}")
-        fig.savefig(fig_save_path)
-        fig.show()
+        if dst_dir is not None:
+            self.log.info(f"Saving plots to {fig_save_path}")
+            fig.savefig(fig_save_path)
+            fig.show()
         input("Any key to erase figs and continue: ")
 
 
@@ -684,142 +833,191 @@ class Activities:
         return res_dict
 
     #------------------------------------
-    # run
+    # __repr__
     #-------------------
     
-    def run(self, actions, **action_specific_kwargs):
-        '''
-        Perform one task using class DataCalcs methods.
-        Keyword arguments are passed to the executing 
-        methods, if appropriate. Some of these kwargs 
-        are specific to the invocation of a single Action, 
-        others are relevant to every invocation of that Action.
-        
-        Example: for plot_search_results() we need to pass the
-            search results to plot each time. But the destination
-            directory for saving may be shared across many calls.
-            
-        The action run specific kwargs should be passed in to
-        this method. This method obtains the fixed kwargs from
-        _make_kwargs().
-        
-        The action that required specific kwargs passed into this
-        method are:
-        
-            Action.SAMPLE_CHIRPS: num_samples
-            Action.PLOT         : search_results
-            Action.EXTRACT_COL  : df_src, 
-                                  col_name
-            Action.CONCAT       : df_sources
-            Action.PCA          : df
-                                  n_components
+    def __repr__(self):
+        rep_str = f"<MeasuresAnalysis chirps:{self.action.name} at {hex(id(self))})"
+        return rep_str
+
+# ------------------------------- Class ResultInterpretations -------------
 
 
-        :param actions: one or more Actions to perform. If
-            multiple actions are specified, they are executed
-            in order.
-        :type actions: union[Action | list[Action]]
-        '''
-
-        if type(actions) != list:
-            actions = [actions]
-
-        # Get a list of kwarg dicts:
-        action_kwargs = [self._make_kwargs(action) for action in actions]
-        action_kwargs.append(action_specific_kwargs)
-        merged_kwargs = {}
-        
-        for one_dict in action_kwargs:
-            merged_kwargs.update(one_dict)
-
-        for action in actions:
-            if action == Action.ORGANIZE:
-                return self.organize_results()
-                
-            elif action == Action.HYPER_SEARCH:
-                # Returns PerplexitySearchResult instance:
-                return self.hyper_parm_search(repeats=1)
-                
-            elif action == Action.CLEAR_RESULTS:
-                self.remove_search_res_files()
-                
-            elif action == Action.PLOT:
-                return self._plot_search_results(merged_kwargs)
-                
-            elif action == Action.SAMPLE_CHIRPS:
-                # Possible kwarg: num_chirps, which is
-                # the number of chirp.
-                # Returns {'df' : x,  'save_file' : y}
-                return self._sample_chirps(merged_kwargs)
-                
-            elif action == Action.EXTRACT_COL:
-                # Returns dict {'col', 'out_file'}
-                return self._extract_column(merged_kwargs)
-
-            elif action == Action.CONCAT:
-                # Returns {'df' : x, 'out_file': y}
-                return self._concat_files(merged_kwargs)
-
-            elif action == Action.PCA:
-                # Returns {'pca' : x, 'weight_matrix' : y, 'transformed_data' : z, 'pca_save_file' : f}
-                return DataCalcs().pca_computation(**merged_kwargs)
-            else:
-                raise ValueError(f"Unknown action: {action}")
-            
+class ResultInterpretations:
+    '''
+    Methods in this class poke around in results of measurement
+    runs in the MeasurementsAnalysis class. For each measurement
+    type, a method pulls up the results, and extracts what would
+    be reported in a paper, or would be needed for next steps. 
+    '''
+    
     #------------------------------------
-    # _make_kwargs
+    # Constructor 
     #-------------------
     
-    def _make_kwargs(self, action, **kwargs):
-        '''
-        
-        Extra args:
-            Action.SAMPLE_CHIRPS: num_samples
-            Action.PLOT         : search_results
-            Action.EXTRACT_COL  : df_src, 
-                                  col_name
-            Action.CONCAT       : df_sources
-            Action.PCA          : df
-                                  n_components
- 
-        :param action: action for which kwargs are to be constructed
-        :type action: Action
-        '''
-        
-        proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-        
-        if action in [Action.HYPER_SEARCH, Action.PLOT]:
-            kws = {'dst_dir' : os.path.join(proj_dir, 'results/hyperparm_searches')}
-            kws.update(kwargs)
-        elif action == Action.ORGANIZE:
-            kws = {}
-        elif action == Action.SAMPLE_CHIRPS:
-            chirp_samples = os.path.join(proj_dir, 'results/chirp_samples/'),
-            # Add number of samples:
-            kws = {'df_file'       : os.path.join(chirp_samples, '_50000_chirps_20240524T090814.107027.csv')}
-            kws.update(kwargs)
-        elif action == Action.EXTRACT_COL:
-            kws = {'dst_dir' : os.path.join(proj_dir, 'results/chirp_samples'),
-                   'prefix'  : 'col_extract_'
-                   }
-            kws.update(kwargs)
-        elif action == Action.CONCAT:
-            kws = {'prefix'     : 'concat_',
-                   'dst_dir' : os.path.join(proj_dir, 'results/chirp_samples')}
-            kws.update(kwargs)
-        elif action == Action.PCA:
-            # Have pca_dump() in data_calculations add the proper suffix:
-            kws = {'dst_fname'    : os.path.join(proj_dir, f"results/chirp_samples/pca_{Utils.file_timestamp()}"), 
-                   'columns'      : None}
-            kws.update(kwargs)
-        else:
-            raise ValueError(f"Action is not recognized: {action}")
+    def __init__(self, measure_analysis=None, dst_dir=None):
     
-        return kws    
+        self.log = LoggingService()    
+        self.proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+        self.measure_analysis = measure_analysis
+        if dst_dir is None:
+            self.dst_dir = Localization.analysis_dst
+        else:
+            self.dst_dir = dst_dir
+    
+    #------------------------------------
+    # pca_report
+    #-------------------
+    
+    def pca_report(self, pca_result=None, pca_fname=None, pca_weights_matrix=None, pca_weights_matrix_fname=None):
+        '''
+        Look at result from pca that retains all features. 
+        
+           1. For each component, find the most important feature. Write
+              the Series with the feature names to file, in order of 
+              PCA components.
+           2. Write a Series to file that shows the accumulating explained
+              variance as increasingly more components would be use.
+           2. Create figure of variance explained vs. number of components
+           
+        Provide either the pca_result object, or the pca_fname where the pca
+        is stored. 
+           
+        :param pca_result: PCA result object
+        :type pca_result: union[None, sklearn.PCA
+        :param pca_fname: file where PCA object is stored
+        :type pca_fname: union[None, str]
+        :param pca_weights_matrix: the weight matrix df computed by the PCA
+        :type pca_weights_matrix: optional[str]
+        :param pca_weights_matrix_fname: file where pca's weights matrix df is stored 
+        :type pca_weights_matrix_fname: union[None, str]
+        '''
+        
+        
+        # Get the PCA:
+        if pca_result is None:
+            if pca_fname is None:
+                raise ValueError("Provide either pca__result object, or pca_fname where pca object was saved")
+            pca_result = DataCalcs.load_pca(pca_fname)
             
+        # Get the weight matrix
+        if pca_weights_matrix is None:
+            if pca_weights_matrix_fname is None:
+                raise ValueError("Provide either pca_weights_matrix, or pca_weights_matrix_fname")
+            with UniversalFd(pca_weights_matrix_fname, 'r') as fd:
+                weights = fd.read()
+        else:
+            weights = pca_weights_matrix
+
+
+        # Build a dataframe
+        #
+        #                  mostImportant       weight       loading     direction
+        #   ComponentNum
+        #         0         'feature3'         -0.436        0.190096        -1
+        #         1         'feature50'         0.987        0.974169        +1
+        #                                 ... 
+        
+        # Get a Series of feature names. Each element at index idx of the
+        # Series holds that name of the feature that is most 
+        # imoprtant for the idxth component:
+        #
+        #     0 Feature3
+        #     1 Feature50
+        #        ...
+        #
+        # Get the featureNm
+        max_importance_feature_per_component = weights.idxmax(axis=1)
+        max_importance_feature_per_component.name = 'mostImportant'
+        max_importance_feature_per_component.index.name = 'componentNum'
+
+        # Get the most important features' weights themselves:
+        #    Feature3   -0.436
+        #    Feature50   0.987
+        #        ...
+        # A Series:
+        max_weights = weights.max(axis=1)
+        # Row names are the per component maximally important features
+        # we got earlier via idxmax():
+        max_weights.name  = 'weight'
+        
+        # The loadings are the squares of the weights:
+        loadings = max_weights.pow(2)
+        loadings.name  = 'loading'
+        
+        # And the direction of each component's max-impact feature
+        # on its component: 1.0 and -1.0
+        direction = max_weights / max_weights.abs()
+        direction.name = 'direction'
+        
+        importance_analysis = pd.concat([max_importance_feature_per_component,
+                                         max_weights,
+                                         loadings,
+                                         direction
+                                         ],axis=1)
+
+        # For the file name, use the same timestamp as was used for the PCA file:
+        pca_timestamp = Utils.timestamp_from_datetime(pca_result.create_date)
+        important_features_fname = f"importance_analysis_{pca_timestamp}.csv"
+        importance_analysis.to_csv(os.path.join(self.dst_dir, important_features_fname))
+        
+        # Next: explained variance. Create a df:
+        #                    percExplained    cumPercExplained
+        #  componentNum    
+        #       0                0.33             0.33
+        #       1                0.22             0.55
+        #             ...
+        
+        explained_var  = pd.Series(pca_result.explained_variance_ratio_, name='percExplained')
+        cum_explained  = pd.Series(itertools.accumulate(explained_var), name='cumPercExplained')
+        explain_amount = pd.concat([explained_var, cum_explained], axis=1)
+        explain_amount.index.name = 'numComponents'
+        
+        # For the file name, use the same timestamp as was used for the PCA file:
+        # The datetime 
+        cum_expl_fname = f"variance_explained_{pca_timestamp}.csv"
+        explain_amount.to_csv(os.path.join(self.dst_dir, cum_expl_fname))
+        
+        self.log.info("Done PCA")
+        
             
 # ------------------------ Main ------------
 if __name__ == '__main__':
 
-    MeasuresAnalysis()
-        
+    # PCA all data
+    #action = Action.PCA
+    #analysis = MeasuresAnalysis(action)
+    #res = analysis.experiment_result
+    
+    interpretations = ResultInterpretations()
+    # Get list of saved PCA object file names
+    # in the destination dir:
+    pca_files = Utils.find_file_by_timestamp(interpretations.dst_dir, 
+                                             prefix='pca_', 
+                                             suffix='.joblib',
+                                             latest=True)
+    if len(pca_files) == 0:
+        print(f"No pca files in {interpretations.dst_dir}. Aborting")
+        sys.exit(1)
+    
+    pca_fname = pca_files[0]
+    # Get the timestamp when the PCA object was created:
+    str_timestamp = Utils.extract_file_timestamp(pca_fname)
+    
+    # Get the weights matrix that was saved along with
+    # the PCA object (i.e. that has the same timestamp):    
+    weights_fnames = Utils.find_file_by_timestamp(interpretations.dst_dir,
+                                                  timestamp=str_timestamp, 
+                                                  prefix='pca_weights_',
+                                                  latest=True
+                                                  )
+
+    if len(weights_fnames) == 0:
+        print(f"No pca weight matrix in {interpretations.dst_dir}. Aborting")
+        sys.exit(1)
+                
+    pca_weights_matrix_fname = weights_fnames[0]
+    
+    pca_exploration = interpretations.pca_report(pca_fname=pca_fname,
+                                                 pca_weights_matrix_fname=pca_weights_matrix_fname)
+    

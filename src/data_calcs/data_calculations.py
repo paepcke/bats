@@ -28,8 +28,13 @@ import re
 
 class Localization:
     # There is also a .csv version of the following .feather file:
+    #all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.feather'
+    proj_dir       = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+    analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/PCA_AllData')
+    sampling_dst   = os.path.join(proj_dir, 'results/chirp_samples')
+    srch_res_dst   = os.path.join(proj_dir, 'results/hyperparm_searches')
+ 
     all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.feather'
-    #all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.csv'
     measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
     inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
 
@@ -934,19 +939,24 @@ class DataCalcs:
         being True, the columns of the input df are sorted by 
         decreasing variance over the Jasper Ridge bat recordings.
         The num_dims columns are then taken from that sorted list
-        of measurement result columns. 
-        
-        after sorting the columns by decreasing variance.
-        That is the num_dims'th ranked variance measures are used
-        for each chirp. 
+        of measurement result columns. That is the num_dims'th ranked 
+        variance measures are used for each chirp. 
         
         Uses the min(num_points, dfsize) (i.e. num_points rows) from the df.
         
-        After running the number of points will be in:
+        After running, the number of points will be in:
         
                 self.effective_num_points
         
-        Tsne is run over the resulting num_points x num_dims dataframe.  
+        Tsne is run over the resulting num_points x num_dims dataframe.
+        
+        Returned is a dataframe with num_points rows, and the following
+        columns:
+        
+              'tsne_x'    'tsne_y'   [original values of the cols_to_keep columns]
+        
+        The index of the returned dataframe will be the same as the 
+        index passed in, except for the redacted rows.
         
         :param df: the dataframe to examine
         :type df: pd.DataFrame
@@ -965,6 +975,7 @@ class DataCalcs:
             If None, the TSNE constructor's default is chosen: 30 or
             one less than the length of the df.
         :type perplexity: union[None | float]
+        
         :param sort_by_bat_variance: if True, all column names must
             be SonoBat measure names. The num_dims number of columns
             will be selected from the input dataframe such that they
@@ -1001,7 +1012,7 @@ class DataCalcs:
         
         # Keep only the wanted rows:
         if type(num_points) == int: 
-            df = df_all_rows.loc[0:num_points-1, :]
+            df = df_all_rows.iloc[0:num_points, :]
         elif num_points is None:
             df = df_all_rows
         else:
@@ -1017,10 +1028,10 @@ class DataCalcs:
             # Mirror the TSNE constructor's default:
             perplexity = min(30.0, len(df)-1)
 
-        effective_num_points = len(df)
+        self.effective_num_points = len(df)
         log_msg = (f"Running tsne; perplexity '{perplexity}';"
                    f"num_dims: {num_dims};"
-                   f"num_points: {effective_num_points}")
+                   f"num_points: {self.effective_num_points}")
         self.log.info(log_msg)
 
         tsne_obj = TSNE(n_components=2, 
@@ -1038,16 +1049,23 @@ class DataCalcs:
         #         random_state=3,
         #         )
         
+        # If we are asked to sort by variance of SonoBat measures, then
         # Only use columns for TSNE computation that 
         # are both, in the measures, and are wanted
         # for carry-over:
-
-        cols_to_use = list(set(self.sorted_mnames).intersection(set(df.columns)))
+        
+        if sort_by_bat_variance:
+            cols_to_use = list(set(self.sorted_mnames).intersection(set(df.columns)))
+            if len(cols_to_use) == 0:
+                raise ValueError(f"None of the columns in given df are measure names ({df.columns})")
+        else:
+            cols_to_use = df.columns
+        
         embedding_arr = tsne_obj.fit_transform(df.loc[:, cols_to_use])
         
         # For each embedding point, add the cols_to_keep, after
         # turning the np.array TSNE result into a df:
-        tsne_df_abbridged = pd.DataFrame(embedding_arr, columns=['tsne_x', 'tsne_y'])
+        tsne_df_abbridged = pd.DataFrame(embedding_arr, columns=['tsne_x', 'tsne_y'], index=df.index)
         # Attach the source df to the TSNE result:
         tsne_df = pd.concat([tsne_df_abbridged, df], axis='columns')
         return tsne_df
@@ -1511,7 +1529,7 @@ class DataCalcs:
     # pca_computation
     #-------------------
     
-    def pca_computation(self, df, n_components=None, columns=None, dst_fname=None):
+    def pca_computation(self, df, n_components=None, columns=None, dst_dir=None):
         '''
         Given a dataframe, return an sklearn.PCA object that is fitted
         to df, but df has not been transformed into the PCA component space.
@@ -1540,6 +1558,13 @@ class DataCalcs:
         names, and the row index is 'component1', 'component2', ... The rows 
         re the measure are the weights assigned to each original feature.
         
+        The PCA instance will have an additional attribute: create_date with
+        the datetime object of the object's creation time.
+        
+        If dst_dir is not None, the PCA object will be saved in 
+            
+            pca_<cur-time>.joblib
+        
         :param df: dataframe from which to construct principal components 
         :type df: pd.DataFrame
         :param n_components: target number of principal components. If None,
@@ -1547,15 +1572,15 @@ class DataCalcs:
         :type n_components: union[None | int)
         :param columns: columns to include from the df. If None: all columns
         :type columns: union[None, list[str]]
-        :param dst_fname: if dst_fname is not None, it must be a full path
+        :param dst_dir: if dst_dir is not None, it must be a full path
             to where the result PCA is to be stored. The format will be joblib,
-            and the the extension will always by .joblib. If this extension is
-            not the one in dst_fname, it is added.
-        :type dst_fname: union[None, str]
+            and the extension will be .joblib.
+        :type dst_dir: optional[str]
         :return a PCA model, weight matrix, and transformed data
         :rtype dict[str : union[sklearn.PCA, pd.DataFrame]xs
         
         '''
+        self.log.info(f"Running PCA with target of {n_components} components")
         pca = PCA(n_components=n_components)
         
         if columns is None:
@@ -1566,8 +1591,17 @@ class DataCalcs:
         # fit() returns the pca instance itself:
         pca = pca.fit(df_pca)
 
+        self.log.info("Done.")
+        
+        # Add attribute create_date with the current
+        # date and time as a datetime object:
+        pca.create_date = datetime.now() 
+
         # Transform the data into the component space:
+        self.log.info(f"Transforming original data into {n_components} components")
         xformed_np = pca.fit_transform(df_pca)
+        self.log.info("Done.")
+
         # Columns of transformed data will be 'comp<i>': 
         col_names = [f"comp{i}" for i in range(pca.n_components_)]
         # Transform the original data into the component space:
@@ -1578,8 +1612,12 @@ class DataCalcs:
         weight_df = pd.DataFrame(pca.components_, columns=df_pca.columns)
         weight_df.index.name = 'component_num'
         
-        if dst_fname is not None:
-            self.dump_pca(pca, dst_fname)
+        if dst_dir is not None:
+            dt_str = Utils.timestamp_from_datetime(pca.create_date)
+            # The dump() method will append an appropriate file suffix
+            dst_fname_root = os.path.join(dst_dir, f"pca_{dt_str}")
+            # Dump returns the final save file name:
+            dst_fname = self.dump_pca(pca, dst_fname_root)
         
         return {'pca' : pca, 
                 'weight_matrix' : weight_df,
@@ -1638,7 +1676,8 @@ class DataCalcs:
     # dump_pca
     #-------------------
     
-    def dump_pca(self, pca, dst_fname, force=False):
+    @staticmethod
+    def dump_pca(pca, dst_fname, force=False):
         '''
         Save the given sklearn.PCA object in dst_fname.
         If force is True, then dst_fname is used even if
@@ -1657,6 +1696,8 @@ class DataCalcs:
         :param force: whether or not to overwrite dst_fname if a
             file of that path already exists.
         :type force: bool
+        :return the full path to the stored object
+        :rtype str
         '''
         fpath = Path(dst_fname)
         if fpath.is_dir():
@@ -1666,13 +1707,16 @@ class DataCalcs:
                 return
         if fpath.suffix != '.joblib':
             fpath = Path(f"{fpath}.joblib")
-        joblib.dump(pca, str(fpath))
+        path_str = str(fpath)
+        joblib.dump(pca, path_str)
+        return path_str
 
     #------------------------------------
     # load_pca
     #-------------------
     
-    def load_pca(self, src_fname):
+    @staticmethod
+    def load_pca(src_fname):
         '''
         Returns an sklearn.PCA object that was previously 
         saved in src_fname by self.dump_pca()

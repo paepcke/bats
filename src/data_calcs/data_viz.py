@@ -16,6 +16,98 @@ class DataViz:
     cmap = 'Dark2'
 
     #------------------------------------
+    # simple_chart
+    #-------------------
+    
+    @staticmethod
+    def simple_chart(df,
+                     xlabel,
+                     ylabel,
+                     title=None,
+                     kind='line',
+                     stacked=False,
+                     **kwargs):
+        '''
+        Create one or more plots from a dataframe.
+        If stacked is False, all columns will be plotted
+        on the same chart. Else each column is plotted
+        on a separate plot, one below the other in the
+        figure. If df only contains a single column, stacked
+        is ignored.
+        
+        The kwargs are passed to Series.plot(), and from there
+        to ax.plot(). Noteworthy are scalex, and scaley to control
+        scaling behavior. 
+        
+        The 'kind' argument controls the type of chart. Values are:
+        
+	        ‘line’    : line plot (default)
+	        ‘bar’     : vertical bar plot
+	        ‘barh’    : horizontal bar plot
+	        ‘hist’    : histogram
+	        ‘box’     : boxplot
+	        ‘kde’     : Kernel Density Estimation plot
+	        ‘density’ : same as ‘kde’
+	        ‘area’    : area plot
+	        ‘pie’     : pie plot
+	        ‘scatter’ : scatter plot (DataFrame only)
+	        ‘hexbin’  : hexbin plot (DataFrame only)
+	
+        See documentation for pandas.Series.plot for other details
+        
+        :param df: data to plot
+        :type df: pd.DataFrame
+        :param xlabel: x axis label
+        :type xlabel: str
+        :param ylabel: y axis label
+        :type ylabel: str
+        :param title: title for entire figure
+        :type title: optional[str]
+        :param kind: type of chart (line, vs. scatter vs. ...)
+            see method comment. Default is line chart
+        :type kind: optional[str]
+        :param stacked: whether or not all columns are to 
+            be plotted on the same chart.
+        :type stacked: bool
+        :return the Figure object
+        :rtype matplotlib.Figure
+        '''
+        
+        cols = df.columns
+        if stacked:
+            fig, ax = plt.subplots(len(cols))
+        else:
+            fig, ax = plt.subplots(1)
+
+        if not stacked:
+            for _ser_name, ser_vals in df.items():
+                ser_vals.plot(ax=ax, kind=kind, xlabel=xlabel, ylabel=ylabel, title=title, stacked=stacked, legend=True, **kwargs)
+        else:
+            # Without the following you get AttributeError: 'numpy.ndarray' object has no attribute 'get_figure'
+            # Unpack all the axes in the subplots
+            axes = ax.ravel()
+            for plot_num, (col_name, col) in enumerate(df.items()):
+                col.plot(ax=axes[plot_num],
+                         sharex=True,
+                         sharey=True,     # Doesn't work b/c drawing in this loop
+                         kind=kind, 
+                         xlabel=xlabel,
+                         ylabel=None,     # No individual y labels: that works
+                         title=col_name,  # Title for individual subplot
+                         stacked=stacked, 
+                         legend=False,    # Legend replaced with subplot titles 
+                         **kwargs)
+            
+            # Main title above the whole figure:
+            fig.suptitle(title)
+            # More padding between the subplots:
+            fig.subplots_adjust(hspace=0.97)
+            # Common Y axis label:
+            fig.supylabel(ylabel)
+        
+        return fig    
+
+    #------------------------------------
     # plot_tsne
     #-------------------
     
@@ -60,6 +152,9 @@ class DataViz:
         '''
         
         fig, ax = plt.subplots()
+        if title:
+            fig.suptitle(title)
+        
         cols = tsne_df.columns
         
         if cluster_ids is None:

@@ -7,8 +7,10 @@ Created on Apr 22, 2024
 from data_calcs.daytime_file_selection import DaytimeFileSelector
 from datetime import timedelta, datetime
 from enum import Enum, auto
+from numba.tests.test_svml import other_funcs
 from pathlib import Path
 import numpy as np
+import os
 import pandas as pd
 import re
 
@@ -207,7 +209,8 @@ class Utils:
         :return the timestamp if found, else None
         :rtype {None | str}
         '''
-        
+        if isinstance(fname, Path):
+            fname = str(fname)
         # Regex to find substrings created by
         # the file_timestamp() method embedded
         # in a string:
@@ -243,31 +246,48 @@ class Utils:
     #-------------------
     
     @staticmethod
-    def _mk_fpath_from_other(self, 
-                             other_fname, 
-                             prefix='',
-                             suffix='',
-                             timestamp_from_other=False, 
-                             **name_components):
+    def mk_fpath_from_other(other_fname, 
+                            prefix='',
+                            suffix='',
+                            **name_components):
         '''
-        Given a filename with, or without a timestamp, a desired
-        prefix and suffix (fname extension incl. leading period),
-        create a new filename. The name_components is an optional
-        dict containing as keys filename fragments, whose values
-        are the number of those items are to be named in the 
-        filename.
+        Given a timestamped file name, like 'myfile_2024-02-28T20_15_20_truly.csv',
+        create a new file name with the same timestamp. This is useful when
+        several related computations are performed, and the result files are to
+        have the same timestamp as the first calculation.
+        
+        Detail:
+        Given a (1) filename with or without a timestamp, (2) a desired
+        prefix and (3) suffix (fname extension incl. leading period),
+        create a new filename. 
+        
+        The name_components is an optional dict containing as keys 
+        filename fragments, whose values are the number of those 
+        items are to be named in the filename.
         
         Example:
-            other_fname == my_file
+            other_fname : 'myfile_2024-02-28T20_15_20_truly.csv'
+            prefix      : 'newfile_'
+            suffix      : '.txt'
+            
+        Returns 'newfile_2024-02-28T20_15_20.txt'
         
-        :param other_fname:
-        :type other_fname:
-        :param prefix:
-        :type prefix:
-        :param suffix:
-        :type suffix:
-        :param timestamp_from_other:
-        :type timestamp_from_other:
+        Adding name_components to the above args:
+        
+            name_components : samples=12, runs=10000
+            
+        returns: 'newfile_2024-02-28T20_15_20_12samples_10000runs.txt'
+        
+        
+        :param other_fname: file name with timestamp
+        :type other_fname: union[str, Path]
+        :param prefix: text to place at start of new file name
+        :type prefix: union[None, str]
+        :param suffix: the file extension, including the period
+        :type suffix: union[None, str]
+        :returns the newly constructed filename, which shares
+            other_fname's timestamp.
+        :rtype str
         '''
         
         if not isinstance(other_fname, Path):
@@ -275,17 +295,119 @@ class Utils:
         else:
             other_fpath = other_fname
             
-        if timestamp_from_other:
-            timestamp = Utils.extract_file_timestamp(other_fname)
-        else:
-            timestamp = Utils.file_timestamp()
+        timestamp = Utils.extract_file_timestamp(other_fname)
 
         fname = f"{prefix}{timestamp}"
         for name, quantity in name_components.items():
             fname += f"_{quantity}{name}"
-        full_fpath = other_fpath.parent.join_path(f"{fname}{suffix}")
-        return full_fpath
+        full_fpath = other_fpath.parent.joinpath(f"{fname}{suffix}")
+        return str(full_fpath)
 
+    #------------------------------------
+    # find_file_by_timestamp
+    #-------------------
+    
+    @staticmethod
+    def find_file_by_timestamp(search_dir, timestamp=None, prefix=None, suffix=None, latest=True):
+        '''
+        Given a directory, search for all files with the given
+        timestamp in its name. From among those, find the ones that have 
+        the given prefix, and from that result the ones with a given suffix.
+        If any of the those three filters is None, all files from search_dir 
+        with timestamps in their name will be considered for the final step.  
+        
+        If multiple files pass the above filters, then the 'latest' argument
+        decides final action. If True, the file with the latest timestamp in 
+        its name is returned. Else all remaining candidates are returned in 
+        a list.
+        
+        :param search_dir: directory to search
+        :type search_dir: union[str, Path]
+        :param timestamp: timestamp in filename, with the format produced by
+            Utils.file_timestamp().
+        :type timestamp: optional(str)
+        :param prefix: text before the timestamp in the filename
+        :type prefix: optional[str]
+        :param suffix: file extension, including the period
+        :type suffix: optional[str]
+        :return: the absolute file name in a singleton list, or a longer list of 
+            of filenames, if multiple files qualify
+        :rtype union[list[str]]
+        '''
+        fnames = os.listdir(search_dir)
+        if len(fnames) == 0:
+            return []
+        
+        matching_fnames = []
+        for fname in fnames:
+            if timestamp is None or (found_timestamp := Utils.extract_file_timestamp(fname)) == timestamp:
+                if prefix is None or fname.startswith(prefix):
+                    if suffix is None or fname.endswith(suffix):
+                        matching_fnames.append(os.path.join(search_dir, fname))
+                        
+        if not latest or len(matching_fnames) == 1:
+            # Whether or not multiple files qualify, return the list
+            return matching_fnames
+        
+        # Among the matches, find the one with the latest timestamp
+        # in its name:
+
+        cur_latest_dt    = None
+        cur_latest_fname = None
+        for fname in matching_fnames:
+            timestamp = Utils.extract_file_timestamp(fname)
+            dt = Utils.datetime_from_timestamp(timestamp)
+            if cur_latest_dt is None or dt > cur_latest_dt:
+                cur_latest_dt = dt 
+                cur_latest_fname = fname
+        return [cur_latest_fname]
+    
+    #------------------------------------
+    # datetime_from_timestamp
+    #-------------------
+    
+    @staticmethod
+    def datetime_from_timestamp(str_timestamp):
+        '''
+        Given a timestamp that was created by time_for_fname() for use
+        in file names, return a datetime.datetime object.
+        
+        The main task is to turn underscores back into colons.
+        
+        See also timestamp_from_datetime for the inverse.
+        
+        :param str_timestamp: timestamp to convert
+        :type str_timestamp: str
+        :return an equivalent datetime object
+        :rtype datetime.datetime
+        '''
+    
+        dt = datetime.fromisoformat(str_timestamp.replace('_', ':'))
+        return dt
+                
+    #------------------------------------
+    # timestamp_from_datetime
+    #-------------------
+    
+    @staticmethod
+    def timestamp_from_datetime(dt_timestamp):
+        '''
+        Given a datetime object, convert it to a date and time
+        string that works in file names. I.e. into the format
+        produced by time_for_fname()
+        
+        The main task is to turn colons into colons.
+        
+        See also datetime_from_timestamp for inverse
+        
+        :param dt_timestamp: timestamp datetime obj to convert
+        :type dt_timestamp: datetime.datetime
+        :return an equivalent timestamp string
+        :rtype str
+        '''
+    
+        str_timestamp = dt_timestamp.strftime('%Y-%m-%dT%H_%M_%S')
+        return str_timestamp
 
     #------------------------------------
     # is_daytime_recording

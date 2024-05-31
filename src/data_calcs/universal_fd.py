@@ -190,21 +190,29 @@ class UniversalFd:
     
     def read(self):
         '''
-        Read entire file
+        Read entire file. For csv and csv.gz we 
+        use the fd we opened at init time. For
+        .feather we already read the df at init
+        time.
         '''
-        big_str = self.fd.read()
-        self.fd.close()
-        if self.conversion_dict is None:
-            return big_str
         
-        # Must perform the conversion on all 
-        # the lines:
-        big_arr = big_str.strip().split('\n')
-        converted_arr = [self._convert_types(row)
-                         for row
-                         in big_arr
-                         ] 
-        return '\n'.join(converted_arr)
+        if self.filetype in ['csv', 'gz']:
+            big_str = self.fd.read()
+            self.fd.close()
+            if self.conversion_dict is None:
+                return big_str
+            
+            # Must perform the conversion on all 
+            # the lines:
+            big_arr = big_str.strip().split('\n')
+            converted_arr = [self._convert_types(row)
+                             for row
+                             in big_arr
+                             ] 
+            return '\n'.join(converted_arr)
+        elif self.filetype == 'feather':
+            # We already read the df during instance creation:
+            return self.df
     
     #------------------------------------
     # close
@@ -304,6 +312,7 @@ class UniversalFd:
             raise TypeError(f"Argument n_rows must be None or integer, not {n_rows}")
         
         if self.filetype == 'feather':
+            # Df already read during init:
             if n_rows is not None:
                 df_excerpt = self.df.iloc[0:n_rows]
             else:
@@ -418,6 +427,9 @@ class UniversalFd:
             self.content = [cols] + rows
             # Scan pointer:
             self.line_num = 0
+            
+            # Fake file descriptor:
+            self.fd = self
         else:
             raise TypeError(f"UniversalFd is for .csv, .csv.gz, or .feather files, not {in_fname}")
 
