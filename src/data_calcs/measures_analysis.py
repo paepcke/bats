@@ -873,15 +873,51 @@ class ResultInterpretations:
         '''
         Look at result from pca that retains all features. 
         
-           1. For each component, find the most important feature. Write
-              the Series with the feature names to file, in order of 
-              PCA components.
-           2. Write a Series to file that shows the accumulating explained
-              variance as increasingly more components would be use.
-           2. Create figure of variance explained vs. number of components
+           1. For each component, find the most important feature. Create a df:
            
-        Provide either the pca_result object, or the pca_fname where the pca
-        is stored. 
+                                   mostImportant       weight       loading     direction
+                    ComponentNum
+                          0         'feature3'         -0.436        0.190096        -1
+                          1         'feature50'         0.987        0.974169        +1
+                              ... 
+
+               where mostImportant is the feature name of the SonoBat measure
+               that is most important to the component represented by its row.
+               
+               Weight is the PCA weight for the most important feature.
+               
+               Loading is the feature's loading, which is the square of the weight.
+               It indicates how strongly the feature impacts the component, and varies
+               between 0 and 1.
+               
+               The direction is whether the loading impact is positive or negative.
+               
+               Write the df to file as:
+                
+                      importance_analysis_{pca_timestamp}.csv   
+
+           2. Write a dataframe to file that shows the accumulating explained
+              variance as increasingly more components would be used:
+              
+                                      percExplained    cumPercExplained
+                    componentNum    
+                         0                0.33             0.33
+                         1                0.22             0.55
+                               ...
+                               
+              The frame is written to:
+              
+                      variance_explained_{pca_timestamp}.csv
+              
+           3. Create figure of variance explained vs. number of components.
+           
+              Store it in:
+              
+                      variance_explained_{pca_timestamp}.png
+           
+           
+        For input, must provide either the pca_result object, or the pca_fname 
+        where the pca is stored. 
            
         :param pca_result: PCA result object
         :type pca_result: union[None, sklearn.PCA
@@ -977,6 +1013,16 @@ class ResultInterpretations:
         # The datetime 
         cum_expl_fname = f"variance_explained_{pca_timestamp}.csv"
         explain_amount.to_csv(os.path.join(self.dst_dir, cum_expl_fname))
+        
+        # Create a chart to show the increase in explained variance
+        # as number of components is increased:
+        
+        fig = DataViz.simple_chart(explain_amount.cumPercExplained, 
+                                   xlabel='Components Deployed', 
+                                   ylabel='Total % Variance Explained' 
+                                   )
+        fig_fname = f"variance_explained_{pca_timestamp}.png"
+        fig.savefig(os.path.join(self.dst_dir, fig_fname))
         
         self.log.info("Done PCA")
         

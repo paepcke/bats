@@ -5,6 +5,7 @@ Created on Apr 28, 2024
 '''
 
 import matplotlib.pyplot as plt
+import pandas as pd
 #import sys
 #sys.path.pop(0)
 
@@ -73,15 +74,26 @@ class DataViz:
         :rtype matplotlib.Figure
         '''
         
-        cols = df.columns
+        if isinstance(df, pd.DataFrame):
+            cols = df.columns
+        elif isinstance(df, pd.Series):
+            cols = df.name
+        else:
+            raise TypeError(f"Data to plot must be a Pandas dataframe or series, not {df}")
+
         if stacked:
             fig, ax = plt.subplots(len(cols))
         else:
             fig, ax = plt.subplots(1)
 
         if not stacked:
-            for _ser_name, ser_vals in df.items():
-                ser_vals.plot(ax=ax, kind=kind, xlabel=xlabel, ylabel=ylabel, title=title, stacked=stacked, legend=True, **kwargs)
+            if isinstance(df, pd.DataFrame):
+                # Plot all cols into one axis:
+                for _ser_name, ser_vals in df.items():
+                    ser_vals.plot(ax=ax, kind=kind, xlabel=xlabel, ylabel=ylabel, title=title, stacked=stacked, legend=True, **kwargs)
+            else:
+                # Data is just a series: Don't place a legend:
+                df.plot(ax=ax, kind=kind, xlabel=xlabel, ylabel=ylabel, title=title, stacked=stacked, legend=False, **kwargs)
         else:
             # Without the following you get AttributeError: 'numpy.ndarray' object has no attribute 'get_figure'
             # Unpack all the axes in the subplots

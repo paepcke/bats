@@ -162,11 +162,11 @@ class DataVizTester(unittest.TestCase):
         self.assertEqual(num_points, expected) 
         
     #------------------------------------
-    # test_simple_line_chart 
+    # test_simple_chart 
     #-------------------
     
     @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
-    def test_simple_line_chart(self):
+    def test_simple_chart(self):
         
         fig = DataViz.simple_chart(self.small_df, 'SonoBat Measure Name', 'Magnitudes')
         ax = fig.gca()
@@ -188,6 +188,14 @@ class DataVizTester(unittest.TestCase):
         # Each chart has a col name as its title:
         for ax, title in zip(axes, self.small_df.columns):
             self.assertEqual(ax.get_title(), title)
+            
+        # Test plotting a series instead of a df:
+        one_col = self.small_df.LdgToFcAmp
+        fig = DataViz.simple_chart(one_col, xlabel='', ylabel='LdgToFcAmp')
+        
+        ax = fig.gca()
+        self.assertEqual(ax.get_ylabel(), 'LdgToFcAmp')
+    
         
     # ---------------------- Utilities ---------------
 
