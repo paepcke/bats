@@ -22,8 +22,8 @@ class DataViz:
     
     @staticmethod
     def simple_chart(df,
-                     xlabel,
-                     ylabel,
+                     xlabel='',
+                     ylabel='',
                      title=None,
                      kind='line',
                      stacked=False,
@@ -38,7 +38,8 @@ class DataViz:
         
         The kwargs are passed to Series.plot(), and from there
         to ax.plot(). Noteworthy are scalex, and scaley to control
-        scaling behavior. 
+        scaling behavior, and the boolean choice 'legend' to ask
+        for or suppress a legend. 
         
         The 'kind' argument controls the type of chart. Values are:
         
@@ -90,7 +91,7 @@ class DataViz:
             if isinstance(df, pd.DataFrame):
                 # Plot all cols into one axis:
                 for _ser_name, ser_vals in df.items():
-                    ser_vals.plot(ax=ax, kind=kind, xlabel=xlabel, ylabel=ylabel, title=title, stacked=stacked, legend=True, **kwargs)
+                    ser_vals.plot(ax=ax, kind=kind, xlabel=xlabel, ylabel=ylabel, title=title, stacked=stacked, **kwargs)
             else:
                 # Data is just a series: Don't place a legend:
                 df.plot(ax=ax, kind=kind, xlabel=xlabel, ylabel=ylabel, title=title, stacked=stacked, legend=False, **kwargs)
@@ -118,6 +119,65 @@ class DataViz:
             fig.supylabel(ylabel)
         
         return fig    
+
+    #------------------------------------
+    # draw_xy_lines
+    #-------------------
+    
+    @staticmethod
+    def draw_xy_lines(ax, x, y, **kwargs):
+        '''
+        To an already existing curve, add a vertical
+        and a horizontal line from the x and y axis
+        to a datapoint of interest:
+        
+			   ^
+			 y |
+			   |              x
+		  0.9  |------x
+			   |      |
+			   |  x   |
+			   |      |
+			   ----------------------------->
+                 1... 22                    x
+        
+        In this example, this method was called with (22, 0.9)
+        Both x and y are in data coordinates.
+        
+        All kwargs are passed to plot.
+        
+        Returns the horizontal line object, and the vertical line object.
+        These may be used to change color, thickness, etc. after drawng.
+        
+        :param ax: matplotlib Axes on which to draw the lines
+        :type ax: matplotlib.axes.Axes
+        :param x: horizontal coordinate where lines should meet.
+            In data coordinates
+        :type x: union[float, int, str]
+        :param y: vertical coordinate where lines should meet
+            In data coordinates
+        :type y: union[float, int, str]
+        :return the horizontal and vertical lines
+        :rtype list[matplotlib.lines.Line2D]
+        '''
+        
+        # To ensure that the lines reach their respective
+        # x-axis and y-axis, we need to work in axes coordinates.
+        # Reason: if an axes is categorical, the line will end
+        # at data coordinate 0, which may be short of the axis:
+        
+        ax_x, ax_y = ax.transLimits.transform((x,y))
+        
+        # Horizonal line at altitude y=ax_y, from 
+        # x=0 to the axis coordinate equivalent of the
+        # datapoint's x:
+        hor_line = ax.plot([0, ax_x], [ax_y, ax_y], transform=ax.transAxes, **kwargs)
+        
+        # At X axis axes-coord equivalent to data point's x,
+        # vertical from 0 to axes equivalent to datapoint's y
+        ver_line = ax.plot([ax_x, ax_x], [0, ax_y], transform=ax.transAxes, **kwargs)
+        return (hor_line, ver_line)
+        
 
     #------------------------------------
     # plot_tsne

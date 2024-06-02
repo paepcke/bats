@@ -18,9 +18,8 @@ import os
 import pandas as pd
 import random
 import shutil
-import sys
 import time
-
+from sklearn.decomposition import PCA
 
 # Members of the Action enum are passed to run
 # to specify which task the program is to perform: 
@@ -33,6 +32,7 @@ class Action(Enum):
     EXTRACT_COL     = 5
     CONCAT          = 6
     PCA             = 7
+    PCA_ANALYSIS    = 8
 
 
 class MeasuresAnalysis:
@@ -56,7 +56,7 @@ class MeasuresAnalysis:
         optional keyword arguments. Provide them all as kwargs,
         though the args without a default below are mandatory:
         
-            PCA:              n_components
+            PCA:              [n_components]
                 returns       {'pca' : pca, 
 		                       'weight_matrix' 	 : weight_matrix, 
 		                       'xformed_data'  	 : xformed_data,
@@ -64,6 +64,9 @@ class MeasuresAnalysis:
 		                       'weights_file'  	 : weight_fname,
    	                           'xformed_data_fname' : xformed_data_fname                
 		                       }
+		                       
+		    PCA_ANALYSIS       [pca_info]
+		                      *******
 		   
             
             HYPER_SEARCH      repeats=1, 
@@ -107,6 +110,7 @@ class MeasuresAnalysis:
         '''
         
         self.log = LoggingService()
+
         self.proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
         
         # Default destination directory of analysis files:
@@ -142,6 +146,10 @@ class MeasuresAnalysis:
         if action == Action.PCA:
             self.log.info("Computing PCA")
             res = self.pca_action(**kwargs)
+            
+        elif action == Action.PCA_ANALYSIS:
+            self.log.info("Analyzing PCA")
+            res = self.pca_analysis_action(**kwargs)
             
         elif action == Action.ORGANIZE:
             self.log.info("Organizing hyper-search results")
@@ -225,7 +233,8 @@ class MeasuresAnalysis:
     def pca_action(self, n_components=None):
         '''
         Runs PCA on all chirp data. Saves PCA object, weight matrix,
-        and the transformed original data.
+        and the transformed original data, as well as several
+        figures. All these will be in Localization.analysis_dst.
          
         Returns dict:
         
@@ -237,7 +246,7 @@ class MeasuresAnalysis:
                 'xformed_data_fname' : xformed_data_fname                
                 }
                 
-        THe PCA object will have an attribute create_time. It
+        The PCA object will have an attribute create_date. It
         can be used to timestamp both the PCA object itself, and
         related analysis files.
         
@@ -293,6 +302,18 @@ class MeasuresAnalysis:
                 'weights_file'  	 : weights_fname,
                 'xformed_data_fname' : xformed_data_fname
                 }
+    
+    #------------------------------------
+    # pca_analysis_action
+    #-------------------
+    
+    def pca_analysis_action(self):
+        
+        interpretations = ResultInterpretations()
+        # Run a new PCA only if necessary:
+        analysis_results = interpretations.pca_run_and_report(run_new_pca=None)
+        return analysis_results
+    
     
     #------------------------------------
     # organize_results
@@ -866,10 +887,85 @@ class ResultInterpretations:
             self.dst_dir = dst_dir
     
     #------------------------------------
+    # pca_run_and_report
+    #-------------------
+    
+    def pca_run_and_report(self, run_new_pca=None):
+        '''
+        Entry point to compute a PCA, and generate data
+        and chart files with the results.
+        
+        The run_new_pca may be None, True, or False. If
+        the argument is:
+        
+            None:  checks the Localization.analysis_dst directory
+                   for the existence of a PCA result. Uses the
+                   latest of those. Else, runs a new PCA
+            True:  run a new PCA whether or not any PCA results
+                   are already available
+            False: Use existing PCA, but raise FileNotFoundError
+                   if no PCA is found in the Localization.analysis_dst
+                   directory. 
+        
+        :param run_new_pca: whether or not to run a new
+            PCA first
+        :type run_new_pca: union[None, bool]
+        :return dict with analysis results
+        :rtype dict[str : any]
+        '''
+
+        # Find any existing PCA results in Localization.analysis_dst:
+        # Get list of saved PCA object file names
+        # in the destination dir:
+        pca_files = Utils.find_file_by_timestamp(Localization.analysis_dst,
+                                                 prefix='pca_', 
+                                                 suffix='.joblib',
+                                                 latest=True)
+        
+        if run_new_pca:
+            # PCA all data no matter whether PCA results
+            # are already available
+            action = Action.PCA
+            # Create PCA object and weight matrix files in Localization.analysis_dst: 
+            analysis = MeasuresAnalysis(action)
+            pca_info = analysis.experiment_result['pca']
+        
+        elif run_new_pca is False and len(pca_files) == 0:
+            raise FileNotFoundError(f"No pca files in {Localization.analysis_dst}. Aborting")
+        else:
+            # If available, use existing PCA:
+            if len(pca_files) == 0:
+                action = Action.PCA
+                # Create PCA files:
+                analysis = MeasuresAnalysis(action)
+                # Analysis now has in experiment_result:
+                #      dict_keys(['pca', 
+                #                 'weight_matrix', 
+                #                 'xformed_data', 
+                #                 'pca_file', 
+                #                 'weights_file', 
+                #                 'xformed_data_fname'])
+                # Grab the PCA object:
+                pca_info = analysis.experiment_result['pca']                
+        
+            else:
+                # Grab the filename where the PCA was saved:
+                pca_info = pca_files[0]
+                
+        # Create analysis files: charts and data:
+        if type(pca_info) == str:
+            self.log.info(f"About to report on PCA in file {pca_info}")
+        else:
+            pca_timestamp = pca_info.create_date
+            self.log.info(f"About to report on PCA from {pca_timestamp}")
+        res = self.pca_report(pca_info)
+        return res
+    
+    #------------------------------------
     # pca_report
     #-------------------
     
-    def pca_report(self, pca_result=None, pca_fname=None, pca_weights_matrix=None, pca_weights_matrix_fname=None):
+    def pca_report(self, pca_info):
         '''
         Look at result from pca that retains all features. 
         
@@ -894,7 +990,7 @@ class ResultInterpretations:
                
                Write the df to file as:
                 
-                      importance_analysis_{pca_timestamp}.csv   
+                      component_importance_analysis_{pca_timestamp}.csv   
 
            2. Write a dataframe to file that shows the accumulating explained
               variance as increasingly more components would be used:
@@ -915,36 +1011,47 @@ class ResultInterpretations:
               
                       variance_explained_{pca_timestamp}.png
            
+           4. Analyze which features have the most impact on components.
+           
            
         For input, must provide either the pca_result object, or the pca_fname 
-        where the pca is stored. 
-           
+        where the pca is stored.
+        
+        Returns a dict that combines results from this method, and
+        from features_from_components():
+        
+           {
+             'top_feature_per_component'   : df,
+             'var_explained_per_component' : df,
+             'features_impact'             : df with loadings for each feature in each
+                                			 component, and cumulative impact on all components 
+                                			 together, scaled by the importance of each
+                                             component.
+             'features_topn_90Perc'        : list of original features that contribute
+                                             90% of the impact on components.
+                        
         :param pca_result: PCA result object
-        :type pca_result: union[None, sklearn.PCA
+        :type pca_result: union[None, sklearn.PCA]
         :param pca_fname: file where PCA object is stored
         :type pca_fname: union[None, str]
         :param pca_weights_matrix: the weight matrix df computed by the PCA
         :type pca_weights_matrix: optional[str]
         :param pca_weights_matrix_fname: file where pca's weights matrix df is stored 
         :type pca_weights_matrix_fname: union[None, str]
+        :return dict with all results
+        :rtype dict[str : any]
         '''
         
-        
-        # Get the PCA:
-        if pca_result is None:
-            if pca_fname is None:
-                raise ValueError("Provide either pca__result object, or pca_fname where pca object was saved")
-            pca_result = DataCalcs.load_pca(pca_fname)
-            
-        # Get the weight matrix
-        if pca_weights_matrix is None:
-            if pca_weights_matrix_fname is None:
-                raise ValueError("Provide either pca_weights_matrix, or pca_weights_matrix_fname")
-            with UniversalFd(pca_weights_matrix_fname, 'r') as fd:
-                weights = fd.read()
+        if type(pca_info) == str:
+            # Load file at path pca_info:
+            pca_result = DataCalcs.load_pca(pca_info)
+        elif isinstance(pca_info, PCA):
+            pca_result = pca_info
         else:
-            weights = pca_weights_matrix
-
+            raise TypeError(f"Argument pca_info must be a file path or a PCA object, not {pca_info}")
+        
+        # Get the weight matrix
+        weights = pd.DataFrame(pca_result.components_, columns=pca_result.feature_names_in_)
 
         # Build a dataframe
         #
@@ -986,16 +1093,18 @@ class ResultInterpretations:
         direction = max_weights / max_weights.abs()
         direction.name = 'direction'
         
-        importance_analysis = pd.concat([max_importance_feature_per_component,
-                                         max_weights,
-                                         loadings,
-                                         direction
-                                         ],axis=1)
+        component_importance_analysis = pd.concat([max_importance_feature_per_component,
+                                                   max_weights,
+                                                   loadings,
+                                                   direction
+                                                   ],axis=1)
 
         # For the file name, use the same timestamp as was used for the PCA file:
         pca_timestamp = Utils.timestamp_from_datetime(pca_result.create_date)
-        important_features_fname = f"importance_analysis_{pca_timestamp}.csv"
-        importance_analysis.to_csv(os.path.join(self.dst_dir, important_features_fname))
+        important_features_fname = f"component_importance_{pca_timestamp}.csv"
+        
+        self.log.info(f"Saving summary of how features impact components to {important_features_fname}")
+        component_importance_analysis.to_csv(os.path.join(self.dst_dir, important_features_fname))
         
         # Next: explained variance. Create a df:
         #                    percExplained    cumPercExplained
@@ -1012,6 +1121,9 @@ class ResultInterpretations:
         # For the file name, use the same timestamp as was used for the PCA file:
         # The datetime 
         cum_expl_fname = f"variance_explained_{pca_timestamp}.csv"
+        
+        self.log.info(f"Saving summary for explanatory power of each PCA component to {cum_expl_fname}")
+        
         explain_amount.to_csv(os.path.join(self.dst_dir, cum_expl_fname))
         
         # Create a chart to show the increase in explained variance
@@ -1021,49 +1133,214 @@ class ResultInterpretations:
                                    xlabel='Components Deployed', 
                                    ylabel='Total % Variance Explained' 
                                    )
+        # Add dashed horizontal and vertical lines to 
+        # mark the 90% point:
+        ax = fig.gca()
+        x_coord = 22
+        y_coord = 0.9
+        DataViz.draw_xy_lines(ax, 
+                              x_coord, y_coord, 
+                              color='gray',
+                              linestyle='dashed', 
+                              alpha=0.5)
+        
+        
         fig_fname = f"variance_explained_{pca_timestamp}.png"
+        
+        self.log.info(f"Saving figure with explained variance as components are added to {fig_fname}")
+        
         fig.savefig(os.path.join(self.dst_dir, fig_fname))
+        
+        # Next, analyze how the original *features* impact
+        # the components:
+        
+        features_res_dict = self.features_from_components(pca_result)
+        # Add our own results:
+        features_res_dict['feature_impact']
+        features_res_dict['features_topn90_perc']
+        
+        features_res_dict['var_explained_per_component'] = explain_amount
+        features_res_dict['top_feature_per_component']   = component_importance_analysis 
         
         self.log.info("Done PCA")
         
+        return features_res_dict
+        
+    #------------------------------------
+    # features_from_components
+    #-------------------
+    
+    def features_from_components(self, pca_info):
+        '''
+        Given a PCA object and a number of components that was
+        deemed to sufficiently explain variance.
+        
+        Return a dict:
+        
+            {'feature_impact'      : df with loadings for each feature in each
+                                	 component, and cumulative impact on all components 
+                                	 together, scaled by the importance of each
+                                	 component.
+             'features_topn90_perc' : list of original features that contribute
+                                      90% of the impact on components.
+            }
+        
+        Saves a figure to Localization.analysis_dst that shows the
+        chart of features vs. impact: feature_importance_{pca_timestamp}.csv
+        
+        Approach: for each component, identify the features whose
+        loadings are high within that component. Those are features to keep
+        for this component. The loadings of each feature on a given component
+        are scaled by the component's amount of explained variance.
+        
+        :param pca_info: from which file load the pca, or the pca object itself 
+        :type pca: union[str, sklearn.decomposition.PCA
+        :return dict with all results
+        :rtype dict{str : union[pd.DataFrame, list[str]]
+        '''
+    
+        if type(pca_info) == str:
+            # Load file at path pca_info:
+            pca = DataCalcs.load_pca(pca_info)
+        elif isinstance(pca_info, PCA):
+            pca = pca_info
+        else:
+            raise TypeError(f"Argument pca_info must be a file path or a PCA object")
+            
+        weights       = pd.DataFrame(pca.components_, columns=pca.feature_names_in_)        
+        loadings      = weights.pow(2)
+        
+        # For each feature F, compute its importance: multiply
+        # the loading of F in each principal component by that 
+        # component's contribution to explaining variance. I.e.
+        # multiple F's column in the loadings matrix by the column
+        # vector that hold's the components' contribution.
+        # Then sum those scaled loadings to get on Series:
+        #     TimeInFile         3.734815e-01
+        #     PrecedingIntrvl    1.457879e-01
+        #     CallsPerSec        6.105740e-02
+        #     CallDuration       4.194274e-02
+        #     Fc                 3.319674e-02
+        #                            ...     
+        #     cos_day            1.950079e-33
+        #     sin_month          1.950079e-33
+        #     cos_month          1.950079e-33
+        #     sin_year           1.950079e-33
+        #     cos_year           1.950079e-33
+        #     Length: 116, dtype: float64
+                 
+        rel_feature_importance  = loadings.mul(pca.explained_variance_ratio_)\
+                                        .sum(axis=0)\
+                                        .sort_values(ascending=False)
+        rel_feature_importance.name = 'impact'                                
+                                        
+        # The rel_feature_importance Series adds to 1, which 
+        # represents to total impact of all features on all
+        # components. Compute the cumulative percentage of 
+        # impact contributed by the features:
+        
+        feature_impact_contribution = pd.Series(itertools.accumulate(rel_feature_importance),
+                                                name='impact_contribution_perc',
+                                                index=rel_feature_importance.index)
+        # Df with the individual scaled loading for each
+        # feature, and the cumulative impact of successive
+        # features to the overall loading in its two columns:
+        feature_impact_df = pd.concat([rel_feature_importance, feature_impact_contribution],
+                                      axis=1
+                                      ) 
+
+        pca_timestamp = Utils.timestamp_from_datetime(pca.create_date)
+        feature_impact_fname = f"feature_importance_{pca_timestamp}.csv"
+
+        self.log.info(f"Saving feature impact on components in {feature_impact_fname}")
+         
+        feature_impact_df.to_csv(os.path.join(self.dst_dir, feature_impact_fname))
+        
+        # Find the number features after which 
+        # 90% of impact is explained:
+        
+        # In our data:  ==> 'TotalSlope'
+        feature_name = feature_impact_contribution.loc[feature_impact_contribution < 0.9].idxmax()
+        # The how manieth feature is that? The 1+ is 
+        # because feature_name is the last feature that
+        # has not reached 90%
+        top_n = 1 + feature_impact_contribution.index.get_loc(feature_name)
+        
+        # The +1 is to include the 90th percent feature:
+        top_n_feature_names = feature_impact_df.index[:top_n + 1]
+        
+        # Plot the progressive feature impact: x axis
+        # are the feature names in order of importance
+        # Y axis are the cumulative percentage:
+        
+        # Make a copy of the df column, because we'll change
+        # the index labels to fit the figure:
+        data = feature_impact_df['impact_contribution_perc'].copy()
+        # Shorten labels:
+        new_labels = [label if len(label) <= 10 else f"{label[:7]}..."
+                      for label 
+                      in data.index
+                      ]
+        data.index = new_labels
+        
+        fig = DataViz.simple_chart(data,
+                                   ylabel='Cumulative feature impact (%)',
+                                   xlabel='',
+                                   figsize=[6.79, 6.67]
+                                   )
+        ax = fig.gca()
+        # Rotate the long measurement names on the
+        # X axis:
+        ax.tick_params(axis='x', labelrotation=45)
+        
+        # Highlight the 90% point with vertical and
+        # horizontal line:
+
+        # x and y values we want to highlight:
+        x_coord = top_n
+        y_coord = feature_impact_contribution.iloc[top_n]
+        
+        # Add dashed horizontal and vertical lines to 
+        # mark the 90% point:
+        DataViz.draw_xy_lines(ax, 
+                              x_coord, y_coord, 
+                              color='gray',
+                              linestyle='dashed', 
+                              alpha=0.5)
+        
+        # Place a text box with the top 22 highest impact
+        # features in a text box:
+        textstr = '\n'.join(list(feature_impact_df.index[:top_n + 1]))
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        ax.text(0.7, 0.9, textstr, transform=ax.transAxes, fontsize=11, verticalalignment='top', bbox=props)
+
+        fig_fname = f"feature_impact_on_components_{pca_timestamp}.png"
+        
+        self.log.info(f"Saving figure summarizing how features impact components in {fig_fname}")
+        
+        fig.savefig(os.path.join(self.dst_dir, fig_fname))
+        
+        
+        res = {'feature_impact'      : feature_impact_df,
+               'features_topn90_perc': top_n_feature_names
+               }
+        
+        return res
             
 # ------------------------ Main ------------
 if __name__ == '__main__':
 
-    # PCA all data
-    #action = Action.PCA
-    #analysis = MeasuresAnalysis(action)
-    #res = analysis.experiment_result
+    #analysis =MeasuresAnalysis(Action.PCA)
+    # Make a new PCA, or use an existing one if available:
+    analysis = MeasuresAnalysis(Action.PCA_ANALYSIS)
+    res = analysis.experiment_result
+    print(res)
     
-    interpretations = ResultInterpretations()
-    # Get list of saved PCA object file names
-    # in the destination dir:
-    pca_files = Utils.find_file_by_timestamp(interpretations.dst_dir, 
-                                             prefix='pca_', 
-                                             suffix='.joblib',
-                                             latest=True)
-    if len(pca_files) == 0:
-        print(f"No pca files in {interpretations.dst_dir}. Aborting")
-        sys.exit(1)
-    
-    pca_fname = pca_files[0]
-    # Get the timestamp when the PCA object was created:
-    str_timestamp = Utils.extract_file_timestamp(pca_fname)
-    
-    # Get the weights matrix that was saved along with
-    # the PCA object (i.e. that has the same timestamp):    
-    weights_fnames = Utils.find_file_by_timestamp(interpretations.dst_dir,
-                                                  timestamp=str_timestamp, 
-                                                  prefix='pca_weights_',
-                                                  latest=True
-                                                  )
-
-    if len(weights_fnames) == 0:
-        print(f"No pca weight matrix in {interpretations.dst_dir}. Aborting")
-        sys.exit(1)
-                
-    pca_weights_matrix_fname = weights_fnames[0]
-    
-    pca_exploration = interpretations.pca_report(pca_fname=pca_fname,
-                                                 pca_weights_matrix_fname=pca_weights_matrix_fname)
-    
+        
+    #***********
+    # interpretations = ResultInterpretations()
+    #
+    # interpretations.features_from_components(
+    #     pca_info='/Users/paepcke/EclipseWorkspacesNew1/bats/results/chirp_analysis/PCA_AllData/pca_2024-05-31T17_27_11.joblib', 
+    #     )
+    #***********

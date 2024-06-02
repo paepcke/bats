@@ -360,7 +360,7 @@ class Utils:
             if cur_latest_dt is None or dt > cur_latest_dt:
                 cur_latest_dt = dt 
                 cur_latest_fname = fname
-        return [cur_latest_fname]
+        return [] if cur_latest_fname is None else [cur_latest_fname]
     
     #------------------------------------
     # datetime_from_timestamp

@@ -1410,7 +1410,7 @@ class DataCalcs:
             else:
                 # Try to create the dir:
                 os.makedirs(save_dir, exist_ok=True)
-            save_fname = os.path.join(save_dir, f"{prefix}_{num_chirps}_chirps_{Utils.timestamp_fname_safe()}.csv")
+            save_fname = os.path.join(save_dir, f"{prefix}_{num_chirps}_chirps_{Utils.file_timestamp()}.csv")
         else:
             save_fname = None
 
