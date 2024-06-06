@@ -34,8 +34,6 @@ print(f"Batch size: {config.batch_size}")
 args = config
 ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir", "file_id", "chirp_idx", "split"] + config.ignore_cols
 
-#This is like... complete hacks
-
 
 data_module = stf.data.DataModule(
     datasetCls = BatsCSVDatasetWithMetadata,

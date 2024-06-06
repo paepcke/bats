@@ -141,7 +141,7 @@ seed = args.random_seed
 max_epochs = args.max_epochs
 
 pl.seed_everything(seed)
-# initialize the spacetimeformer model
+
 model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             d_x=x_dim,
             d_yc=yc_dim,

@@ -17,3 +17,5 @@ first.
 Then, install the spacetimeformer module:
 ```cd spacetimeformer/ && pip install -e .```
 
+# TODO: add sequence in which the scripts can be used to execute the entire pipeline.
+# sonobat output (generates files) -> prepare_data (generates clean data) -> train (trains model) -> test (outputs predictions) 
