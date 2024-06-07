@@ -3,23 +3,58 @@ Created on May 28, 2024
 
 @author: paepcke
 '''
-from data_calcs.data_calculations import DataCalcs, PerplexitySearchResult, \
-    ChirpIdSrc, FileType, Localization
-from data_calcs.data_viz import DataViz
-from data_calcs.universal_fd import UniversalFd
-from data_calcs.utils import Utils
-from datetime import datetime
-from enum import Enum
-from logging_service.logging_service import LoggingService
-from pathlib import Path
-from tempfile import NamedTemporaryFile
+from collections import (
+    namedtuple)
+from data_calcs.data_calculations import (
+    DataCalcs,
+    PerplexitySearchResult,
+    ChirpIdSrc,
+    FileType,
+    Localization)
+from data_calcs.data_viz import (
+    DataViz)
+from data_calcs.universal_fd import (
+    UniversalFd)
+from data_calcs.utils import (
+    Utils)
+from datetime import (
+    datetime)
+from enum import (
+    Enum)
+from imblearn.over_sampling import (
+    SMOTE)
+from imblearn.under_sampling import (
+    NearMiss)
+from logging_service.logging_service import (
+    LoggingService)
+from pathlib import (
+    Path)
+from sklearn.decomposition import (
+    PCA)
+from sklearn.linear_model import (
+    LogisticRegression)
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    balanced_accuracy_score)
+from sklearn.metrics._plot.confusion_matrix import (
+    ConfusionMatrixDisplay)
+from sklearn.metrics._plot.precision_recall_curve import (
+    PrecisionRecallDisplay)
+from sklearn.model_selection import (
+    StratifiedKFold)
+from sklearn.preprocessing import (
+    LabelEncoder)
+from tempfile import (
+    NamedTemporaryFile)
 import itertools
+import joblib
+import numpy as np
 import os
 import pandas as pd
 import random
 import shutil
 import time
-from sklearn.decomposition import PCA
 
 # Members of the Action enum are passed to run
 # to specify which task the program is to perform: 
@@ -34,7 +69,214 @@ class Action(Enum):
     PCA             = 7
     PCA_ANALYSIS    = 8
 
+# Options for how the SMOTE algorithm fixes
+# class imbalance during classification:
+class SMOTEOption(Enum):
+    MINORITY     = 'minority'
+    NOT_MINORITY = 'not minority'
+    NOT_MAJORITY = 'not majority'
+    ALL          = 'all'
+    AUTO         = 'auto'
 
+class ClassifictionResult:
+    '''
+    Holds all the performance measures of a 
+    classification result. Use instances
+    as follows. Given an instance <obj>, 
+    an some target class names:
+    
+        obj.<cls_nm>.precision
+        obj.<cls_nm>.recall
+        obj.<cls_nm>.f1_score
+        obj.<cls_nm>.support
+        
+        obj.macro_avg.precision
+        obj.macro_avg.recall
+        obj.macro_avg.f1_score
+        obj.macro_avg.support
+        
+        obj.weighted_avg.precision
+        obj.weighted_avg.recall
+        obj.weighted_avg.f1_score
+        obj.weighted_avg.support
+        
+        obj.acc
+        obj.balanced_acc
+        
+        obj.confusion_matrix
+        
+    The balanced accuracy adjusts raw accuracy to 
+    compensate for class imbalances and the consequent
+    increase of guessing a majority class just by chance,
+    rather than by virtue of classifier computations.
+    
+    The confusion matrix is a dataframe: rows are true values,
+    columns are predicted values. The numbers in cells are
+    percent of entire population. 
+    
+    Also available is the class method:
+    
+       ClassificationResult.mean([classifcation_result1, classifcation_result2, ...])
+       
+    which returns a new ClassificationResult with the mean
+    of all the constituent values across the given objects. 
+    '''
+    
+    #------------------------------------
+    # Constructor
+    #-------------------
+    
+    def __init__(self, y_true, y_pred, classes_=None, class_label_map=None):
+        '''
+        Given the result of a classification as two 
+        pd.Series: true labels, y_true, and corresponding
+        predicted labels y_pred, store all the values described
+        in the class comment.
+    
+        The optional classes_ argument is a list of class labels
+        in the internal order of the classifier that created y_pred.
+        For visualization purposes, these labels may be mapped
+        to human readable form by the class_label_map. 
+        
+        The class_label_map is an optional dict mapping raw
+        class labels to human readable names: 
+
+            {True  : 'daytime',
+             False : 'nighttime}
+        or             
+            {'sm'  : 'Small'
+             'md'  : 'Medium'
+             'lg'  : 'Large'}
+        
+        All access names of the resulting object will be in 
+        terms of the human values, as in:
+        
+             obj.Medium.precision
+             obj.daytime.f1_score
+                     ...
+        
+        :param y_true: the true labels, one for each sample
+        :type y_true: pd.Series
+        :param y_pred: the corresponding predicted values
+        :type y_pred: pd.Series
+        :parm classes_: list of class labels as used by
+            the classifier that created the y_pred
+        :type classes_: optional[list[union[int,str]]]
+        :param class_label_map: mapping from raw class names
+            used by the classifier to human readable names
+        :type class_label_map: optional[dict[str : str]]
+        '''
+        
+        truth_len = len(y_true)
+        pred_len  = len(y_pred)
+        if truth_len != pred_len:
+            msg = f"Truth and prediction must have same len, not {truth_len, pred_len}"
+            raise ValueError(msg)
+        
+        # Ensure the y_x are Series:
+        if not isinstance(y_true, pd.Series):
+            try:
+                y_true = pd.Series(y_true)
+            except Exception as e:
+                raise TypeError(f"Cannot convert y_true to a pd.Series: {e}")
+        
+        if not isinstance(y_pred, pd.Series):
+            try:
+                y_true = pd.Series(y_pred)
+            except Exception as e:
+                raise TypeError(f"Cannot convert y_pred to a pd.Series: {e}")
+
+        unique_lbs = y_true.unique()
+        
+        # See whether caller passed the internal
+        # labels for classes inside the classifier:
+        if classes_ is None:
+            # No spec, make the labels a default
+            # [0...num_classes-1]:
+            classes_ = list(range(len(unique_lbs)))
+
+        labels, target_names = (list(class_label_map.keys()),
+                                list(class_label_map.values())) \
+                                if class_label_map is not None \
+                                else (classes_, classes_)
+        report = classification_report(y_true, y_pred, 
+                                       output_dict=True,
+                                       labels=labels,
+                                       target_names=target_names)
+        
+        # How does the report name the classes?
+        cls_nms = set(report.keys()) - set(['accuracy', 'macro_avg', 'weighted_avg'])
+
+        # We store the values of dicts that the report
+        # contains for each for each class as a named 
+        # tuple. This allows the syntax:
+        #
+        #    <classification_result_obj>.class1.recall
+        #    <classification_result_obj>.class2.f1_score
+        #                ...
+        # 
+        # The 'class1', 'class2' will each be an attribute
+        # of this instance. The attributes each contain their 
+        # namedtuple.
+        
+        for cls_nm in cls_nms:
+            cls_nm_nt = namedtuple(cls_nm,
+                                   ['precision', 'recall', 'f1_score', 'support'])
+            nt = cls_nm_nt._make(report[cls_nm].values())
+            setattr(self, cls_nm, nt)
+            
+        # Same for the 'macro avg' of the result: it also
+        # has the elements of the above defined tuple:
+        macro_avg_nt = namedtuple('macro_avg',
+                                   ['precision', 'recall', 'f1_score', 'support'])
+        nt = macro_avg_nt._make(report['macro avg'])
+        setattr(self, 'macro_avg', nt)
+        
+        # And same again for the report's 'weighted avg':
+        weighted_avg_nt = namedtuple('weighte_avg',
+                                   ['precision', 'recall', 'f1_score', 'support'])
+        nt = weighted_avg_nt._make(report['weighted avg'])
+        setattr(self, 'weighted_avg', nt)
+        
+        # Finally, the single accuracy number from the report:
+        self.acc = report['accuracy']
+        
+        # Add the balanced accuracy:
+        self.balanced_acc = balanced_accuracy_score(y_true, y_pred)
+        
+        self.confusion_matrix = confusion_matrix(y_true, y_pred, 
+                                                 normalize='all',
+                                                 labels=target_names
+                                                 )
+  
+    #------------------------------------
+    # mean
+    #-------------------
+    
+    def mean(self, clf_results):
+        pass #*******
+    
+    #------------------------------------
+    # to_json
+    #-------------------
+    
+    def to_json(self):
+        pass #****
+    
+    #------------------------------------
+    # from_json 
+    #-------------------
+    
+    @classmethod
+    def from_json(cls, jstr):
+        pass #****5
+    
+        
+    
+        
+      
+        
+# ----------------------------- Class MeasuresAnalysis ---------
 class MeasuresAnalysis:
             
     #------------------------------------
@@ -1327,20 +1569,719 @@ class ResultInterpretations:
         
         return res
             
+# ------------------------- Classification ------------
+
+class Classification:
+    
+    #------------------------------------
+    # Constructor
+    #-------------------
+    
+    def __init__(self, dst_dir=None):
+        self.log = LoggingService()
+        if dst_dir is None:
+            self.dst_dir = Localization.analysis_dst
+        else:
+            self.dst_dir = dst_dir
+    
+    #------------------------------------
+    # binary_classification
+    #-------------------
+    
+    def classify(self, 
+                 to_predict, 
+                 to_exclude=None,
+                 to_include=None,
+                 classifier=None,
+                 n_fold=5, 
+                 timestamp=None,
+                 cm_title=None,
+                 pr_title=None,
+                 class_label_map=None,
+                 class_imbalance_fix=None
+                 ):
+        '''
+        Build a classifier to predict the variable(s) listed
+        in to_predict. The dataset is assumed to be in 
+        Localization.all_measures. 
+        
+        After that dataframe is loaded, all columns listed
+        in to_exclude are removed from the loaded model.
+        If to_include is a list of columns, then those are
+        included in the computations. Only one of to_include
+        and to_exclude must the non_None.
+        
+        If an sklearn classifier object is passed in via the
+        classifier argument, it is used. Else, Logistic Regression
+        is used for binary classification, and Multinomial Logistic
+        Regression for multiple target classes.
+        
+        Stratified n-fold cross validation is deployed, meaning that
+        classifications are run n-fold times, and results are averaged.
+        The number of folds can be specified in the n_fold arg.
+        
+        If a timestamp is provided, it is embedded in the names of  
+        all the files that are created in the method. If timestamp
+        is None, the current datetime is used.
+        
+        The class_label_map argument helps replacing difficult-to-interpret
+        data values with human readable labels. Those will be used in
+        result dataframes and charts. Example:
+        
+            {True  : 'daytime',
+             False : 'nighttime}
+             
+            {'sm'  : 'Small'
+             'md'  : 'Medium'
+             'lg'  : 'Large'}
+        
+        The class_imbalance_fix argument may be specified to cause 
+        data augmentation via the SMOTE algorithm, which upsamples
+        some or all of the target class training data
+        (Chawla, Nitesh V., et al. "SMOTE: synthetic minority over-sampling technique." 
+         Journal of artificial intelligence research 16 (2002): 321-357.)
+         
+        Other than None, the following values are allowed:
+            SMOTEOption.
+		       MINORITY     : resample only the minority class 
+		       NOT_MINORITY : resample all classes but the minority class
+		       NOT_MAJORITY : resample all classes but the majority class
+		       ALL          : resample all classes
+		       AUTO         : equivalent to 'not majority'
+        
+        The following are returned, and also saved to self.dst_dir:
+
+           - A correlation matrix in numeric form (f"clf_conf_matrix_{timestamp}.csv") 
+           - Correlation matrix image (f"clf_conf_matrix_fig_{timestamp}.png")
+           - A precision-recall chart, both numeric and as image
+           
+        The returned dict will contain:
+
+		   - Average (naive) accuracy score	 res_dict['avg_acc']
+		   - Balanced average accuracy score res_dict['avg_balanced_acc']
+		   - Confusion matrix            	 res_dict['confusion_matrix']
+		   - Mean of F1 scores across folds  res_dict['F1']
+		   - Results from precision/recall   res_dict['prec_rec_results']
+		     analysis:
+		       {
+	            'pr_df'                : pr_df,
+	            'pos_label'            : pr_curve.pos_label,
+	            'prevalence_pos_label' : pr_curve.prevalence_pos_label,
+	            'average_precision'    : pr_curve.average_precision,
+	            'fig'                  : <the precision-recall figure>
+		       }
+        
+        NOTE: for binary classification the 'positive' value is taken
+              to be True, or 1. For instance, when reporting precision, the
+              number will be based on sample, and predicted variables
+              having the value either True, or 1. Similarly, probabilities 
+              will be of a variable having value True, or 1. 
+        
+        :param to_predict: variable(s) to predict
+        :type to_predict: union[str, list[str]]
+        :param to_exclude: variables to exclude from computations
+        :type to_exclude: optional[list[str]]
+        :param to_include: which variables to include in computations
+            either to_exclude, or to_include must be None
+        :type to_include: optional[list[str]]
+        :param classifier: an already instantiated sklearn classifier to use
+        :type classifier: optional[sklearn.*.Classifier]
+        :param n_fold: how many folds to use for cross validation
+        :type n_fold: optional[int]
+        :param timestamp: datetime to use in the filenames of saved results
+        :type timestamp: optional[str, datetime]
+        :param cm_title: title to place at top of confusion matrix chart
+        :type cm_title: optional[str]
+        :param pr_title: title to place at top of precision/recall chart
+        :type pr_title: optional[str]
+        :param class_label_map: map of data values to human-readable labels
+        :type class_label_map: optional[dict[str : str]
+        :param class_imbalance_fix: the SMOTE sampling strategy to use.
+            Default: no resampling
+        :type class_imbalance_fix: SMOTEOption
+        :returns a dict of results
+        :rtype dict[str : any]
+        '''
+    
+        if to_include is not None and to_exclude is not None:
+            raise ValueError('Only one of to_include and to_exclude may be non_None.')
+    
+        if timestamp is None:
+            # Get current datetime as a string:
+            timestamp = Utils.file_timestamp()
+        elif type(timestamp) == str:
+            # All good:
+            pass
+        elif isinstance(timestamp, datetime):
+            timestamp = Utils.timestamp_from_datetime(timestamp)
+        else:
+            raise TypeError(f"Timestamp must be None, a datetime instance, or timestamp string, not {timestamp}")
+        
+        with UniversalFd(Localization.all_measures, 'r') as fd:
+            all_data = fd.asdf()
+        
+        # Drop the measures to exclude (other than the
+        # measure to be predicted):
+        if to_exclude is not None:
+            # Drop the cols in place     
+            all_data.drop(axis='columns', columns=to_exclude, inplace=True)
+            
+        elif to_include is not None:
+            cols_to_drop = set(all_data.columns) - set(to_include)
+            all_data.drop(axis='columns', columns=cols_to_drop, inplace=True)
+        
+        # Get the desired results for the classification,
+        # such as is_daylight:
+        y = all_data[to_predict]
+        # Data must exclude the predicted variable:
+        X = all_data.drop(to_predict, axis='columns', inplace=False)              
+        
+        # Split into test/train; test set to be 25% of data,
+        # with a random_state set to get reproducible results:
+        
+        # Get a StratifiedKFold instance:
+        skf = StratifiedKFold(n_splits=n_fold,
+                              shuffle=False, # True not recommended for SKF
+                              random_state=None)
+        
+        n_samples  = len(X)
+        n_features = len(X.columns)
+        n_classes  = len(set(y))
+        
+        dummy_X = pd.DataFrame(np.zeros((n_samples, n_features)), columns=X.columns)
+                                
+        # Returns a generator with n_splits 2-tuples:
+        # Each tuple has as its first element indices 
+        # into the data for training set rows, and
+        # the second element is indices to get a corresponding
+        # test set:
+         
+        trn_tst_idxs_it = skf.split(dummy_X, y)
+        
+        if classifier is not None:
+            clf = classifier()
+        elif n_classes == 2:
+            clf = LogisticRegression(max_iter=200)
+        else:
+            raise NotImplementedError(f"Predicting multiple classes not implemented; feature {to_predict} has {n_classes} distinct values.")
+
+               
+        # Place for ClassificationResult instances
+        # from each fold: 
+        scores = []
+
+        # Collect the prediction probabilities for each fold:
+        y_pred_probs = []
+        
+        for fold_num, (train_idxs, test_idxs) in enumerate(trn_tst_idxs_it):
+            X_train, X_test = X.iloc[train_idxs], X.iloc[test_idxs]
+            y_train, y_test = y.iloc[train_idxs], y[test_idxs]            
+
+            if class_imbalance_fix is not None:
+                self.log.info(f"Oversampling: {class_imbalance_fix.value}")
+                sm = SMOTE(random_state=1066, sampling_strategy=class_imbalance_fix.value)
+                # Oversample as requested; the SMOTEOption passed in
+                # is an Enum whose values are the proper strings for
+                # the sm.fit_resample() method:
+                X_train_resampled, y_train_resampled = sm.fit_resample(X_train, y_train)
+
+                X_train = X_train_resampled
+                y_train = y_train_resampled
+
+            self.log.info(f"Fitting model to fold {fold_num}")
+            clf.fit(X_train, y_train)
+            
+            self.log.info(f"Using model to predict model in fold {fold_num}")
+            
+            # Predict class membership:
+            y_pred = clf.predict(X_test)
+            
+            # Predict class probabilities:
+            y_pred_proba = clf.predict_proba(X_test)
+            # Occasionally, the length of the returned
+            # y_pred_proba will be one more than 
+            # the length of X_test (and y_test). Chop
+            # of the additional, and make into a df.
+            # The column names will be the class labels
+            # used by the classifier:
+            
+            probs_df = pd.DataFrame(y_pred_proba[:len(X_test), :], 
+                                    columns=clf.classes_, 
+                                    index=X_test.index)
+            y_pred_probs.append(probs_df)
+            
+            y_true = y_test
+            
+            # Note the accuracy for this fold:
+            scores.append(ClassifictionResult(X_test, y_test, class_label_map))
+
+            # This fold's confusion matrix. TBD:
+            # Normalizes confusion matrix over the 
+            # entire population to get %ages.
+            # This call just returns the numeric conf
+            # matrix values; the the viz is done after
+            # the loop: 
+            conf_mat = confusion_matrix(y_true, y_pred, 
+                                        normalize='all',
+                                        labels=clf.classes_
+                                        )
+            confusion_matrices.append(conf_mat)
+        
+        # Result Metrics Computations
+        res_dict = {}    
+        
+        # Average accuracy across the folds:
+        res_dict['avg_acc'] = np.mean(accuracy_scores)
+        # Average balanced accuracy across the folds:
+        res_dict['avg_balanced_acc'] = np.mean(balanced_acc_scores)
+        
+        
+        # Confusion Matrix:
+        
+        conf_mat_df, conf_mat_fig = self.make_confusion_matrix(confusion_matrices,
+                                                               clf,
+                                                               cm_title=cm_title,
+                                                               class_label_map=class_label_map)
+        res_dict['confusion_matrix']  = conf_mat_df
+        # Save the confusion matrix figure:
+        conf_mat_fname = f"clf_conf_matrix_{timestamp}.csv"
+        conf_mat_df.to_csv(os.path.join(self.dst_dir, conf_mat_fname))
+        
+        # Save the confusion matrix image:
+        fig_fname = f"clf_conf_matrix_fig_{timestamp}.png"
+        conf_mat_fig.savefig(os.path.join(self.dst_dir, fig_fname))
+        
+        pr_dict, pr_fig = self.make_precision_recall(y_test, 
+                                                     y_pred_probs,
+                                                     clf, 
+                                                     pr_title=pr_title, 
+                                                     plot_chance_level=False)
+        # Add results or precision-recall analysis:
+            # 'pr_df'     : pr_df,
+            # 'pos_label' : pr_curve.pos_label,
+            # 'prevalence_pos_label' : pr_curve.prevalence_pos_label,
+            # 'average_precision'    : pr_curve.average_precision,
+            # 'fig'                  : fig
+        
+        res_dict['prec_rec_results'] = pr_dict
+        
+        # Save the figure:
+        pr_curve_fname = f"clf_pr_curve_{timestamp}.png"
+        pr_fig.savefig(os.path.join(self.dst_dir, pr_curve_fname))
+        
+        # Add the average of the F1 scores (remember:
+        # in multi-class problems, these are already F1
+        # scores for all the target classes collectively.
+        # We still just average here over the folds:
+        
+        res_dict['F1'] = np.mean(F1_scores)
+        
+        clf_res_fname = f"clf_classification_eval_{timestamp}.joblib"
+        self.log.info(f"Saving classification result to {clf_res_fname}")
+        joblib.dump(res_dict, os.path.join(self.dst_dir, clf_res_fname))
+        
+        return res_dict
+
+    #------------------------------------
+    # make_confusion_matrix
+    #-------------------
+    
+    def make_confusion_matrix(self, 
+                              confusion_matrices,
+                              classifier,
+                              cm_title=None,
+                              class_label_map=None
+                              ):
+        '''
+        Takes one or more confusion matrices, picks one
+        at random, and creates a confusion matrix figure.
+        
+        Returns the confusion matrix, and the figure.  
+        
+        :param confusion_matrices: one or more confusion matrices
+        :type confusion_matrices: union[ndarray[n_classes, n_classes], list[ndarray[n_classes, n_classes]]
+        :param classifier: classifier object that computed results
+        :type classifier: sklearn.classifier.***
+        :param cm_title: title for top of confusion matrix figure
+        :type cm_title: optional[str]
+        :param class_label_map: map from data values to human readable labels.
+            Example: {True : 'terrorist', False: 'civilian'}
+        :type class_label_map: optional[dict[str : str]]
+        :returns a dataframe with the confusion matrix data, and the Figure object
+        :rtype tuple[pd.DataFrame, Figure]
+        '''
+        # If confusion matrices is a list of cms, 
+        # pick one at random:
+        if type(confusion_matrices) == list:
+            
+            # We have n_fold confusion matrices in the list 
+            # confusion_matrices. Pick one at random to display:
+            # The randint() args are *inclusive*:
+            cm_idx = random.randint(0,len(confusion_matrices) - 1)
+            conf_matrix = confusion_matrices[cm_idx]
+            conf_mat_df = pd.DataFrame(conf_matrix) 
+
+        cm_fig = ConfusionMatrixDisplay(conf_mat_df.to_numpy())
+
+        cm_fig.plot()
+        
+        fig = cm_fig.figure_
+        if cm_title is not None:
+            fig.suptitle(cm_title)        
+
+        # Set the class labels of the confusion matrix:
+        if class_label_map is not None:
+            ax = fig.gca()
+            cf_label_objs = ax.get_xmajorticklabels()
+            data_values    = classifier.classes_
+            encoded_values = {data_value  : encoding 
+                              for encoding, data_value
+                              in enumerate(data_values)}
+            
+            for data_value in data_values:
+                try:
+                    # From the data value to the desired label
+                    # in the conf matrix:
+                    target_label = class_label_map[data_value]
+                    # The numeric class encoding, which is currently
+                    # the (string formatted) label used in the conf 
+                    # matrix viz:
+                    encoding = str(encoded_values[data_value])
+                    try:
+                        # Among the conf matrix label text objects,
+                        # find the one that is a string of the encoding
+                        
+                        txt_obj = next(filter(lambda cf_label_obj: cf_label_obj.get_text() == encoding,
+                                              cf_label_objs))
+                        txt_obj.set_text(target_label)
+                    except StopIteration:
+                        raise ValueError(f"Cannot find confusion matrix tick labeled {data_value}")
+                    
+                except KeyError:
+                    self.log.warn(f"Data value {data_value} has no mapping to human label in {class_label_map}. Retaining raw value")
+                    continue
+
+            # Change the figure labels:            
+            ax.set_xticklabels(cf_label_objs)
+            ax.set_yticklabels(cf_label_objs)
+            # Same for the conf mat df columns and index:
+            conf_mat_df.columns = [cm_label.get_text() for cm_label in cf_label_objs]
+            conf_mat_df.index = [cm_label.get_text() for cm_label in cf_label_objs]
+            
+            fig.show()          
+        return conf_mat_df, fig
+        
+    #------------------------------------
+    # make_precision_recall 
+    #-------------------
+    
+    def make_precision_recall(self,
+                              y_test, y_pred_probabilities,
+                              classifier,
+                              positive_label=None, 
+                              curve_label=None, 
+                              plot_chance_level=True,
+                              pr_title=None,
+                              ):
+        '''
+        For binary classification: draw the precision/recall curve.
+        
+        Given truth data (1-D), and the class probabilities for
+        each class (n-samples x 2 in case of binary classification), draw
+        the PR chart.
+        
+        Returns a dict:
+           {
+            'pr_df'     		   : pr_df,
+            'pos_label' 		   : pr_curve.pos_label,
+            'prevalence_pos_label' : pr_curve.prevalence_pos_label,
+            'average_precision'    : pr_curve.average_precision,
+            'fig'                  : <PR-figure>
+           }
+        
+        The positive_label is the class of main interest. In bat chirps,
+        when trying to predict whether a chirp was recorded during the 
+        day, then the was-at-daytime class would be the positive class.
+        Other examples: presence of a disease, or is-spam-message.   
+        
+        The prevalence_pos_label is the percentage of the dataset
+        for which the outcome is the positive label. For example, if
+        the positive label is 1 ('daytime'), and prevalence_pos_label
+        is 0.0972, then the true 'daytime' outcome is only 10%, i.e. 
+        the data are imbalanced.   
+        
+        :param y_test: truth data
+        :type y_test: list[float]
+        :param y_pred_probabilities: probs for each class
+        :type y_pred_probabilities: list[list[float]]
+        :param classifier: the classifier object that produced
+            the probabilities. Used to find number of classes.
+        :type classifier: sklearn.Classifier
+        :param positive_label: the class label for which precision
+            and recall are to be evaluated. If binrary classifier,
+            the True, or 1 label is assumed. But None is error
+            for multi-class.
+        :type positive_label: optional[int,bool,str]
+        :param curve_label: label for the PR curve
+        :type curve_label: optional[str]
+        :param plot_chance_level: whether to plot a horizontal curve
+            at the precision you would get for the positive class
+            by guessing.
+        :type plot_chance_level: bool
+        :param pr_title: title above the figure
+        :type pr_title: optional[str]
+        :return a dict with all pr-curve numeric info, and the matplotlib Figure object
+        :rtype tuple[dict[str : any], Figure] 
+        '''
+
+        num_classes  = len(classifier.classes_)
+        class_labels = classifier.classes_
+
+        # Find the class label for the positive class:
+        if num_classes > 2 and positive_label is None:
+            msg = f"For multi-class results (this one is {num_classes} classes), must provide positive_label"
+            raise ValueError(msg)
+        
+        elif num_classes == 2 and positive_label is None:
+            # Guess that the positive label is 1:
+            if 1 in class_labels:
+                positive_label = 1
+            elif True in class_labels:
+                # Superfluous, b/c Python treats True is a 1,
+                # but don't rely on that:
+                positive_label = True
+            else:
+                raise ValueError(f"Cannot determine positive value for classes {classifier.classes_}")
+        
+        # If class probabilities is a list
+        # pick one at random:
+        if type(y_pred_probabilities) == list:
+            
+            # We have n_fold dataframes, each with
+            # one probability column per target class.
+            # Pick one at random. We cannot average,
+            # because each set of probabilities is for
+            # a different subset of samples:
+            
+            pr_idx = random.randint(0,len(y_pred_probabilities) - 1)
+            y_pred_probs = y_pred_probabilities[pr_idx] 
+        else:
+            y_pred_probs = y_pred_probabilities
+
+        # Find the position of the probabilities for 
+        # the positive label in the probs dataframe:
+        try:
+            target_prob_col_idx = list(class_labels).index(positive_label)
+        except ValueError:
+            raise ValueError(f"Cannot find positive label {positive_label} in probs df columns: {class_labels}")
+            
+        # pos_label is the data value of the 'positive' class: 
+        # the needle in the haystack we look for. Seems not always
+        # clearly meaningful.
+        # The [:,1] selects the probs of the second class:
+        # The plot_chance_level=True draws horizontal line at precision
+        # you would get by guessing the majority class. With class imbalance, 
+        # that won't be .5, 
+        pr_curve = PrecisionRecallDisplay.from_predictions(
+            y_test, y_pred_probs.iloc[:, target_prob_col_idx], 
+            #pos_label=True, 
+            name=curve_label, 
+            plot_chance_level=plot_chance_level)
+         
+        fig = pr_curve.figure_
+        if pr_title:
+            fig.suptitle(pr_title)
+        fig.show()
+        
+        # Create dict with the numeric portions
+        # for saving:
+        
+        precisions = pd.Series(pr_curve.precision, name='precision')
+        recalls    = pd.Series(pr_curve.recall, name='recall')
+        pr_df = pd.DataFrame({'recall' : recalls, 'precision' : precisions})
+        
+        res_df = {
+            'pr_df'                : pr_df,
+            'pos_label'            : pr_curve.pos_label,
+            'prevalence_pos_label' : pr_curve.prevalence_pos_label,
+            'average_precision'    : pr_curve.average_precision,
+            'fig'                  : fig
+            }
+
+        return res_df, fig
+        
+
+    
+    #------------------------------------
+    # _make_custom_class_labels
+    #-------------------
+    
+    def _make_custom_class_labels(self, clf, target_labeling):
+        '''
+        Given a mapping from data values, return labels that
+        should be used for visualizations. Example:
+        
+        Given: 
+	        {False : 'Nighttime',
+	         True  : 'Daytime'
+	         }
+	          
+        or:
+	        {'large'  : 'father',
+	         'medium: : 'mother',
+	         'small'  : 'child'
+	         }
+	         
+        The classifier's internals will be:
+          classes_  = ['large', 'medium', 'small']
+          encodings = [0,1,2]
+          
+        Return a dict that maps internal, encoded
+        class designations (0, 1, 2, ...) to the 
+        desired labels ('Nighttime', 'father', ...)
+        
+            {0  : 'father',
+             1  : 'mother', 
+             2  : 'child'}
+        
+        :param clf: classifier
+        :type clf: Classifier
+        :param target_labeling:
+        :type target_labeling:
+        :return Dict from numeric class labels to target 
+            labels: {0 : 'father', 1 : 'mother', ...}
+        :rtype dict[union[str, int] : str]
+        '''
+        
+        encoder = LabelEncoder()
+        # Get one data value example for each class:
+        # These might be [True, False], or ['small', 'medium', 'large']
+        # in the classifier's internal order:
+        data_values = clf.classes_
+        
+        # For each class get the corresponding internal
+        # classifier class labels: [0,1, 2, 3,...]
+        encodings = encoder.fit_transform(data_values)
+        
+        from_encoded = {encoding : target_labeling[data_values[i]]
+                        for i, encoding 
+                        in enumerate(encodings)}
+        return from_encoded
+    
+            
+# TODO:
+
+#   the 0th class probabilities has one more result
+#   then y_true. The other four probs lists are fine.
+
+def get_timestamp():
+    # Find any existing results in Localization.analysis_dst:
+    clf_files = Utils.find_file_by_timestamp(Localization.analysis_dst,
+                                             prefix='clf_', 
+                                             suffix='.joblib',
+                                             latest=True)
+    if len(clf_files) > 0:
+        # Use the timestamp of the first found prior-run result file:
+        timestamp = Utils.extract_file_timestamp(clf_files[0])
+    else:
+        timestamp = None
+    return timestamp
+
 # ------------------------ Main ------------
 if __name__ == '__main__':
 
-    #analysis =MeasuresAnalysis(Action.PCA)
-    # Make a new PCA, or use an existing one if available:
-    analysis = MeasuresAnalysis(Action.PCA_ANALYSIS)
-    res = analysis.experiment_result
-    print(res)
+    # Create a correlation heatmap for all the
+    # numeric measurements:
     
-        
-    #***********
-    # interpretations = ResultInterpretations()
+    # with UniversalFd(Localization.all_measures, 'r') as fd:
+    #     df = fd.asdf()
+    #     df.drop('rec_datetime', axis='columns', inplace=True)
+    # corr = df.corr()
+    # save_file = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisResults/cross_corr_heatmap.png'
+    # fig = DataViz.heatmap(corr, 
+    #                       title='Measures Correlations',
+    #                       width_height=(13,9),
+    #                       xlabel_rot=45, 
+    #                       save_file=save_file)
+
+    # -------------------------------------------------------------------   
+    # Create a barchart of importance of features:
+    # with UniversalFd('/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisResults/PCA/feature_importance_2024-06-02T13_29_54.csv', 'r') as fd:
+    #     df = fd.asdf()
+    # fig = DataViz.simple_chart(df.impact_contribution_perc, 
+    #                            ylabel='Variance Explained', 
+    #                            title='Feature Importance', 
+    #                            kind='bar')
+    # print(fig)
+    
+
+    # -------------------------------------------------------------------   
+    # Force a new PCA to be made:
+    #analysis =MeasuresAnalysis(Action.PCA)
+    
+    
+    # Make a new PCA, or use an existing one if available:
+    # analysis = MeasuresAnalysis(Action.PCA_ANALYSIS)
+    # res = analysis.experiment_result
+    
+    # -------------------------------------------------------------------    
+    # # Train to predict is_daytime with top22 measures:
     #
-    # interpretations.features_from_components(
-    #     pca_info='/Users/paepcke/EclipseWorkspacesNew1/bats/results/chirp_analysis/PCA_AllData/pca_2024-05-31T17_27_11.joblib', 
+    # timestamp = get_timestamp()        
+    # clf = Classification()
+    #
+    # inclusions = [ 
+    #             'TimeInFile', 'PrecedingIntrvl', 'CallsPerSec',
+    #             'CallDuration', 'Fc', 'HiFreq', 'LowFreq',
+    #             'Bndwdth', 'FreqMaxPwr', 'PrcntMaxAmpDur',
+    #             'TimeFromMaxToFc', 'FreqKnee', 'PrcntKneeDur',
+    #             'StartF', 'EndF', 'DominantSlope', 'SlopeAtFc',
+    #             'StartSlope', 'EndSlope', 'SteepestSlope',
+    #             'LowestSlope', 'TotalSlope', 'HiFtoKnSlope',
+    #             'is_daytime' # The var to predict
+    #             ]
+    #
+    # res_dict = clf.classify(
+    #     'is_daytime',
+    #     #to_exclude=exclusions,
+    #     to_include=inclusions,
+    #     class_label_map={True : 'Daytime',
+    #                      False: 'Nighttime'},
+    #     cm_title="Daytime Prediction: Confusion Matrix",
+    #     pr_title="Daytime Prediction: Precision/Recall Tradeoff",
+    #     timestamp=timestamp,
+    #     class_imbalance_fix=SMOTEOption.MINORITY
     #     )
-    #***********
+    #----------------------------------------------
+    # Train to predict is_daytime with top22 measures PLUS recording time:
+    
+    timestamp = get_timestamp()        
+    clf = Classification()
+    
+    inclusions = [ 
+                'TimeInFile', 'PrecedingIntrvl', 'CallsPerSec',
+                'CallDuration', 'Fc', 'HiFreq', 'LowFreq',
+                'Bndwdth', 'FreqMaxPwr', 'PrcntMaxAmpDur',
+                'TimeFromMaxToFc', 'FreqKnee', 'PrcntKneeDur',
+                'StartF', 'EndF', 'DominantSlope', 'SlopeAtFc',
+                'StartSlope', 'EndSlope', 'SteepestSlope',
+                'LowestSlope', 'TotalSlope', 'HiFtoKnSlope',
+                'sin_hr', 'cos_hr',
+                'is_daytime' # The var to predict
+                ]
+    
+    res_dict = clf.classify(
+        'is_daytime',
+        #to_exclude=exclusions,
+        to_include=inclusions,
+        class_label_map={True : 'Daytime',
+                         False: 'Nighttime'},
+        cm_title="Daytime Prediction: Confusion Matrix",
+        pr_title="Daytime Prediction: Precision/Recall Tradeoff",
+        timestamp=timestamp,
+        class_imbalance_fix=SMOTEOption.MINORITY
+        )
+        
+    
+    
+    print(clf)

@@ -30,7 +30,8 @@ class Localization:
     # There is also a .csv version of the following .feather file:
     #all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.feather'
     proj_dir       = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-    analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/PCA_AllData')
+    #analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/PCA_AllData')
+    analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/Classifications')
     sampling_dst   = os.path.join(proj_dir, 'results/chirp_samples')
     srch_res_dst   = os.path.join(proj_dir, 'results/hyperparm_searches')
  

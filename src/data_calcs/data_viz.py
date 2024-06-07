@@ -5,6 +5,7 @@ Created on Apr 28, 2024
 '''
 
 import matplotlib.pyplot as plt
+import seaborn as sb
 import pandas as pd
 #import sys
 #sys.path.pop(0)
@@ -119,6 +120,64 @@ class DataViz:
             fig.supylabel(ylabel)
         
         return fig    
+
+    #------------------------------------
+    # heatmap
+    #-------------------
+    
+    @staticmethod
+    def heatmap(df, xlabel_rot=None, title=None, width_height=None, save_file=None):
+        '''
+        Create a heatmap of a dataframe. Optionally add a title
+        and/or save the figure.
+        
+        First removes any data that is not numeric from a
+        local dataframe copy.
+        
+        Return the resulting Figure instance, and a list 
+        of columns that had to be removed, because they were not
+        numeric.  
+        
+         
+        :param df: dataframe to visualize
+        :type df: pd.DataFrame
+        :param xlabel_rot: optional rotation of the xlabels in degrees
+        :type xlabel_rot: union[float, int]
+        :param title: optional title for the figure
+        :type title: optiona[str]
+        :param width_height: a 2-tuple specifying the figure size
+            in inches: (width, height)
+        :type width_height: optional[tuple[number, number]]
+        :param save_file: optional path where to save the figure as png
+        :type save_file: optional[str]
+        :return the Figure object
+        :rtype Figure
+        '''
+        
+        heatmap = sb.heatmap(df, cmap='Blues')
+        fig = heatmap.get_figure()
+        ax  = fig.gca()
+        
+        if title is not None:
+            if type(title) != str:
+                raise TypeError(f"Title must be None, or a string, not {title}")
+            fig.suptitle(title)
+            
+        if xlabel_rot is not None:
+            if type(xlabel_rot) not in (int, float):
+                raise TypeError(f"X label rotation must be numeric degrees, not {xlabel_rot}")
+            ax.tick_params(axis='x', labelrotation=xlabel_rot)
+        
+        if width_height is not None:
+            if type(width_height) != tuple or\
+                type(width_height[0]) not in (int, float) or\
+                type(width_height[1]) not in (int, float):
+                raise TypeError(f"Figure size must be None, or a tuple of numbers for inches, not {width_height}")
+            fig.set_size_inches(width_height[0], width_height[1])
+            
+        if save_file is not None:
+            fig.savefig(save_file)
+        return fig
 
     #------------------------------------
     # draw_xy_lines
