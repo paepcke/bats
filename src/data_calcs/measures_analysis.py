@@ -3,8 +3,6 @@ Created on May 28, 2024
 
 @author: paepcke
 '''
-from collections import (
-    namedtuple)
 from data_calcs.data_calculations import (
     DataCalcs,
     PerplexitySearchResult,
@@ -21,10 +19,10 @@ from datetime import (
     datetime)
 from enum import (
     Enum)
+from functools import (
+    reduce)
 from imblearn.over_sampling import (
     SMOTE)
-from imblearn.under_sampling import (
-    NearMiss)
 from logging_service.logging_service import (
     LoggingService)
 from pathlib import (
@@ -126,8 +124,10 @@ class ClassifictionResult:
     # Constructor
     #-------------------
     
-    def __init__(self, y_true, y_pred, classes_=None, class_label_map=None):
+    def __init__(self, y_true, y_pred, **kwargs):
         '''
+        Allowed kwargs: classes_=None, class_label_map=None
+        
         Given the result of a classification as two 
         pd.Series: true labels, y_true, and corresponding
         predicted labels y_pred, store all the values described
@@ -182,79 +182,200 @@ class ClassifictionResult:
         
         if not isinstance(y_pred, pd.Series):
             try:
-                y_true = pd.Series(y_pred)
+                y_pred = pd.Series(y_pred)
             except Exception as e:
                 raise TypeError(f"Cannot convert y_pred to a pd.Series: {e}")
 
-        unique_lbs = y_true.unique()
+        # Unique labels across y_true and y_pred:
+        unique_lbs = set(y_true).union(set(y_pred))
         
         # See whether caller passed the internal
         # labels for classes inside the classifier:
-        if classes_ is None:
+        try:
+            self.classes_ = kwargs['classes_']
+        except KeyError:
+            # Kwarg not provided:
+            self.classes_ = None
+            
+        if self.classes_ is None:
             # No spec, make the labels a default
             # [0...num_classes-1]:
-            classes_ = list(range(len(unique_lbs)))
+            self.classes_ = list(range(len(unique_lbs)))
+            
+        try:
+            self.class_label_map = kwargs['class_label_map']
+        except KeyError:
+            # Kwarg not provided
+            self.class_label_map = None
 
-        labels, target_names = (list(class_label_map.keys()),
-                                list(class_label_map.values())) \
-                                if class_label_map is not None \
-                                else (classes_, classes_)
+        labels, target_names = (list(self.class_label_map.keys()),
+                                list(self.class_label_map.values())) \
+                                if self.class_label_map is not None \
+                                else (self.classes_, self.classes_)
+                                
+        # Get the following nested dicts:
+                                        
         report = classification_report(y_true, y_pred, 
                                        output_dict=True,
                                        labels=labels,
                                        target_names=target_names)
         
         # How does the report name the classes?
-        cls_nms = set(report.keys()) - set(['accuracy', 'macro_avg', 'weighted_avg'])
+        self.cls_nms = set(report.keys()) - set(['accuracy', 'macro_avg', 'weighted_avg'])
 
         # We store the values of dicts that the report
-        # contains for each for each class as a named 
-        # tuple. This allows the syntax:
+        # contains for each for each class as a 
+        # Series. This will allow syntax:
         #
         #    <classification_result_obj>.class1.recall
         #    <classification_result_obj>.class2.f1_score
         #                ...
         # 
         # The 'class1', 'class2' will each be an attribute
-        # of this instance. The attributes each contain their 
-        # namedtuple.
+        # of this instance. These attributes each contain their 
+        # Series.
         
-        for cls_nm in cls_nms:
-            cls_nm_nt = namedtuple(cls_nm,
-                                   ['precision', 'recall', 'f1_score', 'support'])
-            nt = cls_nm_nt._make(report[cls_nm].values())
-            setattr(self, cls_nm, nt)
+        for cls_nm in self.cls_nms:
+            value_names = ['precision', 'recall', 'f1_score', 'support']
+            nums = pd.Series(report[cls_nm].values(),
+                             name=cls_nm,
+                             index=value_names
+                             )
+            setattr(self, cls_nm, nums)
             
         # Same for the 'macro avg' of the result: it also
         # has the elements of the above defined tuple:
-        macro_avg_nt = namedtuple('macro_avg',
-                                   ['precision', 'recall', 'f1_score', 'support'])
-        nt = macro_avg_nt._make(report['macro avg'])
-        setattr(self, 'macro_avg', nt)
+        value_names = ['precision', 'recall', 'f1_score', 'support']
+        nums = pd.Series(report['macro avg'].values(),
+                         name='macro_avg',
+                         index=value_names
+                         )
+        self.macro_avg = nums 
         
         # And same again for the report's 'weighted avg':
-        weighted_avg_nt = namedtuple('weighte_avg',
-                                   ['precision', 'recall', 'f1_score', 'support'])
-        nt = weighted_avg_nt._make(report['weighted avg'])
-        setattr(self, 'weighted_avg', nt)
+        value_names = ['precision', 'recall', 'f1_score', 'support']
+        nums = pd.Series(report['weighted avg'].values(),
+                         name='weighted_avg',
+                         index=value_names
+                         )
+        self.weighted_avg = nums 
         
         # Finally, the single accuracy number from the report:
-        self.acc = report['accuracy']
+        try:
+            self.acc = report['accuracy']
+        except KeyError:
+            msg = (f"No 'accuracy' produced by classification_report(). ",
+                   f"Maybe your class_label_map has incorrect labels? ",
+                   f"({self.class_label_map})")
+            raise ValueError(msg)
         
         # Add the balanced accuracy:
         self.balanced_acc = balanced_accuracy_score(y_true, y_pred)
+
+        # And add the confusion matrix
+        # To make the conf matrix use human labels, 
+        # need to copy y_true and y_pred, replacing
+        # the classifier-internal values there with
+        # the ones in class_label_map. First, check
+        # that all class labels are covered in the
+        # class_label_map:
         
-        self.confusion_matrix = confusion_matrix(y_true, y_pred, 
-                                                 normalize='all',
-                                                 labels=target_names
-                                                 )
-  
+        map_keys = set(self.class_label_map.keys())
+        if unique_lbs == map_keys:
+            # The class label map covers all of the labels.
+            # Make translated y_true and y_pre:
+            y_true_mapped = [self.class_label_map[lbl]
+                             for lbl 
+                             in y_true
+                             ]
+            y_pred_mapped = [self.class_label_map[lbl]
+                             for lbl 
+                             in y_pred
+                             ]
+        else:
+            # Retain the internal labels for the conf matrix:
+            y_true_mapped = y_true 
+            y_pred_mapped = y_pred
+            
+        conf_mat = confusion_matrix(y_true_mapped, y_pred_mapped, 
+                                    normalize='all'
+                                    )
+        conf_mat_df = pd.DataFrame(conf_mat)
+        self.confusion_matrix = conf_mat_df
+        
     #------------------------------------
     # mean
     #-------------------
     
-    def mean(self, clf_results):
-        pass #*******
+    @staticmethod
+    def mean(clf_results):
+
+        # Combine each result Series (cls1_nm, weighted_avg, ...)
+        # into one Series of Series. Sum them as a vectorized
+        # operation, and divide by the number of the Series:
+        
+        # Get the information retrieval type results for each class: 
+        # precision, F1, etc. Those are stored Series in each clf_result,
+        # in instance variables named the same as the classes,
+        # respectively; 
+        
+        # Make {cls_nm1 : means of all cls_nm1 IR results
+        #       cls_nm2 : means of all cls_nm1 IR results
+        #                   ...}
+        cls_nm_means = {}
+        for cls_nm in clf_results[0].cls_nms:
+            all_class_ir_results = [getattr(obj, cls_nm)
+                                    for obj
+                                    in clf_results
+                                    ]
+            cls_nm_means[cls_nm] = pd.concat(
+                all_class_ir_results, axis=1).sum(axis=1) / len(clf_results)
+        
+        # Get mean of weighted_avg:
+        weighted_avg_mean = pd.concat([obj.weighted_avg
+                                       for obj 
+                                       in clf_results
+                                       ], axis=1).sum(axis=1) / len(clf_results)
+                             
+        # Same for mean of macro_avg:
+        macro_avg_mean = pd.concat([obj.macro_avg
+                                    for obj 
+                                    in clf_results
+                                    ], axis=1).sum(axis=1) / len(clf_results)
+
+        # The values of the accuracy and balanced accuracy
+        # in each object are simple numbers, not Series.
+        # So, use np.mean() over simple list of numbers:
+        acc_mean = np.mean([obj.acc
+                            for obj 
+                            in clf_results
+                            ])
+        bal_acc_mean = np.mean([obj.balanced_acc
+                                for obj 
+                                in clf_results
+                                ])
+        
+        # Mean of the confusion matrices:
+        conf_mat_list = [obj.confusion_matrix
+                         for obj
+                         in clf_results
+                         ]
+        mean_conf_mat = reduce(lambda df1, df2: df1.add(df2), conf_mat_list) / len(clf_results)
+         
+        means_obj = ClassifictionResult.__new__(
+            ClassifictionResult,
+            y_test=None,
+            y_pred=None,
+            cls_ir_results=cls_nm_means,
+            weighted_avg=weighted_avg_mean,
+            macro_avg=macro_avg_mean, 
+            acc=acc_mean, 
+            balanced_acc=bal_acc_mean, 
+            classes_=clf_results[0].classes_, 
+            class_label_map=clf_results[0].class_label_map,
+            confusion_matrix=mean_conf_mat)
+        
+        return means_obj
     
     #------------------------------------
     # to_json
@@ -271,10 +392,118 @@ class ClassifictionResult:
     def from_json(cls, jstr):
         pass #****5
     
-        
+    #------------------------------------
+    # __new__
+    #-------------------
     
+    @staticmethod
+    def __new__(cls,
+                y_test,
+                y_pred,
+                **kwargs):
+        '''
+        Called for two purposes:
+        1. To create a ClassifictionResult instance
+           under normal circumstances: with y_test
+           and y_pred being sequences of class labels,
+           truth, and predicted.
+           
+           For this case the __init__() method will be
+           called, and all computations there will occur.
+           
+           Any kwargs other than the ones in the __init__()
+           method's signature will be ignored. 
+           
+        2. To create an instance with all the computations
+           already done. The purpose is just to have an
+           object with all information stored as if in the
+           final state of the __init__() method. That method
+           will not be called. In this case the following
+           kwargs must be provided:
+                cls_ir_results
+                weighted_avg
+                macro_avg
+                acc
+                balanced_acc
+                classes_
+                class_label_map  
+           
+        Used, for instance, to create ClassificationResult 
+        instances that are aggregates of several ClassificationResult
+        instances, such as the mean() of a list of results.
         
-      
+        :param y_test: true class labels. If None, then __init__
+            method is not called, and procedure 2. is assumed,
+            and the value is ignored.
+        :type y_test: union[None, list[int, str]]
+        :param y_pred: predicted class labels. If None, then __init__
+            method is not called, and procedure 2. is assumed,
+            and the value is ignored.
+        :type y_pred: union[None, list[int, str]]
+        :param cls_ir_results: dict {cls_nm : ir-res-Series}
+        :type cls_ir_results: dict[str : pd.Series
+        :param acc: accuracy
+        :type acc: float
+        :param balanced_acc: balanced accuracy
+        :type balanced_acc: float
+        :param classes_: list of classes as used in classifier
+        :type classes_: optional[list[str]]
+        :param class_label_map: optional map from classifier class
+            labels to human readable labels
+        :type class_label_map: optional[dict[str : str]]
+        :param confusion_matrix: a classification confusion matrix 
+        :type confusion_matrix: pd.DataFrame 
+        :returns a new, initialized instance of ClassificationResult
+        :rtype ClassificationResult 
+        '''
+        # Create empty instance:
+        obj = super().__new__(cls)
+        
+        if y_test is not None and y_pred is not None:
+            # Procedure 1:
+            obj.__init__(y_test, y_pred, **kwargs)
+            return obj
+
+        try:
+            cls_ir_results    = kwargs['cls_ir_results']
+            weighted_avg      = kwargs['weighted_avg']      
+            macro_avg         = kwargs['macro_avg']        
+            acc               = kwargs['acc']   
+            balanced_acc      = kwargs['balanced_acc']                 
+            classes_          = kwargs['classes_']
+            class_label_map   = kwargs['class_label_map']
+            confusion_matrix  = kwargs['confusion_matrix']
+        except KeyError as e:
+            raise ValueError(f"Missing argument for raw __new__(): {e}")        
+        
+        # Initialize the IR result series for each
+        # class:
+        for cls_nm, cls_ir_series in cls_ir_results.items():
+            setattr(obj, cls_nm, cls_ir_series)
+            
+        # Init accuracy:
+        obj.acc = acc 
+        obj.balanced_acc = balanced_acc
+        
+        # And the averages:
+        obj.weighted_avg    = weighted_avg
+        obj.macro_avg       = macro_avg
+        
+        obj.classes_        = classes_
+        obj.class_label_map = class_label_map
+        
+        obj.confusion_matrix = confusion_matrix
+        
+        return obj
+    
+    #------------------------------------
+    # __repr__
+    #-------------------
+    
+    def __repr__(self):
+        repr_str = f"<ClassificationReport {len(self.classes_)} classes at {hex(id(self))}>"
+        return repr_str
+    
         
 # ----------------------------- Class MeasuresAnalysis ---------
 class MeasuresAnalysis:
@@ -300,16 +529,16 @@ class MeasuresAnalysis:
         
             PCA:              [n_components]
                 returns       {'pca' : pca, 
-		                       'weight_matrix' 	 : weight_matrix, 
-		                       'xformed_data'  	 : xformed_data,
-		                       'pca_file'      	 : pca_dst_fname,
-		                       'weights_file'  	 : weight_fname,
-   	                           'xformed_data_fname' : xformed_data_fname                
-		                       }
-		                       
-		    PCA_ANALYSIS       [pca_info]
-		                      *******
-		   
+                               'weight_matrix'      : weight_matrix, 
+                               'xformed_data'       : xformed_data,
+                               'pca_file'           : pca_dst_fname,
+                               'weights_file'       : weight_fname,
+                                  'xformed_data_fname' : xformed_data_fname                
+                               }
+                               
+            PCA_ANALYSIS       [pca_info]
+                              *******
+           
             
             HYPER_SEARCH      repeats=1, 
                               overwrite_previous=True
@@ -325,12 +554,12 @@ class MeasuresAnalysis:
                                'out_file' : to where the df was written}
                               
             CONCAT            df_sources,
-                        	  idx_columns=None, 
-                        	  dst_dir=None, 
-                        	  out_file_type=FileType.CSV, 
-                        	  prefix=None,
-                        	  augment=True,
-                        	  include_index=False
+                              idx_columns=None, 
+                              dst_dir=None, 
+                              out_file_type=FileType.CSV, 
+                              prefix=None,
+                              augment=True,
+                              include_index=False
                 returns       {'df' : the constructed df,
                                'out_file' : to where the df was written}
             
@@ -481,10 +710,10 @@ class MeasuresAnalysis:
         Returns dict:
         
                {'pca' : pca, 
-                'weight_matrix' 	 : weight_matrix, 
-                'xformed_data'  	 : xformed_data,
-                'pca_file'      	 : pca_dst_fname,
-                'weights_file'  	 : weight_fname,
+                'weight_matrix'      : weight_matrix, 
+                'xformed_data'       : xformed_data,
+                'pca_file'           : pca_dst_fname,
+                'weights_file'       : weight_fname,
                 'xformed_data_fname' : xformed_data_fname                
                 }
                 
@@ -538,10 +767,10 @@ class MeasuresAnalysis:
         xformed_data.to_feather(xformed_data_fname)
         
         return {'pca' : pca, 
-                'weight_matrix' 	 : weight_matrix, 
-                'xformed_data'  	 : xformed_data,
-                'pca_file'      	 : pca_save_file,
-                'weights_file'  	 : weights_fname,
+                'weight_matrix'      : weight_matrix, 
+                'xformed_data'       : xformed_data,
+                'pca_file'           : pca_save_file,
+                'weights_file'       : weights_fname,
                 'xformed_data_fname' : xformed_data_fname
                 }
     
@@ -1266,8 +1495,8 @@ class ResultInterpretations:
              'top_feature_per_component'   : df,
              'var_explained_per_component' : df,
              'features_impact'             : df with loadings for each feature in each
-                                			 component, and cumulative impact on all components 
-                                			 together, scaled by the importance of each
+                                             component, and cumulative impact on all components 
+                                             together, scaled by the importance of each
                                              component.
              'features_topn_90Perc'        : list of original features that contribute
                                              90% of the impact on components.
@@ -1420,9 +1649,9 @@ class ResultInterpretations:
         Return a dict:
         
             {'feature_impact'      : df with loadings for each feature in each
-                                	 component, and cumulative impact on all components 
-                                	 together, scaled by the importance of each
-                                	 component.
+                                     component, and cumulative impact on all components 
+                                     together, scaled by the importance of each
+                                     component.
              'features_topn90_perc' : list of original features that contribute
                                       90% of the impact on components.
             }
@@ -1643,11 +1872,11 @@ class Classification:
          
         Other than None, the following values are allowed:
             SMOTEOption.
-		       MINORITY     : resample only the minority class 
-		       NOT_MINORITY : resample all classes but the minority class
-		       NOT_MAJORITY : resample all classes but the majority class
-		       ALL          : resample all classes
-		       AUTO         : equivalent to 'not majority'
+               MINORITY     : resample only the minority class 
+               NOT_MINORITY : resample all classes but the minority class
+               NOT_MAJORITY : resample all classes but the majority class
+               ALL          : resample all classes
+               AUTO         : equivalent to 'not majority'
         
         The following are returned, and also saved to self.dst_dir:
 
@@ -1657,19 +1886,19 @@ class Classification:
            
         The returned dict will contain:
 
-		   - Average (naive) accuracy score	 res_dict['avg_acc']
-		   - Balanced average accuracy score res_dict['avg_balanced_acc']
-		   - Confusion matrix            	 res_dict['confusion_matrix']
-		   - Mean of F1 scores across folds  res_dict['F1']
-		   - Results from precision/recall   res_dict['prec_rec_results']
-		     analysis:
-		       {
-	            'pr_df'                : pr_df,
-	            'pos_label'            : pr_curve.pos_label,
-	            'prevalence_pos_label' : pr_curve.prevalence_pos_label,
-	            'average_precision'    : pr_curve.average_precision,
-	            'fig'                  : <the precision-recall figure>
-		       }
+           - Average (naive) accuracy score     res_dict['avg_acc']
+           - Balanced average accuracy score res_dict['avg_balanced_acc']
+           - Confusion matrix                 res_dict['confusion_matrix']
+           - Mean of F1 scores across folds  res_dict['F1']
+           - Results from precision/recall   res_dict['prec_rec_results']
+             analysis:
+               {
+                'pr_df'                : pr_df,
+                'pos_label'            : pr_curve.pos_label,
+                'prevalence_pos_label' : pr_curve.prevalence_pos_label,
+                'average_precision'    : pr_curve.average_precision,
+                'fig'                  : <the precision-recall figure>
+               }
         
         NOTE: for binary classification the 'positive' value is taken
               to be True, or 1. For instance, when reporting precision, the
@@ -1809,43 +2038,14 @@ class Classification:
                                     columns=clf.classes_, 
                                     index=X_test.index)
             y_pred_probs.append(probs_df)
-            
-            y_true = y_test
-            
-            # Note the accuracy for this fold:
-            scores.append(ClassifictionResult(X_test, y_test, class_label_map))
 
-            # This fold's confusion matrix. TBD:
-            # Normalizes confusion matrix over the 
-            # entire population to get %ages.
-            # This call just returns the numeric conf
-            # matrix values; the the viz is done after
-            # the loop: 
-            conf_mat = confusion_matrix(y_true, y_pred, 
-                                        normalize='all',
-                                        labels=clf.classes_
-                                        )
-            confusion_matrices.append(conf_mat)
-        
+            # Note the results for this fold:
+            scores.append(ClassifictionResult(y_test, y_pred, 
+                                              classes_=clf.classes_, 
+                                              class_label_map=class_label_map))
+
         # Result Metrics Computations
         res_dict = {}    
-        
-        # Average accuracy across the folds:
-        res_dict['avg_acc'] = np.mean(accuracy_scores)
-        # Average balanced accuracy across the folds:
-        res_dict['avg_balanced_acc'] = np.mean(balanced_acc_scores)
-        
-        
-        # Confusion Matrix:
-        
-        conf_mat_df, conf_mat_fig = self.make_confusion_matrix(confusion_matrices,
-                                                               clf,
-                                                               cm_title=cm_title,
-                                                               class_label_map=class_label_map)
-        res_dict['confusion_matrix']  = conf_mat_df
-        # Save the confusion matrix figure:
-        conf_mat_fname = f"clf_conf_matrix_{timestamp}.csv"
-        conf_mat_df.to_csv(os.path.join(self.dst_dir, conf_mat_fname))
         
         # Save the confusion matrix image:
         fig_fname = f"clf_conf_matrix_fig_{timestamp}.png"
@@ -1992,8 +2192,8 @@ class Classification:
         
         Returns a dict:
            {
-            'pr_df'     		   : pr_df,
-            'pos_label' 		   : pr_curve.pos_label,
+            'pr_df'                : pr_df,
+            'pos_label'            : pr_curve.pos_label,
             'prevalence_pos_label' : pr_curve.prevalence_pos_label,
             'average_precision'    : pr_curve.average_precision,
             'fig'                  : <PR-figure>
@@ -2122,16 +2322,16 @@ class Classification:
         should be used for visualizations. Example:
         
         Given: 
-	        {False : 'Nighttime',
-	         True  : 'Daytime'
-	         }
-	          
+            {False : 'Nighttime',
+             True  : 'Daytime'
+             }
+              
         or:
-	        {'large'  : 'father',
-	         'medium: : 'mother',
-	         'small'  : 'child'
-	         }
-	         
+            {'large'  : 'father',
+             'medium: : 'mother',
+             'small'  : 'child'
+             }
+             
         The classifier's internals will be:
           classes_  = ['large', 'medium', 'small']
           encodings = [0,1,2]
