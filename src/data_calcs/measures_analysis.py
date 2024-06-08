@@ -47,6 +47,7 @@ from tempfile import (
     NamedTemporaryFile)
 import itertools
 import joblib
+import json
 import numpy as np
 import os
 import pandas as pd
@@ -101,7 +102,7 @@ class ClassifictionResult:
         obj.acc
         obj.balanced_acc
         
-        obj.confusion_matrix
+        obj.conf_mat
         
     The balanced accuracy adjusts raw accuracy to 
     compensate for class imbalances and the consequent
@@ -119,14 +120,28 @@ class ClassifictionResult:
     which returns a new ClassificationResult with the mean
     of all the constituent values across the given objects. 
     '''
-    
+
+    # Every attribute the instances of ClassificationResult
+    # will have, except for attributes that correspond to 
+    # target class names, such as 'Cat', 'Dog':
+    RESULT_ATTRS = [
+        'weighted_avg',
+        'macro_avg',
+        'acc',
+        'balanced_acc',
+        'classes_',
+        'cls_nms',
+        'class_label_map',
+        'conf_mat',
+        'comment'
+        ]
     #------------------------------------
     # Constructor
     #-------------------
     
     def __init__(self, y_true, y_pred, **kwargs):
         '''
-        Allowed kwargs: classes_=None, class_label_map=None
+        Allowed kwargs: classes_=None, class_label_map=None, comment=''
         
         Given the result of a classification as two 
         pd.Series: true labels, y_true, and corresponding
@@ -221,8 +236,8 @@ class ClassifictionResult:
                                        target_names=target_names)
         
         # How does the report name the classes?
-        self.cls_nms = set(report.keys()) - set(['accuracy', 'macro_avg', 'weighted_avg'])
-
+        cls_nms = set(report.keys()) - set(['accuracy', 'macro_avg', 'weighted avg', 'macro avg'])
+        self.cls_nms = list(cls_nms)
         # We store the values of dicts that the report
         # contains for each for each class as a 
         # Series. This will allow syntax:
@@ -301,14 +316,42 @@ class ClassifictionResult:
                                     normalize='all'
                                     )
         conf_mat_df = pd.DataFrame(conf_mat)
-        self.confusion_matrix = conf_mat_df
+        self.conf_mat = conf_mat_df
+        
+        # Finally, any comment to describe this result:
+        try:
+            self.comment = kwargs['comment']
+        except KeyError:
+            self.comment = ''
         
     #------------------------------------
     # mean
     #-------------------
     
     @staticmethod
-    def mean(clf_results):
+    def mean(clf_results, comment=None):
+        '''
+        Create a new ClassificationResult whose data
+        contains the mean of each corresponding data
+        item in the given list of ClassificationResult
+        instances. I.e. the mean of the weighted_avg
+        entries, the balanced_acc entries, etc.
+        
+        If comment is provided, the new instance's comment
+        will be the provided text. Else the comment
+        field will be composed of the comments from
+        all results in parens after the work 'Mean'
+        
+        :param clf_results: list of results from which
+            to compute the mean
+        :type clf_results: list[ClassificationResult]
+        :param comment: comment explaining this new
+            result
+        :type comment: ClassificationResult
+        :return new ClassificationResult with all
+            the numerical data averaged.
+        :rtype ClassificationResult
+        '''
 
         # Combine each result Series (cls1_nm, weighted_avg, ...)
         # into one Series of Series. Sum them as a vectorized
@@ -319,61 +362,67 @@ class ClassifictionResult:
         # in instance variables named the same as the classes,
         # respectively; 
         
-        # Make {cls_nm1 : means of all cls_nm1 IR results
-        #       cls_nm2 : means of all cls_nm1 IR results
-        #                   ...}
-        cls_nm_means = {}
+        kwargs = {}
+        
+        # Means of all the target class Series:
         for cls_nm in clf_results[0].cls_nms:
             all_class_ir_results = [getattr(obj, cls_nm)
                                     for obj
                                     in clf_results
                                     ]
-            cls_nm_means[cls_nm] = pd.concat(
+            kwargs[cls_nm] = pd.concat(
                 all_class_ir_results, axis=1).sum(axis=1) / len(clf_results)
         
         # Get mean of weighted_avg:
-        weighted_avg_mean = pd.concat([obj.weighted_avg
-                                       for obj 
-                                       in clf_results
-                                       ], axis=1).sum(axis=1) / len(clf_results)
+        kwargs['weighted_avg'] = pd.concat([obj.weighted_avg
+                                            for obj 
+                                            in clf_results
+                                            ], axis=1).sum(axis=1) / len(clf_results)
                              
         # Same for mean of macro_avg:
-        macro_avg_mean = pd.concat([obj.macro_avg
-                                    for obj 
-                                    in clf_results
-                                    ], axis=1).sum(axis=1) / len(clf_results)
+        kwargs['macro_avg'] = pd.concat([obj.macro_avg
+                                         for obj 
+                                         in clf_results
+                                         ], axis=1).sum(axis=1) / len(clf_results)
 
         # The values of the accuracy and balanced accuracy
         # in each object are simple numbers, not Series.
         # So, use np.mean() over simple list of numbers:
-        acc_mean = np.mean([obj.acc
-                            for obj 
-                            in clf_results
-                            ])
-        bal_acc_mean = np.mean([obj.balanced_acc
-                                for obj 
-                                in clf_results
-                                ])
+        kwargs['acc'] = np.mean([obj.acc
+                                 for obj 
+                                 in clf_results
+                                 ])
+        kwargs['balanced_acc'] = np.mean([obj.balanced_acc
+                                          for obj 
+                                          in clf_results
+                                          ])
         
         # Mean of the confusion matrices:
-        conf_mat_list = [obj.confusion_matrix
+        conf_mat_list = [obj.conf_mat
                          for obj
                          in clf_results
                          ]
-        mean_conf_mat = reduce(lambda df1, df2: df1.add(df2), conf_mat_list) / len(clf_results)
+        kwargs['conf_mat'] = reduce(lambda df1, df2: df1.add(df2), conf_mat_list) / len(clf_results)
+        
+        if comment is None:
+            # Compose a new comment:
+            comments = [f"Comment: {obj.comment}\n"
+                        for obj
+                        in clf_results
+                        ]
+            comment = f"Means of results: {comments}"
+        
+        kwargs['comment']  = comment
+        kwargs['classes_'] = clf_results[0].classes_
+        kwargs['cls_nms']  = clf_results[0].cls_nms
+        kwargs['class_label_map'] = clf_results[0].class_label_map
+        
          
         means_obj = ClassifictionResult.__new__(
             ClassifictionResult,
             y_test=None,
             y_pred=None,
-            cls_ir_results=cls_nm_means,
-            weighted_avg=weighted_avg_mean,
-            macro_avg=macro_avg_mean, 
-            acc=acc_mean, 
-            balanced_acc=bal_acc_mean, 
-            classes_=clf_results[0].classes_, 
-            class_label_map=clf_results[0].class_label_map,
-            confusion_matrix=mean_conf_mat)
+            **kwargs)
         
         return means_obj
     
@@ -381,16 +430,191 @@ class ClassifictionResult:
     # to_json
     #-------------------
     
-    def to_json(self):
-        pass #****
-    
+    def to_json(self, path=None):
+        
+        # Structure for instance state:
+        state_dict = {}
+        
+        # Get the target-class-specific obj
+        # attribute names and corresponding Series
+        # values, and add them to the state_dict:
+        for cls_nm in self.cls_nms:
+            ir_ser = getattr(self, cls_nm)
+            state_dict[cls_nm] = ir_ser.to_json()
+
+        state_dict['weighted_avg']     = self.weighted_avg.to_json()      # Series
+        state_dict['macro_avg']        = self.macro_avg.to_json()         # Series
+        state_dict['acc']              = self.acc
+        state_dict['balanced_acc']     = self.balanced_acc
+        state_dict['classes_']         = self.classes_
+        state_dict['cls_nms']          = self.cls_nms
+        state_dict['class_label_map']  = json.dumps(self.class_label_map) # dict
+        state_dict['conf_mat']         = self.conf_mat.to_json()  # DataFrame
+        state_dict['comment']          = self.comment
+        
+        if path:
+            try:
+                with open(path, 'w') as fd:
+                    json.dump(state_dict, fd)
+                    return
+            except Exception as e:
+                raise IOError(f"Could not write json to {path}: {e}")
+        else:
+            jstr = json.dumps(state_dict)
+            return jstr
+            
     #------------------------------------
     # from_json 
     #-------------------
     
     @classmethod
     def from_json(cls, jstr):
-        pass #****5
+        
+        state_dict = json.loads(jstr)
+        # Get an empty ClassifictionResult:
+        kwargs = {}
+        kwargs['weighted_avg']     = pd.Series(state_dict['weighted_avg'], name='weighted_avg')
+        kwargs['macro_avg']        = pd.Series(state_dict['macro_avg'], name='macro_avg')
+        kwargs['acc']              = state_dict['acc']
+        kwargs['balanced_acc']     = state_dict['balanced_acc']
+        kwargs['classes_']         = state_dict['classes_']
+        kwargs['cls_nms']          = state_dict['cls_nms']
+        # Be tolerant of comment not being present, though
+        # it should be, even if as an empty string:
+        try:
+            kwargs['comment']          = state_dict['comment']
+        except KeyError:
+            kwargs['comment'] = ''
+        class_label_map_raw        = json.loads(state_dict['class_label_map'])
+        # Keys of the class_label _map may have been
+        # turned into strings from the json decoding.
+        # Fix that:
+        numeric_keys = cls._numerify_list(list(class_label_map_raw))
+        # New dict with the corrected keys:
+        numerified_map  = {key : val 
+                           for key, val 
+                           in zip(numeric_keys, class_label_map_raw.values())
+                           }
+        
+        kwargs['class_label_map'] = numerified_map
+        
+        # Confusion matrix is a df:
+        con_mat_dict   = json.loads(state_dict['conf_mat'])
+        con_mat_df_raw = pd.DataFrame.from_dict(con_mat_dict)
+        # Fix columns and index to be numbers, if appropriate:
+        con_mat_df = cls._numerify_df_indexes(con_mat_df_raw)
+
+        # Next, if there is a class_label_map, turn the 
+        # column/index members into human readable form.
+        # Use a map function:
+        def turn_human(index_el):
+            try:
+                return numerified_map[index_el]
+            except KeyError:
+                # No mapping from raw col name to human readable:
+                return index_el
+        
+        new_index = con_mat_df.index.map(turn_human)
+        new_cols  = con_mat_df.columns.map(turn_human)
+        con_mat_df.columns = new_cols
+        con_mat_df.index   = new_index
+        
+        kwargs['conf_mat'] = con_mat_df
+        
+        # Still missing are instance attributes that are
+        # class names, like 'Cat', or 'Dog'. Find them by
+        # set difference:
+        saved_attrs = set(state_dict.keys())
+        class_nm_attrs = saved_attrs - set(cls.RESULT_ATTRS) 
+
+        for class_nm in class_nm_attrs:
+            # The class name attributes are pd.Series with
+            # 'precision', 'f1_score', etc.
+            kwargs[class_nm] = pd.Series(state_dict[class_nm], name=class_nm)
+
+        cr = ClassifictionResult.__new__(ClassifictionResult, 
+                                         y_test=None, y_pred=None,
+                                         **kwargs
+                                         )
+        return cr
+
+    #------------------------------------
+    # _numerify_df_indexes
+    #-------------------
+    
+    @classmethod
+    def _numerify_df_indexes(cls, df):
+        '''
+        Go through the given df's columns and index.
+        Turn any strings into numbers, if possible,
+        else retain the orginals. Returns the df 
+        with columns and index changed.
+        
+        Example:
+        
+                     '0'      '1'   'Fact'
+              '0'   'foo'     10      0
+              '1'   'bar'     20      1
+        
+        will return:
+                     0        1     'Fact'
+              0    'foo'     10       0
+              1    'bar'     20       1
+        
+        Useful after JSON operations turned numbers
+        into strings.
+        
+        :param df: dataframe to fix
+        :type df: pd.DataFrame
+        :return the modified df
+        :rtype pd.DataFrame
+        '''
+        
+        # Numbers like 0 and 1 are converted to string by json,
+        # turn them into nums again
+        numeric_cols = cls._numerify_list(list(df.columns))
+        df.columns = numeric_cols
+
+        # Same with row labels:
+        numeric_idx  = cls._numerify_list(list(df.index))
+        df.index = numeric_idx
+        
+        return df
+
+    #------------------------------------
+    # _numerify_list
+    #-------------------
+    
+    @classmethod
+    def _numerify_list(cls, the_list):
+        '''
+        Given a list of strings and or numbers, return
+        a new list in which any string that contains a
+        number is turned into a numeric value.
+        
+        Example:
+           ['foo', '1', 0] ==> ['foo' 1, 0]
+        
+        :param the_list: the list to fix
+        :type the_list: list[union[int,float,str]]
+        :return modified list
+        :rtype list[union[int,float,str]]
+        '''
+        
+        new_list = []
+        for el in the_list:
+            try:
+                # Is col nm an int?
+                new_list.append(int(el))
+            except ValueError:
+                # Is it a float?
+                try:
+                    new_list.append(float(el))
+                except ValueError:
+                    # Col name is really a string:
+                    new_list.append(el)
+        return new_list
+
     
     #------------------------------------
     # __new__
@@ -420,13 +644,9 @@ class ClassifictionResult:
            final state of the __init__() method. That method
            will not be called. In this case the following
            kwargs must be provided:
-                cls_ir_results
-                weighted_avg
-                macro_avg
-                acc
-                balanced_acc
-                classes_
-                class_label_map  
+           
+               - All of ClassifictionResult.ALL_ATTRS
+               - An entry for each class label.
            
         Used, for instance, to create ClassificationResult 
         instances that are aggregates of several ClassificationResult
@@ -448,11 +668,14 @@ class ClassifictionResult:
         :type balanced_acc: float
         :param classes_: list of classes as used in classifier
         :type classes_: optional[list[str]]
+        :param cls_nms: the names of classes, which are also this
+            object's attribute names for the class-specific IR results.
+        :type cls_nms: list[str]
         :param class_label_map: optional map from classifier class
             labels to human readable labels
         :type class_label_map: optional[dict[str : str]]
-        :param confusion_matrix: a classification confusion matrix 
-        :type confusion_matrix: pd.DataFrame 
+        :param conf_mat: a classification confusion matrix 
+        :type conf_mat: pd.DataFrame 
         :returns a new, initialized instance of ClassificationResult
         :rtype ClassificationResult 
         '''
@@ -464,35 +687,19 @@ class ClassifictionResult:
             obj.__init__(y_test, y_pred, **kwargs)
             return obj
 
+        # Check that all necessary kwargs 
+        # are provided:
         try:
-            cls_ir_results    = kwargs['cls_ir_results']
-            weighted_avg      = kwargs['weighted_avg']      
-            macro_avg         = kwargs['macro_avg']        
-            acc               = kwargs['acc']   
-            balanced_acc      = kwargs['balanced_acc']                 
-            classes_          = kwargs['classes_']
-            class_label_map   = kwargs['class_label_map']
-            confusion_matrix  = kwargs['confusion_matrix']
+            for required_attr in cls.RESULT_ATTRS:
+                setattr(obj, required_attr, kwargs[required_attr])
         except KeyError as e:
             raise ValueError(f"Missing argument for raw __new__(): {e}")        
-        
-        # Initialize the IR result series for each
-        # class:
-        for cls_nm, cls_ir_series in cls_ir_results.items():
-            setattr(obj, cls_nm, cls_ir_series)
-            
-        # Init accuracy:
-        obj.acc = acc 
-        obj.balanced_acc = balanced_acc
-        
-        # And the averages:
-        obj.weighted_avg    = weighted_avg
-        obj.macro_avg       = macro_avg
-        
-        obj.classes_        = classes_
-        obj.class_label_map = class_label_map
-        
-        obj.confusion_matrix = confusion_matrix
+
+        try:
+            for cls_nm in obj.cls_nms:
+                setattr(obj, cls_nm, kwargs[cls_nm])
+        except KeyError as e:
+            raise ValueError(f"Missing argument for raw __new__(): {e}")        
         
         return obj
     
@@ -506,6 +713,7 @@ class ClassifictionResult:
     
         
 # ----------------------------- Class MeasuresAnalysis ---------
+
 class MeasuresAnalysis:
             
     #------------------------------------
@@ -1886,9 +2094,9 @@ class Classification:
            
         The returned dict will contain:
 
-           - Average (naive) accuracy score     res_dict['avg_acc']
+           - Average (naive) accuracy score  res_dict['avg_acc']
            - Balanced average accuracy score res_dict['avg_balanced_acc']
-           - Confusion matrix                 res_dict['confusion_matrix']
+           - Confusion matrix                res_dict['conf_mat']
            - Mean of F1 scores across folds  res_dict['F1']
            - Results from precision/recall   res_dict['prec_rec_results']
              analysis:
