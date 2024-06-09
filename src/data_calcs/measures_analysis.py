@@ -5,10 +5,10 @@ Created on May 28, 2024
 '''
 from data_calcs.data_calculations import (
     DataCalcs,
-    PerplexitySearchResult,
     ChirpIdSrc,
     FileType,
-    Localization)
+    Localization,
+    PerplexitySearchResult)
 from data_calcs.data_viz import (
     DataViz)
 from data_calcs.universal_fd import (
@@ -25,6 +25,8 @@ from imblearn.over_sampling import (
     SMOTE)
 from logging_service.logging_service import (
     LoggingService)
+from matplotlib.pyplot import (
+    clf)
 from pathlib import (
     Path)
 from sklearn.decomposition import (
@@ -45,8 +47,8 @@ from sklearn.preprocessing import (
     LabelEncoder)
 from tempfile import (
     NamedTemporaryFile)
+import io
 import itertools
-import joblib
 import json
 import numpy as np
 import os
@@ -141,7 +143,12 @@ class ClassifictionResult:
     
     def __init__(self, y_true, y_pred, **kwargs):
         '''
-        Allowed kwargs: classes_=None, class_label_map=None, comment=''
+        Allowed kwargs: 
+             classes_=None, 
+             class_label_map=None, comment='',
+             comment=None,
+             cm_normalize  ('true', 'pred', 'all', or None)
+                           See signature of sklearn.confusion_matrix()
         
         Given the result of a classification as two 
         pd.Series: true labels, y_true, and corresponding
@@ -313,7 +320,7 @@ class ClassifictionResult:
             y_pred_mapped = y_pred
             
         conf_mat = confusion_matrix(y_true_mapped, y_pred_mapped, 
-                                    normalize='all'
+                                    normalize=kwargs['cm_normalize']
                                     )
         conf_mat_df = pd.DataFrame(conf_mat)
         self.conf_mat = conf_mat_df
@@ -430,7 +437,19 @@ class ClassifictionResult:
     # to_json
     #-------------------
     
-    def to_json(self, path=None):
+    def to_json(self, path_info=None):
+        '''
+        Convert this ClassifictionResult into json.
+        If path_info is None, return the json string.
+        If it is a string, that string is assumed to 
+        be the path to a file where the json is to be
+        saved. If a file-like, save the json there.
+        
+        :param path_info: what to do with the resulting json: store or return
+        :type path_info: optional[union[str, file-like]]
+        :return the json string if path_info is None, else undefined
+        :rtype union[str, None]
+        '''
         
         # Structure for instance state:
         state_dict = {}
@@ -452,14 +471,20 @@ class ClassifictionResult:
         state_dict['conf_mat']         = self.conf_mat.to_json()  # DataFrame
         state_dict['comment']          = self.comment
         
-        if path:
+        if type(path_info) == str:
             try:
-                with open(path, 'w') as fd:
+                with open(path_info, 'w') as fd:
                     json.dump(state_dict, fd)
                     return
             except Exception as e:
-                raise IOError(f"Could not write json to {path}: {e}")
+                raise IOError(f"Could not write json to {path_info}: {e}")
+        
+        elif isinstance(path_info, (io.IOBase, io.TextIOBase)):
+            # path-info is an FD:
+            json.dump(state_dict, path_info)
+            
         else:
+            # Return string
             jstr = json.dumps(state_dict)
             return jstr
             
@@ -2035,7 +2060,8 @@ class Classification:
                  cm_title=None,
                  pr_title=None,
                  class_label_map=None,
-                 class_imbalance_fix=None
+                 class_imbalance_fix=None,
+                 cm_normalization=None
                  ):
         '''
         Build a classifier to predict the variable(s) listed
@@ -2085,6 +2111,17 @@ class Classification:
                NOT_MAJORITY : resample all classes but the majority class
                ALL          : resample all classes
                AUTO         : equivalent to 'not majority'
+
+        The conf_mat_normalization argument determines whether
+        the confusion matrix of the mean results across all folds
+        will be normalized:
+        
+             o over the true (rows)
+             o the predicted (columns), or
+             o all of the population (all)
+             
+        If None, no normalization. See signature of sklearn.confusion_matrix()
+                   
         
         The following are returned, and also saved to self.dst_dir:
 
@@ -2136,6 +2173,11 @@ class Classification:
         :param class_imbalance_fix: the SMOTE sampling strategy to use.
             Default: no resampling
         :type class_imbalance_fix: SMOTEOption
+        :param cm_normalization: whether to normalize the result
+            confusion matrix: 'true': over the 'true' (rows) conditions,
+                the predicted 'pred' (columns) condition, whole population
+                'all'. Or no normalization None (default)
+        :type cm_normalization: optional[list['true', 'pred', 'all']] 
         :returns a dict of results
         :rtype dict[str : any]
         '''
@@ -2250,14 +2292,31 @@ class Classification:
             # Note the results for this fold:
             scores.append(ClassifictionResult(y_test, y_pred, 
                                               classes_=clf.classes_, 
-                                              class_label_map=class_label_map))
+                                              class_label_map=class_label_map,
+                                              comment=f"Scores fold{fold_num}; imbalance fix: {class_imbalance_fix}",
+                                              cm_normalize=cm_normalization
+                                              ))
 
+        # Get a ClassifictionResult instance
+        # that holds the means of all measurements
+        # from the folds. A comment will be constructed
+        # from the comments injected in each fold score:
+        mean_scores_obj = ClassifictionResult.mean(scores) 
+        
         # Result Metrics Computations
-        res_dict = {}    
+        res_dict = {'mean_scores' : mean_scores_obj}    
+        
+        # Draw a confusion matrix:
+        mean_conf_mat = mean_scores_obj.conf_mat
+        _cm_df, cm_fig = self.make_confusion_matrix(mean_conf_mat,
+                                                    clf,
+                                                    cm_title, 
+                                                    class_label_map)
         
         # Save the confusion matrix image:
+        
         fig_fname = f"clf_conf_matrix_fig_{timestamp}.png"
-        conf_mat_fig.savefig(os.path.join(self.dst_dir, fig_fname))
+        cm_fig.savefig(os.path.join(self.dst_dir, fig_fname))
         
         pr_dict, pr_fig = self.make_precision_recall(y_test, 
                                                      y_pred_probs,
@@ -2277,16 +2336,9 @@ class Classification:
         pr_curve_fname = f"clf_pr_curve_{timestamp}.png"
         pr_fig.savefig(os.path.join(self.dst_dir, pr_curve_fname))
         
-        # Add the average of the F1 scores (remember:
-        # in multi-class problems, these are already F1
-        # scores for all the target classes collectively.
-        # We still just average here over the folds:
-        
-        res_dict['F1'] = np.mean(F1_scores)
-        
-        clf_res_fname = f"clf_classification_eval_{timestamp}.joblib"
+        clf_res_fname = f"clf_classification_eval_{timestamp}.json"
         self.log.info(f"Saving classification result to {clf_res_fname}")
-        joblib.dump(res_dict, os.path.join(self.dst_dir, clf_res_fname))
+        mean_scores_obj.to_json(os.path.join(self.dst_dir, clf_res_fname))
         
         return res_dict
 
@@ -2295,7 +2347,7 @@ class Classification:
     #-------------------
     
     def make_confusion_matrix(self, 
-                              confusion_matrices,
+                              confusion_matrix,
                               classifier,
                               cm_title=None,
                               class_label_map=None
@@ -2306,8 +2358,9 @@ class Classification:
         
         Returns the confusion matrix, and the figure.  
         
-        :param confusion_matrices: one or more confusion matrices
-        :type confusion_matrices: union[ndarray[n_classes, n_classes], list[ndarray[n_classes, n_classes]]
+        :param confusion_matrix: confusion matrix as produced
+            by sklearn.confusion_matrix
+        :type confusion_matrix: [ndarray[n_classes, n_classes]]
         :param classifier: classifier object that computed results
         :type classifier: sklearn.classifier.***
         :param cm_title: title for top of confusion matrix figure
@@ -2320,14 +2373,7 @@ class Classification:
         '''
         # If confusion matrices is a list of cms, 
         # pick one at random:
-        if type(confusion_matrices) == list:
-            
-            # We have n_fold confusion matrices in the list 
-            # confusion_matrices. Pick one at random to display:
-            # The randint() args are *inclusive*:
-            cm_idx = random.randint(0,len(confusion_matrices) - 1)
-            conf_matrix = confusion_matrices[cm_idx]
-            conf_mat_df = pd.DataFrame(conf_matrix) 
+        conf_mat_df = pd.DataFrame(confusion_matrix) 
 
         cm_fig = ConfusionMatrixDisplay(conf_mat_df.to_numpy())
 
@@ -2687,9 +2733,8 @@ if __name__ == '__main__':
         cm_title="Daytime Prediction: Confusion Matrix",
         pr_title="Daytime Prediction: Precision/Recall Tradeoff",
         timestamp=timestamp,
-        class_imbalance_fix=SMOTEOption.MINORITY
+        class_imbalance_fix=SMOTEOption.MINORITY,
+        cm_normalization=None
         )
-        
-    
     
     print(clf)
