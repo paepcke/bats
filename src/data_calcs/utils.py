@@ -4,11 +4,19 @@ Created on Apr 22, 2024
 @author: paepcke
 '''
 
-from data_calcs.daytime_file_selection import DaytimeFileSelector
-from datetime import timedelta, datetime
-from enum import Enum, auto
-from numba.tests.test_svml import other_funcs
-from pathlib import Path
+from data_calcs.daytime_file_selection import (
+    DaytimeFileSelector)
+from datetime import (
+    timedelta,
+    datetime)
+from enum import (
+    Enum,
+    auto)
+from numba.tests.test_svml import (
+    other_funcs)
+from pathlib import (
+    Path)
+import json
 import numpy as np
 import os
 import pandas as pd
@@ -308,7 +316,11 @@ class Utils:
     #-------------------
     
     @staticmethod
-    def find_file_by_timestamp(search_dir, timestamp=None, prefix=None, suffix=None, latest=True):
+    def find_file_by_timestamp(search_dir, 
+                               timestamp=None, 
+                               prefix=None, 
+                               suffix=None, 
+                               latest=True):
         '''
         Given a directory, search for all files with the given
         timestamp in its name. From among those, find the ones that have 
@@ -331,7 +343,8 @@ class Utils:
         :param suffix: file extension, including the period
         :type suffix: optional[str]
         :return: the absolute file name in a singleton list, or a longer list of 
-            of filenames, if multiple files qualify
+            of filenames, if multiple files qualify. Empty list
+            if no files qualify.
         :rtype union[list[str]]
         '''
         fnames = os.listdir(search_dir)
@@ -631,3 +644,50 @@ class Utils:
         df[cos_col_nm] = df[cos_col_nm].astype(float)
         
         return df 
+
+# ------------------------------------- Class PDJson ----------
+
+#******* NOT WORKING YET
+class PDJson(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, pd.Series):
+            jdict = {'__pd.series__' : {'data' : obj.to_json(), 'name' : obj.name}}
+            jstr  = json.dumps(jdict) 
+            return jstr
+        elif isinstance(obj, pd.DataFrame):
+            jstr = f'{{"__pd.dataframe__" : {{"data" : {obj.to_json()}}}}}'
+            return jstr
+        
+        return super().default(obj)
+
+    @staticmethod
+    def decode(obj):
+        # Check for key at any level using recursion
+        def decode_object(value):
+            
+            if isinstance(value, dict):
+                for key, nested_value in value.items():
+                    value[key] = decode_object(nested_value)
+                    
+            elif isinstance(value, list):
+                for i, item in enumerate(value):
+                    value[i] = decode_object(item)
+    
+            # Check for your type marker:
+            if isinstance(value, str):
+                if value.startswith('{"__pd.series__"'):
+                    # Get {'__pd.series__' : {'data' : <series data>}, 'name' : <ser name>}}
+                    ser_dict = json.loads(value)
+                    ser_data = ser_dict['__pd.series__']['data']
+                    ser_name = ser_dict['__pd.series__']['name']
+                    ser = pd.Series(ser_data, name=ser_name)
+                    return ser
+                elif value.startswith('{"__pd.dataframe__"'):
+                    df_dict = json.loads(value)
+                    df_data = df_dict['__pd.dataframe__']['data']
+                    df = pd.DataFrame(df_data)
+                    return df
+                    
+            return value
+        return decode_object(obj)
+        

@@ -18,18 +18,25 @@ The files/dataframe also holds two columns: minutes_sin,
 and minutes_cos, which can be used to capture the cyclical
 nature of the content, if included in a trained model. 
 '''
-from data_calcs.utils import TimeGranularity, Utils
-from datetime import datetime, timedelta
-from pathlib import Path
+from data_calcs.utils import (
+    TimeGranularity,
+    Utils,
+    PDJson)
+from datetime import (
+    datetime,
+    timedelta)
+from pathlib import (
+    Path)
 import io
+import json
 import os
 import pandas as pd
 import tempfile
 import unittest
 
 
-TEST_ALL = True
-#TEST_ALL = False
+#*****TEST_ALL = True
+TEST_ALL = False
 
 class UtilsTester(unittest.TestCase):
 
@@ -310,7 +317,48 @@ class UtilsTester(unittest.TestCase):
         str_stamp_recovered = Utils.timestamp_from_datetime(dt)
         self.assertEqual(str_stamp_recovered, str_stamp)
          
+    #------------------------------------
+    # test_PDJson 
+    #-------------------
+    
+    #*****@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_PDJson(self):
+        
+        # pd.Series
+        
+        ser = pd.Series({'serkey1' : 'blue', 'serkey2' : 'green'}, name='colors')
+        jstr = json.dumps(ser, cls=PDJson)
+        expected = '"{\\"__pd.series__\\": \\"{\\\\\\"serkey1\\\\\\":\\\\\\"blue\\\\\\",\\\\\\"serkey2\\\\\\":\\\\\\"green\\\\\\"}\\", \\"name\\": \\"colors\\"}"'
+        #****self.assertEqual(expected, jstr)
+        
+        recovered = json.loads(jstr, object_hook=PDJson.decode)
+        pd.testing.assert_series_equal(recovered, ser)
+        
+        my_dict = {'foo' : 10, 'bar' : ser}
+        jstr = json.dumps(my_dict, cls=PDJson)
+        
+        expected = '{"foo": 10, "bar": "{\\"__pd.series__\\" : {\\"data\\" : {\\"serkey1\\":\\"blue\\",\\"serkey2\\":\\"green\\"}, \\"name\\" : \\"colors\\"}}"}'
+        self.assertEqual(jstr, expected)
 
+        recovered = json.loads(jstr, object_hook=PDJson.decode)
+        self.assertEqual(len(recovered), len(my_dict))
+        self.assertEqual(recovered['foo'], 10)
+        pd.testing.assert_series_equal(recovered['bar'], ser)
+        
+        # pd.DataFrame
+        df = pd.DataFrame({'foo' : [10, 20], 'bar' : [ser, ser]})
+        jstr = json.dumps(df, cls=PDJson)
+        
+        expected = '"{\\"__pd.dataframe__\\" : {\\"data\\" : {\\"foo\\":{\\"0\\":10,\\"1\\":20},\\"bar\\":{\\"0\\":{\\"serkey1\\":\\"blue\\",\\"serkey2\\":\\"green\\"},\\"1\\":{\\"serkey1\\":\\"blue\\",\\"serkey2\\":\\"green\\"}}}}}"'
+        self.assertEqual(jstr, expected)
+
+        recovered = json.loads(jstr, object_hook=PDJson.decode)
+        self.assertTrue(isinstance(recovered, pd.DataFrame))
+        self.assertEqual(len(recovered), len(df))
+        
+        pd.testing.assert_frame_equal(recovered, df)
+        
+        
 # -------------------------- Utilities ------------------------
 
     #------------------------------------
@@ -408,9 +456,7 @@ class UtilsTester(unittest.TestCase):
         data.index.name = 'tick_number'
         data_fname = 'three_minutes.csv'
         data.to_csv(os.path.join(tst_data_dir, data_fname))
-    
-        
-        
+
 
 # -------------------------- Main ------------------------
 
