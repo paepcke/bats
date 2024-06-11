@@ -29,7 +29,7 @@ def add_cli(parser):
                         help='use feather format')
     parser.add_argument('-m', '--minimum_length', type = int, default = 5)
     parser.add_argument('-d', '--daytime', action='store_true')
-    parser.add_argument('--no_duplication', action='store_true')
+    parser.add_argument('--duplication', action='store_true')
     return parser
 
 '''
@@ -161,7 +161,7 @@ padded_df = None
 truth_values = None
 file_id_to_chirps = None
 
-if(args.no_duplication):
+if(not args.duplication):
     df['chirp_idx'] = df.groupby('Filename').cumcount()
     padded_df = df
     padded_df.reset_index(inplace = True)
@@ -217,7 +217,7 @@ else:
         inplace = True
     )
 
-    columns_to_not_scale = ["file_id", "cntxt_sz"] if not args.no_duplication else ["file_id", "chirp_idx"]
+    columns_to_not_scale = ["file_id", "cntxt_sz"] if args.duplication else ["file_id", "chirp_idx"]
     columns_to_scale = [col for col in padded_df.columns if col not in columns_to_not_scale]
 
     scaler = StandardScaler()
@@ -243,7 +243,7 @@ else:
     padded_df = padded_df.reset_index(drop = True)
     print("Done.")
 
-    if(args.no_duplication):
+    if(not args.duplication):
         total_files = len(file_id_to_chirps)
         n_splits = args.splits
         files_in_a_split = ((total_files + (n_splits/2))//n_splits) #rounding up
