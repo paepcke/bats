@@ -176,6 +176,7 @@ class BatsCSVDataset(torch.utils.data.Dataset):
 
         series_slice = self.make_len(df_slice.iloc[:-chirps_to_use] if chirps_to_use > 0 else df_slice, self.seq_length)
 
+        return series
         ctxt_slice, trgt_slice = (
             series_slice.iloc[: self.context_points],
             series_slice.iloc[self.context_points :]

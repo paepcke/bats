@@ -1,21 +1,6 @@
 from utils import run_train_py
 import argparse
 
-parser = argparse.ArgumentParser(description='Train bats transformer model')
-parser.add_argument('--random_seeds', type=int, nargs='+', help='Random seeds to use for training')
-parser.add_argument('--gpu', type=int, help='GPU to use for training')
-parser.add_argument('--data_path', type=str, 
-                    default='/home/vdesai/data/training_data/daytime/splits', 
-                    help='Path to the data')
-parser.add_argument('--model_path', required = False)
-
-
-args = parser.parse_args()
-
-model_path = args.model_path if args.model_path is not None else f"bats_tranformer_seed_nodup_data"
-    
-d_model = 100;
-
 ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "FBak20dB", "LowFreq", "Bndw20dB", 
                "CallsPerSec", "EndSlope", "SteepestSlope", "StartSlope", "Bndw15dB", "HiFtoUpprKnSlp", "HiFtoKnSlope", 
                "DominantSlope", "Bndw5dB", "PreFc500", "PreFc1000", "PreFc3000", "KneeToFcSlope", "TotalSlope", 
@@ -27,6 +12,23 @@ ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "
                "Kn-FcCurviness", "Amp2ndMean", "Quality", "HiFtoFcExp", "LnExpA_EndAmp", "RelPwr2ndTo1st", "LnExpA_StartAmp", 
                "HiFminusStartF", "Amp3rdMean", "PreFc500Residue", "Kn-FcCurvinessTrndSlp", "PreFc250Residue", "AmpVariance", "AmpMoment", 
                "meanKn-FcCurviness", "MinAccpQuality", "AmpEndLn60ExpC", "AmpStartLn60ExpC", "Preemphasis", "MaxSegLnght" ,"Max#CallsConsidered" ]
+
+parser = argparse.ArgumentParser(description='Train bats transformer model')
+parser.add_argument('--random_seeds', type=int, nargs='+', help='Random seeds to use for training')
+parser.add_argument('--gpu', type=int, help='GPU to use for training')
+parser.add_argument('--data_path', type=str, 
+                    default='/home/vdesai/data/training_data/daytime/splits', 
+                    help='Path to the data')
+parser.add_argument('--model_path', required = False)
+parser.add_argument('--ignore_cols', nargs='+', type=str, default = ignore_cols)
+
+args = parser.parse_args()
+
+model_path = args.model_path if args.model_path is not None else f"bats_tranformer_seed_nodup_data"
+    
+d_model = 100;
+
+
 
 for random_seed in args.random_seeds:
     print("Running for random seed ", random_seed)
