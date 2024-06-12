@@ -3,6 +3,8 @@ Created on May 28, 2024
 
 @author: paepcke
 '''
+from data_calcs.classification_result import (
+    ClassifictionResult)
 from data_calcs.data_calculations import (
     DataCalcs,
     ChirpIdSrc,
@@ -23,6 +25,8 @@ from imblearn.over_sampling import (
     SMOTE)
 from logging_service.logging_service import (
     LoggingService)
+from matplotlib import (
+    pyplot as plt)
 from matplotlib.pyplot import (
     clf)
 from pathlib import (
@@ -31,6 +35,8 @@ from sklearn.decomposition import (
     PCA)
 from sklearn.linear_model import (
     LogisticRegression)
+from sklearn.ensemble import (
+    RandomForestClassifier)
 from sklearn.metrics._plot.confusion_matrix import (
     ConfusionMatrixDisplay)
 from sklearn.metrics._plot.precision_recall_curve import (
@@ -41,14 +47,15 @@ from sklearn.preprocessing import (
     LabelEncoder)
 from tempfile import (
     NamedTemporaryFile)
-from data_calcs.classification_result import ClassifictionResult
 import itertools
 import numpy as np
 import os
 import pandas as pd
 import random
 import shutil
+import sys
 import time
+from numba.core.types import none
 
 # Members of the Action enum are passed to run
 # to specify which task the program is to perform: 
@@ -88,6 +95,9 @@ class MeasuresAnalysis:
         one of the Action enum members, executes the requested
         experiment.
         
+        I action is None, just initializes instance vars, 
+        and returns.
+        
         Each experiment generates a dictionary with relevant
         results. These results are stored in the MeasuresAnalysis
         experiment_result attribute. The action that identifies
@@ -107,8 +117,6 @@ class MeasuresAnalysis:
                                }
                                
             PCA_ANALYSIS       [pca_info]
-                              *******
-           
             
             HYPER_SEARCH      repeats=1, 
                               overwrite_previous=True
@@ -172,18 +180,21 @@ class MeasuresAnalysis:
         # All measures from 10 split files combined
         # into one df, and augmented with rec_datetime,
         # the recording time's sin/cos transformations for
-        # hour, day, month, and year, and the is_daylight
+        # hour, day, month, and year, and the is_daytime
         # column. This df includes the split number, file_id,
         # And a few other administrative data that should not
         # be used for training:
         
         all_measures_with_admins_fname = Localization.all_measures
-        all_measures_with_admins = pd.read_feather(all_measures_with_admins_fname)
+        self.all_measures_with_admins = pd.read_feather(all_measures_with_admins_fname)
         
         # Take out the administrative data:
-        self.all_measures = all_measures_with_admins.drop(columns=['file_id', 'split','rec_datetime'])
+        self.all_measures = self.all_measures_with_admins.drop(columns=['file_id', 'split','rec_datetime'])
 
-        
+        if action is None:
+            # Caller just wanted data init:
+            return
+                
         if action == Action.PCA:
             self.log.info("Computing PCA")
             res = self.pca_action(**kwargs)
@@ -265,21 +276,32 @@ class MeasuresAnalysis:
             
         elif action == Action.PRINT_CLF_RESULTS:
             self.log.info("Printing classification results:")
-            self.print_clf_results()
-
+            self.print_clf_results_action()
+            res = None
         
         # Save the results, usually packaged as a dict:
-        self.experiment_result = res
+        if res is not None:
+            self.experiment_result = res
         
     #------------------------------------
     # pca_action
     #-------------------
     
-    def pca_action(self, n_components=None):
+    def pca_action(self, 
+                   n_components=None,
+                   to_exclude=None,
+                   to_include=None,
+                   comment=None,
+                   data_src=None
+                   ):
         '''
         Runs PCA on all chirp data. Saves PCA object, weight matrix,
         and the transformed original data, as well as several
         figures. All these will be in Localization.analysis_dst.
+
+        The to_include and to_exclude are optional lists of measures
+        (columns in the measurements data) to exclude from the PCA.
+        At most one of these may be used. 
          
         Returns dict:
         
@@ -298,10 +320,43 @@ class MeasuresAnalysis:
         :param n_components: number of components to which the
             data is to be reduced
         :type n_components: union[None, int]
+        :param to_exclude: variables to exclude from computations
+        :type to_exclude: optional[list[str]]
+        :param to_include: which variables to include in computations
+            either to_exclude, or to_include must be None
+        :type to_include: optional[list[str]]
+        :param comment: textural description to include in 
+            computed, and returned records.
+        :type optional[str]
+        :param data_src: if provided: the path from where to 
+            load the to main data. Default is None, which 
+            means the already loaded self.all_measures is used.
+        :type data_src: optional[str]
         :return: dict with pc, weight matrix, and transformed data, 
             as well as the file names where they were saved.
         :rtype dict[str : any]
         '''
+
+        if to_include is not None and to_exclude is not None:
+            raise ValueError('Only one of to_include and to_exclude may be non_None.')
+
+        if data_src is None:        
+            with UniversalFd(Localization.all_measures, 'r') as fd:
+                all_data = fd.asdf()
+        else:
+            with UniversalFd(data_src, 'r') as fd:
+                all_data = fd.asdf()
+        
+        # Drop the measures to exclude (other than the
+        # measure to be predicted):
+        if to_exclude is not None:
+            # Drop the cols in place     
+            all_data.drop(axis='columns', columns=to_exclude, inplace=True)
+            
+        elif to_include is not None:
+            cols_to_drop = set(all_data.columns) - set(to_include)
+            all_data.drop(axis='columns', columns=cols_to_drop, inplace=True)
+        
         if n_components is None:
             n_components = len(self.all_measures.columns)
             
@@ -309,7 +364,7 @@ class MeasuresAnalysis:
         # and 'xformed_data'. Also saves the PCA, returning the
         # file path to the saved pca in a dict:
         pca, weight_matrix, xformed_data, pca_save_file = self.data_calcs.pca_computation(
-            df=self.all_measures, 
+            df=all_data,
             n_components=n_components,
             dst_dir=self.analysis_dst
             ).values()
@@ -339,13 +394,23 @@ class MeasuresAnalysis:
                                                        samples=num_samples)
         self.log.info(f"Saving transformed data to {xformed_data_fname}")
         xformed_data.to_feather(xformed_data_fname)
+
+        comment_fname = Utils.mk_fpath_from_other(pca_save_file,
+                                                  prefix='comment', 
+                                                  suffix='.txt',
+                                                  components=n_components,
+                                                  samples=num_samples)
+        self.log.info(f"Saving comment to {comment_fname}")
+        with open(comment_fname, 'w') as fd:
+            fd.write(comment)
         
         return {'pca' : pca, 
                 'weight_matrix'      : weight_matrix, 
                 'xformed_data'       : xformed_data,
                 'pca_file'           : pca_save_file,
                 'weights_file'       : weights_fname,
-                'xformed_data_fname' : xformed_data_fname
+                'xformed_data_fname' : xformed_data_fname,
+                'comment'            : comment
                 }
     
     #------------------------------------
@@ -515,17 +580,44 @@ class MeasuresAnalysis:
         if json_path is not None \
             and os.path.exists(json_path) \
             and json_path.endswith('.json'):
-            ClassifictionResult.printf(json_path)
+            # Try to find a timestamp in the file:
+            try:
+                timestamp = Utils.time_from_fname(json_path)
+            except ValueError:
+                timestamp = ''
+            # Where to write output:
+            fname = f"classification_pretty_.txt"
+            ClassifictionResult.printf(json_path,
+                                       os.path.join(self.analysis_dst, fname) 
+                                       )
             return
+        
         elif json_path is None:
-            json_path = Utils.find_file_by_timestamp(
+            # Find latest classification eval json
+            # in Localization.analysis_dst:
+            json_paths = Utils.find_file_by_timestamp(
                 self.analysis_dst,
                 prefix='clf_classification_eval_',
                 suffix='.json',
                 latest=True)
-            if len(json_path) == 0:
+            if len(json_paths) == 0:
                 FileNotFoundError(f"No classification file found in {self.analysis_dst}")
-            ClassifictionResult.printf(json_path)
+            json_path = json_paths[0]
+            timestamp = Utils.extract_file_timestamp(json_path)
+            # Where to write output:
+            fname = f"classification_pretty_{timestamp}.txt"
+            # Print to the file:
+            self.log.info(f"Printing results to {fname}")
+            ClassifictionResult.printf(json_path,
+                                       os.path.join(self.analysis_dst, fname) 
+                                       )
+            # Also print a csv file that is only for spreadsheets,
+            # not for reading back:
+            fname = f"classification_pretty_{timestamp}.csv"
+            self.log.info(f"Writing csv-style results to {fname}")
+            ClassifictionResult.to_csv(json_path,
+                                       os.path.join(self.analysis_dst, fname))
+
         else:
             raise FileNotFoundError(f"Bad classification result path: {json_path}")
 
@@ -1426,7 +1518,10 @@ class Classification:
                  pr_title=None,
                  class_label_map=None,
                  class_imbalance_fix=None,
-                 cm_normalization=None
+                 positive_label=None,
+                 cm_normalization=None,
+                 comment=None,
+                 data_src=None # Default: use preloaded self.all_measures
                  ):
         '''
         Build a classifier to predict the variable(s) listed
@@ -1477,6 +1572,16 @@ class Classification:
                ALL          : resample all classes
                AUTO         : equivalent to 'not majority'
 
+        The positive_label is the name of the class of interest.
+        This is vague, but useful when selecting which value of
+        the prediction variable you want information on, the predicted 
+        variable having the value True? Or maybe the value False?
+        In multi-class specifying the value is even more useful.
+      
+        The classifiers use the set of unique values of the
+        prediction variable as class names. Those, plus their
+        ordering are in classifier_obj.classes_ 
+         
         The conf_mat_normalization argument determines whether
         the confusion matrix of the mean results across all folds
         will be normalized:
@@ -1496,10 +1601,20 @@ class Classification:
            
         The returned dict will contain:
 
-           - Average (naive) accuracy score  res_dict['avg_acc']
-           - Balanced average accuracy score res_dict['avg_balanced_acc']
-           - Confusion matrix                res_dict['conf_mat']
-           - Mean of F1 scores across folds  res_dict['F1']
+           - A ClassificationResult instance holding all the mean of
+             classification score results from all folds.
+
+             The ClassificationResult will include:             
+           
+	             - Average (naive) accuracy score
+	             - Balanced average accuracy score
+	             - Confusion matrix
+	             - Mean of F1 scores across folds
+	             - Number of cases for each class
+	             
+	                                   : res_dict['mean_scores']
+	       
+	       ******* Need to include PR in result dict?
            - Results from precision/recall   res_dict['prec_rec_results']
              analysis:
                {
@@ -1509,12 +1624,9 @@ class Classification:
                 'average_precision'    : pr_curve.average_precision,
                 'fig'                  : <the precision-recall figure>
                }
-        
-        NOTE: for binary classification the 'positive' value is taken
-              to be True, or 1. For instance, when reporting precision, the
-              number will be based on sample, and predicted variables
-              having the value either True, or 1. Similarly, probabilities 
-              will be of a variable having value True, or 1. 
+               
+        The comment argument will be added to the returned result ClassificationResult
+        object.
         
         :param to_predict: variable(s) to predict
         :type to_predict: union[str, list[str]]
@@ -1538,11 +1650,19 @@ class Classification:
         :param class_imbalance_fix: the SMOTE sampling strategy to use.
             Default: no resampling
         :type class_imbalance_fix: SMOTEOption
+        :param positive_label: class label of interest. Refers to the
+            value of the prediction variable whose probability is to
+            be determined in the classification.
+        :type positive_label: optional[str]
         :param cm_normalization: whether to normalize the result
             confusion matrix: 'true': over the 'true' (rows) conditions,
                 the predicted 'pred' (columns) condition, whole population
                 'all'. Or no normalization None (default)
-        :type cm_normalization: optional[list['true', 'pred', 'all']] 
+        :type cm_normalization: optional[list['true', 'pred', 'all']]
+        :param data_src: if None, assumes data to use is self.all_measures,
+            i.e. the measures dataframe. Else this must be the path
+            to a file with the data to load.
+        :type data_src: optional[src] 
         :returns a dict of results
         :rtype dict[str : any]
         '''
@@ -1560,9 +1680,13 @@ class Classification:
             timestamp = Utils.timestamp_from_datetime(timestamp)
         else:
             raise TypeError(f"Timestamp must be None, a datetime instance, or timestamp string, not {timestamp}")
-        
-        with UniversalFd(Localization.all_measures, 'r') as fd:
-            all_data = fd.asdf()
+
+        if data_src is None:        
+            with UniversalFd(Localization.all_measures, 'r') as fd:
+                all_data = fd.asdf()
+        else:
+            with UniversalFd(data_src, 'r') as fd:
+                all_data = fd.asdf()
         
         # Drop the measures to exclude (other than the
         # measure to be predicted):
@@ -1574,11 +1698,27 @@ class Classification:
             cols_to_drop = set(all_data.columns) - set(to_include)
             all_data.drop(axis='columns', columns=cols_to_drop, inplace=True)
         
+        self.positive_label = positive_label
+        
         # Get the desired results for the classification,
         # such as is_daylight:
-        y = all_data[to_predict]
-        # Data must exclude the predicted variable:
-        X = all_data.drop(to_predict, axis='columns', inplace=False)              
+        if to_predict in all_data.columns:
+            y = all_data[to_predict]
+            # Data must exclude the predicted variable. But
+            # if caller passed in a dataset, such as PCA-transformed
+            # data, the predicted var isn't present, so tolerate that
+            # absence:
+            X = all_data.drop(to_predict, axis='columns', inplace=False)              
+        else:
+            # Get truth from the original measures:
+            with UniversalFd(Localization.all_measures, 'r') as fd:
+                all_measures_with_admins = fd.asdf()
+            y = all_measures_with_admins[to_predict]
+            X = all_data
+        
+        # Sanity: X and y must have the same length:
+        if len(X) != len(y):
+            raise ValueError(f"Length of X and y must match, but are {len(X)} and {len(y)}, respectively") 
         
         # Split into test/train; test set to be 25% of data,
         # with a random_state set to get reproducible results:
@@ -1603,7 +1743,7 @@ class Classification:
         trn_tst_idxs_it = skf.split(dummy_X, y)
         
         if classifier is not None:
-            clf = classifier()
+            clf = classifier
         elif n_classes == 2:
             clf = LogisticRegression(max_iter=200)
         else:
@@ -1642,16 +1782,30 @@ class Classification:
             
             # Predict class probabilities:
             y_pred_proba = clf.predict_proba(X_test)
+            
+            # Make a df from the two y_pred_proba columns,
+            # and the current fold's y_test.
             # Occasionally, the length of the returned
             # y_pred_proba will be one more than 
             # the length of X_test (and y_test). Chop
-            # of the additional, and make into a df.
+            # off the additional, and make into a df.
             # The column names will be the class labels
             # used by the classifier:
             
             probs_df = pd.DataFrame(y_pred_proba[:len(X_test), :], 
                                     columns=clf.classes_, 
                                     index=X_test.index)
+            # For binary classification, at least for Logistic 
+            # Regression, the column names will be boolean:
+            # np.bool. To make the columns easier to access,
+            # we turn those bools into strings: 'True', 'False'
+            
+            # Add this fold's y_test truth column:
+            # The new column will have name 'y_true':
+            saved_cols = list(probs_df.columns)
+            probs_df = pd.concat([probs_df, y_test], axis='columns')
+            saved_cols.append('y_true')
+            probs_df.columns = saved_cols 
             y_pred_probs.append(probs_df)
 
             # Note the results for this fold:
@@ -1665,8 +1819,10 @@ class Classification:
         # Get a ClassifictionResult instance
         # that holds the means of all measurements
         # from the folds. A comment will be constructed
-        # from the comments injected in each fold score:
-        mean_scores_obj = ClassifictionResult.mean(scores) 
+        # from the comments injected in each fold score,
+        # unless the caller provided one:
+        self.log.info(f"Computing mean of results from all {n_fold} folds")
+        mean_scores_obj = ClassifictionResult.mean(scores, comment=comment)
         
         # Result Metrics Computations
         res_dict = {'mean_scores' : mean_scores_obj}    
@@ -1683,8 +1839,7 @@ class Classification:
         fig_fname = f"clf_conf_matrix_fig_{timestamp}.png"
         cm_fig.savefig(os.path.join(self.dst_dir, fig_fname))
         
-        pr_dict, pr_fig = self.make_precision_recall(y_test, 
-                                                     y_pred_probs,
+        pr_dict, pr_fig = self.make_precision_recall(y_pred_probs,
                                                      clf, 
                                                      pr_title=pr_title, 
                                                      plot_chance_level=False)
@@ -1727,7 +1882,7 @@ class Classification:
             by sklearn.confusion_matrix
         :type confusion_matrix: [ndarray[n_classes, n_classes]]
         :param classifier: classifier object that computed results
-        :type classifier: sklearn.classifier.***
+        :type classifier: sklearn.sklearn.linear_model.<classifier>
         :param cm_title: title for top of confusion matrix figure
         :type cm_title: optional[str]
         :param class_label_map: map from data values to human readable labels.
@@ -1738,11 +1893,11 @@ class Classification:
         '''
         # If confusion matrices is a list of cms, 
         # pick one at random:
-        conf_mat_df = pd.DataFrame(confusion_matrix) 
+        confusion_matrix
 
-        cm_fig = ConfusionMatrixDisplay(conf_mat_df.to_numpy())
+        cm_fig = ConfusionMatrixDisplay(confusion_matrix.to_numpy())
 
-        cm_fig.plot(values_format='')
+        cm_fig.plot(values_format='', cmap='Blues')
         
         fig = cm_fig.figure_
         if cm_title is not None:
@@ -1784,37 +1939,48 @@ class Classification:
             ax.set_xticklabels(cf_label_objs)
             ax.set_yticklabels(cf_label_objs)
             # Same for the conf mat df columns and index:
-            conf_mat_df.columns = [cm_label.get_text() for cm_label in cf_label_objs]
-            conf_mat_df.index = [cm_label.get_text() for cm_label in cf_label_objs]
+            confusion_matrix.columns = [cm_label.get_text() for cm_label in cf_label_objs]
+            confusion_matrix.index = [cm_label.get_text() for cm_label in cf_label_objs]
             
             fig.show()          
-        return conf_mat_df, fig
+        return confusion_matrix, fig
         
     #------------------------------------
     # make_precision_recall 
     #-------------------
     
     def make_precision_recall(self,
-                              y_test, y_pred_probabilities,
+                              y_pred_probs,
                               classifier,
-                              positive_label=None, 
                               curve_label=None, 
                               plot_chance_level=True,
                               pr_title=None,
                               ):
         '''
-        For binary classification: draw the precision/recall curve.
+        For one or more binary classifications: draw precision/recall 
+        curves for each into the same plot. 
         
-        Given truth data (1-D), and the class probabilities for
-        each class (n-samples x 2 in case of binary classification), draw
-        the PR chart.
+        The y_pred_probs is expected to be a list of dataframes.
+        Each df must have the form:
+        
+		   	          False      True      y_true
+		   	0      0.002854  0.997146       False
+		   	1      0.003423  0.996577       False
+		   	2             ...
+		   	        
+        where y_true are the true values of the predicted
+        variable. That column is the truth data for the 
+        probabilities in the False/True columns.
+        
+        Draw the PR chart(s), all in one figure:
         
         Returns a dict:
            {
             'pr_df'                : pr_df,
             'pos_label'            : pr_curve.pos_label,
             'prevalence_pos_label' : pr_curve.prevalence_pos_label,
-            'average_precision'    : pr_curve.average_precision,
+            'average_precision'    : average of the average precisions
+                                     across all folds
             'fig'                  : <PR-figure>
            }
         
@@ -1829,18 +1995,13 @@ class Classification:
         is 0.0972, then the true 'daytime' outcome is only 10%, i.e. 
         the data are imbalanced.   
         
-        :param y_test: truth data
-        :type y_test: list[float]
-        :param y_pred_probabilities: probs for each class
-        :type y_pred_probabilities: list[list[float]]
+        :param y_pred_probs: dataframes, each with probabilities
+            for negative and positive class membership, plus
+            a column with truth.
+        :type y_pred_probs: list[pd.DataFrame]
         :param classifier: the classifier object that produced
             the probabilities. Used to find number of classes.
         :type classifier: sklearn.Classifier
-        :param positive_label: the class label for which precision
-            and recall are to be evaluated. If binrary classifier,
-            the True, or 1 label is assumed. But None is error
-            for multi-class.
-        :type positive_label: optional[int,bool,str]
         :param curve_label: label for the PR curve
         :type curve_label: optional[str]
         :param plot_chance_level: whether to plot a horizontal curve
@@ -1857,73 +2018,70 @@ class Classification:
         class_labels = classifier.classes_
 
         # Find the class label for the positive class:
-        if num_classes > 2 and positive_label is None:
-            msg = f"For multi-class results (this one is {num_classes} classes), must provide positive_label"
+        if num_classes > 2 and self.positive_label is None:
+            msg = f"For multi-class results (this one is {num_classes} classes), must provide positive_label when calling classify()"
             raise ValueError(msg)
         
-        elif num_classes == 2 and positive_label is None:
+        elif num_classes == 2 and self.positive_label is None:
             # Guess that the positive label is 1:
-            if 1 in class_labels:
-                positive_label = 1
-            elif True in class_labels:
-                # Superfluous, b/c Python treats True is a 1,
-                # but don't rely on that:
-                positive_label = True
+            if True in class_labels:
+                # Find the position of np.True_ in class_labels,
+                # which is an np_array without the Python list's index().
+                true_pos = list(class_labels).index(True)
+                positive_label = class_labels[true_pos]
             else:
-                raise ValueError(f"Cannot determine positive value for classes {classifier.classes_}")
+                # Pick the last of the probability columns:
+                positive_label = class_labels[-1]
+                self.log.warn(f"No positive-class label provided; choosing last in {classifier.classes_}")
         
-        # If class probabilities is a list
-        # pick one at random:
-        if type(y_pred_probabilities) == list:
-            
-            # We have n_fold dataframes, each with
-            # one probability column per target class.
-            # Pick one at random. We cannot average,
-            # because each set of probabilities is for
-            # a different subset of samples:
-            
-            pr_idx = random.randint(0,len(y_pred_probabilities) - 1)
-            y_pred_probs = y_pred_probabilities[pr_idx] 
-        else:
-            y_pred_probs = y_pred_probabilities
-
-        # Find the position of the probabilities for 
-        # the positive label in the probs dataframe:
-        try:
-            target_prob_col_idx = list(class_labels).index(positive_label)
-        except ValueError:
-            raise ValueError(f"Cannot find positive label {positive_label} in probs df columns: {class_labels}")
-            
-        # pos_label is the data value of the 'positive' class: 
-        # the needle in the haystack we look for. Seems not always
-        # clearly meaningful.
         # The [:,1] selects the probs of the second class:
-        # The plot_chance_level=True draws horizontal line at precision
+        # If plot_chance_level=True, draws horizontal line at precision
         # you would get by guessing the majority class. With class imbalance, 
         # that won't be .5, 
-        pr_curve = PrecisionRecallDisplay.from_predictions(
-            y_test, y_pred_probs.iloc[:, target_prob_col_idx], 
-            #pos_label=True, 
-            name=curve_label, 
-            plot_chance_level=plot_chance_level)
-         
-        fig = pr_curve.figure_
+        
+        precision_vals = []
+        # Go through each df with probabily/truth info, and
+        # make a pr_curve object:
+        fig, ax = plt.subplots()
+        for prediction in y_pred_probs:
+            
+            y_true = prediction.y_true
+            y_prob = prediction.loc[:,positive_label]
+            pr_curve = PrecisionRecallDisplay.from_predictions(
+                y_true, y_prob,
+                #pos_label=True, 
+                name=curve_label, 
+                plot_chance_level=plot_chance_level,
+                ax=ax # Draw all curves on one figure
+                )
+            precision_vals.append(pd.Series(pr_curve.precision))
         if pr_title:
             fig.suptitle(pr_title)
+
+        # Get mean of precision values, and draw final curve
+        # in black:
+        # Get the shortest of the precision series:
+        size = min([len(ser) for ser in precision_vals])
+        precs_df = pd.concat([ser[0:size] for ser in precision_vals], axis='columns')
+        prec_mean_y = precs_df.mean(axis='columns')
+        recs_x      = pr_curve.recall[:size]
+        ax.plot(recs_x, prec_mean_y, color='black')
         fig.show()
         
-        # Create dict with the numeric portions
-        # for saving:
-        
-        precisions = pd.Series(pr_curve.precision, name='precision')
-        recalls    = pd.Series(pr_curve.recall, name='recall')
-        pr_df = pd.DataFrame({'recall' : recalls, 'precision' : precisions})
+        # The overall ave prec is the mean of 
+        # precisions of the mean curve:
+        avg_prec_overall = prec_mean_y.mean()
+
+        # Create dict with the means for saving.
+        recs_ser  = pd.Series(recs_x, name='recall') 
+        precs_ser = pd.Series(prec_mean_y, name='mean_precision')
+        pr_df = pd.DataFrame({'recall' : recs_ser, 'precision' : precs_ser})
         
         res_df = {
             'pr_df'                : pr_df,
             'pos_label'            : pr_curve.pos_label,
             'prevalence_pos_label' : pr_curve.prevalence_pos_label,
-            'average_precision'    : pr_curve.average_precision,
+            'average_precision'    : avg_prec_overall,
             'fig'                  : fig
             }
 
@@ -2009,6 +2167,75 @@ def get_timestamp():
 # ------------------------ Main ------------
 if __name__ == '__main__':
 
+    # -------------------------------------------------------------------   
+    # Stats of data: a df like:
+    #                      numFiles   numChirps    meanChirpsPerFile
+    #     Timing              
+    #     Nighttime
+    #     Daytime
+    #     Total
+
+    # ma = MeasuresAnalysis(action=None)
+    # gp = ma.all_measures_with_admins.groupby(by='file_id')
+    #
+    # # Nums Overall:
+    #
+    # num_files_total = len(gp.groups)
+    # num_chirps_total = len(ma.all_measures_with_admins)
+    # min_chirp_seq_len_total = gp.size().min()
+    # max_chirp_seq_len_total = gp.size().max()
+    # mean_chirp_seq_len_total = gp.size().mean()
+    #
+    # # Nums Nighttime:
+    # # Get groups of measures df like:
+    # #    {False : [3,5,6...],
+    # #      True : [10,50,30...]
+    # gp_light = ma.all_measures_with_admins.groupby(by='is_daytime')
+    # # The night indexes: is_daytime is False:
+    # night_idxs = gp_light.groups[False]
+    # day_idxs   = gp_light.groups[True]
+    # night_df   = ma.all_measures_with_admins.iloc[night_idxs, :]
+    # day_df     = ma.all_measures_with_admins.iloc[day_idxs, :]
+    #
+    # num_chirps_night = len(night_df)
+    # num_chirps_day   = len(day_df)
+    #
+    # gp_night_df      = night_df.groupby(by='file_id')
+    # num_files_night  = len(gp_night_df.groups)
+    # min_night_chirp_seq_len = gp_night_df.size().min()
+    # max_night_chirp_seq_len = gp_night_df.size().max()
+    # mean_night_chirp_seq_len = gp_night_df.size().mean()
+    #
+    # gp_day_df      = day_df.groupby(by='file_id')
+    # num_files_day  = len(gp_day_df.groups)
+    # min_day_chirp_seq_len = gp_day_df.size().min()
+    # max_day_chirp_seq_len = gp_day_df.size().max()
+    # mean_day_chirp_seq_len = gp_day_df.size().mean()
+    #
+    # # All together:
+    # data_summary = pd.DataFrame(
+    #     {'numFiles'     	: [num_files_night, num_files_day, num_files_total],
+    #      'numChirps'    	: [num_chirps_night, num_chirps_day, num_chirps_total],
+    #      'meanChirpSeqLen'  : [mean_night_chirp_seq_len, mean_day_chirp_seq_len, mean_chirp_seq_len_total],
+    #      'minChirpSeqLen'   : [min_night_chirp_seq_len, min_day_chirp_seq_len, min_chirp_seq_len_total],
+    #      'maxChirpSeqLen'   : [max_night_chirp_seq_len, max_day_chirp_seq_len, max_chirp_seq_len_total],
+    #      },
+    #     index=['Nighttime', 'Daytime', 'Total'],
+    #     )
+    # data_summary.index.name='Timing'
+    # tbl_txt = data_summary.to_markdown()
+    # timestamp = Utils.file_timestamp()
+    # tbl_fname = f"data_summmary_tbl_{timestamp}.txt"
+    # with open(os.path.join(Localization.analysis_dst, tbl_fname), 'w') as fd:
+    #     fd.write(tbl_txt)
+    # sys.exit()
+
+    # -------------------------------------------------------------------   
+    # Print the most recent classification result:
+    # MeasuresAnalysis(Action.PRINT_CLF_RESULTS)
+    # sys.exit()
+
+    # -------------------------------------------------------------------   
     # Create a correlation heatmap for all the
     # numeric measurements:
     
@@ -2036,7 +2263,26 @@ if __name__ == '__main__':
 
     # -------------------------------------------------------------------   
     # Force a new PCA to be made:
-    #analysis =MeasuresAnalysis(Action.PCA)
+    #
+    # Include all non-administrative measures, and 
+    # as many components as there are measures:
+    # analysis = MeasuresAnalysis(Action.PCA)
+    # sys.exit()
+
+    # comment = ('PCA analysis to create 23 components, which was previously '
+    #            'determined to cover 90% of the variance. Excluded is '
+    #            'is_daytime, because we will want to predict that with the '
+    #            'components. Total of 297,476 chirps. In-features: 115.'
+    #            )
+    # # Include all non-administrative measures that  
+    # # are not time related, other than TimeInFile:
+    # analysis = MeasuresAnalysis(
+    #     Action.PCA,
+    #     n_components=23,
+    #     to_exclude=['is_daytime'],
+    #     comment=comment
+    #     )
+    # sys.exit()
     
     
     # Make a new PCA, or use an existing one if available:
@@ -2072,20 +2318,28 @@ if __name__ == '__main__':
     #     class_imbalance_fix=SMOTEOption.MINORITY
     #     )
     #----------------------------------------------
-    # Train to predict is_daytime with top22 measures PLUS recording time:
+    
+    # Train to predict is_daytime with top23 measures PLUS recording time:
+    # See commented-out sin/cos entries to vary with or without time info:
     
     timestamp = get_timestamp()        
     clf = Classification()
     
+    # inclusions = [ 
+    #             'TimeInFile', 'PrecedingIntrvl', 'CallsPerSec',
+    #             'CallDuration', 'Fc', 'HiFreq', 'LowFreq',
+    #             'Bndwdth', 'FreqMaxPwr', 'PrcntMaxAmpDur',
+    #             'TimeFromMaxToFc', 'FreqKnee', 'PrcntKneeDur',
+    #             'StartF', 'EndF', 'DominantSlope', 'SlopeAtFc',
+    #             'StartSlope', 'EndSlope', 'SteepestSlope',
+    #             'LowestSlope', 'TotalSlope', 'HiFtoKnSlope',
+    #             #'sin_hr', 'cos_hr',
+    #             'is_daytime' # The var to predict
+    #             ]
     inclusions = [ 
-                'TimeInFile', 'PrecedingIntrvl', 'CallsPerSec',
-                'CallDuration', 'Fc', 'HiFreq', 'LowFreq',
-                'Bndwdth', 'FreqMaxPwr', 'PrcntMaxAmpDur',
-                'TimeFromMaxToFc', 'FreqKnee', 'PrcntKneeDur',
-                'StartF', 'EndF', 'DominantSlope', 'SlopeAtFc',
-                'StartSlope', 'EndSlope', 'SteepestSlope',
-                'LowestSlope', 'TotalSlope', 'HiFtoKnSlope',
-                'sin_hr', 'cos_hr',
+                'CallsPerSec', 'CallDuration', 'Fc', 'Bndwdth', 
+                'PrcntMaxAmpDur', 'FreqKnee', 'DominantSlope',
+                #'sin_hr', 'cos_hr',
                 'is_daytime' # The var to predict
                 ]
     
@@ -2099,7 +2353,60 @@ if __name__ == '__main__':
         pr_title="Daytime Prediction: Precision/Recall Tradeoff",
         timestamp=timestamp,
         class_imbalance_fix=SMOTEOption.MINORITY,
-        cm_normalization=None
+        cm_normalization=None,
+        # NOTE: not logistic regression here:
+        classifier=RandomForestClassifier(
+            max_depth=6,
+            min_samples_leaf=5,
+            n_jobs=5
+            ),
+        n_fold=3,
+        #****comment="Predict daytime rec. Sin/Cos time provided. Imbalance fix: SMOTE.Minority",
+        #****comment="Top 23 features. Predict daytime rec. Cos/sin NOT provided Imbalance fix: SMOTE.Minority",
+        #****comment="Top 23 features. Predict daytime rec. Cos/sin NOT provided. Random Forest. Imbalance fix: SMOTE.Minority",
+        comment="Small selection of top23. Folds: 3. Predict daytime. Cos/sin NOT provided. Random Forest. Imbalance fix: SMOTE.Minority"
+        #***************
+        #n_fold=2
+        #***************
         )
+    # Place two files into the Localization.analysis_dst dir:
+    # A .csv file with the scores as a table. This file cannot
+    # be used for recovering the scores. Just for spreadsheets.
+    # The second file is a printable .txt file withe a human
+    # readable table with the classification results. The scores
+    # will be read from the json files that clf.classify placed
+    # in Localization.analysis_dst:
+    MeasuresAnalysis(Action.PRINT_CLF_RESULTS)
     
-    print(clf)
+    #----------------------------------------------
+    
+    # Train to predict is_daytime with the PCA transformed measures.
+    
+    # timestamp = get_timestamp()        
+    # clf = Classification()
+    #
+    # # Imbalanced vs. balanced data:
+    # res_dict = clf.classify(
+    #     'is_daytime',
+    #     class_label_map={True : 'Daytime',
+    #                      False: 'Nighttime'},
+    #     cm_title="Daytime Prediction PCA Components: Confusion Matrix",
+    #     pr_title="Daytime Prediction PCA Components: Precision/Recall Tradeoff",
+    #     timestamp=timestamp,
+    #     cm_normalization=None,
+    #     #comment="Top 23 components. Predict daytime. Data imbalanced.",
+    #     comment="Top 23 components. Predict daytime. Imbalance fix: SMOTE.Minority.",
+    #     class_imbalance_fix=SMOTEOption.MINORITY,
+    #     data_src=Localization.pca_xformed # USE THE PCA-TRANSFORMED DATA!
+    #     )
+    #
+    # # Place two files into the Localization.analysis_dst dir:
+    # # A .csv file with the scores as a table. This file cannot
+    # # be used for recovering the scores. Just for spreadsheets.
+    # # The second file is a printable .txt file withe a human
+    # # readable table with the classification results. The scores
+    # # will be read from the json files that clf.classify placed
+    # # in Localization.analysis_dst:
+    # MeasuresAnalysis(Action.PRINT_CLF_RESULTS)
+    #
+    # print(clf)

@@ -72,6 +72,7 @@ class ClassifictionResult:
         'cls_nms',
         'class_label_map',
         'conf_mat',
+        'conf_mat_normalization',
         'comment'
         ]
     #------------------------------------
@@ -265,11 +266,12 @@ class ClassifictionResult:
             
         # See whether caller specified how the conf mat
         # should be normalized:
-        cm_normalization = kwargs.get('cm_normalize', None)
+        self.conf_mat_normalization = kwargs.get('cm_normalize', None) 
         conf_mat = confusion_matrix(y_true_mapped, y_pred_mapped, 
-                                    normalize=cm_normalization
+                                    normalize=self.conf_mat_normalization
                                     )
         conf_mat_df = pd.DataFrame(conf_mat)
+        
         self.conf_mat = conf_mat_df
         
         # Finally, any comment to describe this result:
@@ -326,7 +328,6 @@ class ClassifictionResult:
                                     ]
             kwargs[cls_nm] = pd.concat(
                 all_class_ir_results, axis=1).sum(axis=1) / len(clf_results)
-        
         # Get mean of weighted_avg:
         kwargs['weighted_avg'] = pd.concat([obj.weighted_avg
                                             for obj 
@@ -361,7 +362,12 @@ class ClassifictionResult:
                          in clf_results
                          ]
         kwargs['conf_mat'] = reduce(lambda df1, df2: df1.add(df2), conf_mat_list) / len(clf_results)
-        
+        conf_mat_normalization = clf_results[0].conf_mat_normalization
+        if conf_mat_normalization is None:
+            # Round the numbers: they are sample
+            # means of sample counts:
+            kwargs['conf_mat'] = kwargs['conf_mat'].round(0).astype(int)
+            
         if comment is None:
             # Compose a new comment:
             comments = [f"Comment: {obj.comment}\n"
@@ -374,7 +380,7 @@ class ClassifictionResult:
         kwargs['classes_'] = list(clf_results[0].classes_)
         kwargs['cls_nms']  = clf_results[0].cls_nms
         kwargs['class_label_map'] = clf_results[0].class_label_map
-        
+        kwargs['conf_mat_normalization'] = clf_results[0].conf_mat_normalization
          
         means_obj = ClassifictionResult.__new__(
             ClassifictionResult,
@@ -420,6 +426,7 @@ class ClassifictionResult:
         state_dict['cls_nms']          = self.cls_nms
         state_dict['class_label_map']  = json.dumps(self.class_label_map) # dict
         state_dict['conf_mat']         = self.conf_mat.to_json()  # DataFrame
+        state_dict['conf_mat_normalization'] = self.conf_mat_normalization
         state_dict['comment']          = self.comment
         
         if type(path_info) == str:
@@ -449,12 +456,15 @@ class ClassifictionResult:
         state_dict = json.loads(jstr)
         # Get an empty ClassifictionResult:
         kwargs = {}
-        kwargs['weighted_avg']     = pd.Series(state_dict['weighted_avg'], name='weighted_avg')
-        kwargs['macro_avg']        = pd.Series(state_dict['macro_avg'], name='macro_avg')
+        kwargs['weighted_avg']     = pd.Series(
+            json.loads(state_dict['weighted_avg']), name='weighted_avg')
+        kwargs['macro_avg']        = pd.Series(
+            json.loads(state_dict['macro_avg']), name='macro_avg')
         kwargs['acc']              = state_dict['acc']
         kwargs['balanced_acc']     = state_dict['balanced_acc']
         kwargs['classes_']         = state_dict['classes_']
         kwargs['cls_nms']          = state_dict['cls_nms']
+        kwargs['conf_mat_normalization'] = state_dict['conf_mat_normalization']
         # Be tolerant of comment not being present, though
         # it should be, even if as an empty string:
         try:
@@ -506,7 +516,9 @@ class ClassifictionResult:
         for class_nm in class_nm_attrs:
             # The class name attributes are pd.Series with
             # 'precision', 'f1_score', etc.
-            kwargs[class_nm] = pd.Series(state_dict[class_nm], name=class_nm)
+            kwargs[class_nm] = pd.Series(
+                json.loads(state_dict[class_nm]), 
+                name=class_nm)
 
         cr = ClassifictionResult.__new__(ClassifictionResult, 
                                          y_test=None, y_pred=None,
@@ -518,7 +530,8 @@ class ClassifictionResult:
     # to_csv
     #-------------------
     
-    def to_csv(self, src_info, dest:None):
+    @classmethod
+    def to_csv(cls, src_info, dest:None):
         '''
         Create first a dataframe, and from it a .csv string
         that is only for the purpose of showing the content
@@ -545,7 +558,7 @@ class ClassifictionResult:
 	        weighted_avg        na  0.955661   0.90487  0.919067        5
 	        balanced_acc  0.943703        na        na        na       na
 	        acc            0.90487        na        na        na       na
-	        
+	        comment          <txt>
                 
         :param src_info: either a ClassificationResult or a file path
             to a json string
@@ -610,21 +623,37 @@ class ClassifictionResult:
         acc.value = clf_res_obj.acc
         lines.append(acc)
         
+        comment = pd.Series(['na']*len(header), name='comment', index=header)
+        comment.value = clf_res_obj.comment
+        lines.append(comment)
+        
         out_df = pd.DataFrame(lines)
         out_df.index.name = 'Measure'
 
         out_csv = out_df.to_csv()
         
-        if dest is None:
-            dest = sys.stdout
-        dest.write(out_csv)
+        try:
+            if dest is None:
+                fd = sys.stdout
+            elif isinstance(dest, io.TextIOWrapper):
+                # An already open fd:
+                fd = dest
+            elif type(dest) == str:
+                fd = open(dest, 'w')
+            else:
+                raise TypeError(f"Destination must be an open fd, or path, not {dest}")
+            fd.write(out_csv)
+        finally:
+            if dest is not None and not isinstance(dest, io.TextIOWrapper):
+                fd.close()
         return out_df
 
     #------------------------------------
     # printf
     #-------------------
     
-    def printf(self, src_info, dest:None):
+    @classmethod
+    def printf(cls, src_info, dest:None):
         '''
         Arg src_info may be the path to json file that was saved 
         by this class, or it could be ClassificationResult instance.
@@ -646,12 +675,30 @@ class ClassifictionResult:
         #     weighted_avg        na  0.955661   0.90487  0.919067        5
         #     balanced_acc  0.943703        na        na        na       na
         #     acc            0.90487        na        na        na       na
+        #
+        #   *<comment>
     
         # We just want the returned print
         # content df; so ignore the .csv output
         with open('/dev/null', 'w') as fd:    
-            csv_df = self.to_csv(src_info, fd)
-        print(csv_df.to_markdown(), file=dest)
+            csv_df = cls.to_csv(src_info, fd)
+        # Print the tabular data (without the comment line):
+        try:
+            if dest is None:
+                fd = sys.stdout
+            elif isinstance(dest, io.TextIOWrapper):
+                # An already open fd:
+                fd = dest
+            elif type(dest) == str:
+                fd = open(dest, 'w')
+            else:
+                raise TypeError(f"Destination must be an open fd, or path, not {dest}")
+            print(csv_df.iloc[:-2, :].to_markdown(), file=fd)
+            # Print the comment:
+            print(f"\n**{csv_df.loc['comment',:].value}\n", file=fd)
+        finally:
+            if dest is not None and not isinstance(dest, io.TextIOWrapper):
+                fd.close()
 
     #------------------------------------
     # _numerify_df_indexes

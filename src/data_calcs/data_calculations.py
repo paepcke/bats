@@ -17,6 +17,7 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
+from scipy import stats
 import csv
 import joblib
 import json
@@ -34,6 +35,12 @@ class Localization:
     analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/Classifications')
     sampling_dst   = os.path.join(proj_dir, 'results/chirp_samples')
     srch_res_dst   = os.path.join(proj_dir, 'results/hyperparm_searches')
+
+    # All measures, but transformed via PCA:    
+    pca_xformed    = os.path.join(
+        proj_dir,
+        'results/chirp_analysis/Classifications/PCA23Components_all_but_is_daytime/xformed2024-06-10T16_44_54_23components_297476samples.feather' 
+        )
  
     all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.feather'
     measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
@@ -1350,6 +1357,67 @@ class DataCalcs:
             result.to_json(outfile)
     
         return result
+
+    #------------------------------------
+    # correlate_all_against_one
+    #-------------------
+
+    @staticmethod
+    def correlate_all_against_one(df, target_col):
+        '''
+        Calculates the correlation of each variable in a DataFrame 
+        with one other. The df is of dimension n_samples x n_features
+    
+        :param df: The DataFrame containing the data.
+        :type df: pd.DataFrame
+        :param target_col: The column name to which correlations are computed
+        :type target_col: str
+        :return Series with Pearson correlation of each 
+            original variable against the target. The Series
+            index will be the measure names.
+        :rtype pd.Series
+        '''
+
+        target_ser = df[target_col]        
+        # Exclude the target column
+        filtered_df = df.drop(target_col, axis=1)
+          
+
+        # Is the target column dichotomous?
+        if len(df[target_col].unique()) == 2:
+            # Result from one pointbiserial corr computation:
+            # A correlation coefficient, and an associated p_value:
+            pt_ser_res = namedtuple('PtSerRes', ['corr', 'p_value'])
+            # Dichotomous, use pointserial correlation variant:
+            def point_serial_one_var(continuous_vals):
+                point_biserial_r, p_value = stats.pointbiserialr(continuous_vals, target_ser)
+                #****return pt_ser_res(point_biserial_r, p_value)
+                return pd.Series([point_biserial_r, p_value], index=[f"Corr_all_against_{target_col}", 
+                                                                     'p_value'], 
+                                 name=continuous_vals.name)
+            
+            # Get like the following:
+            #                        TimeInFile  PrecedingIntrvl  CallsPerSec  chirp_idx
+            #    point_biserial_r         0.0              0.0          0.0   0.944911
+            #    p_value                  1.0              1.0          1.0   0.212296
+            #
+            # and transpose it to get like:
+            #                     point_biserial_r   p_value
+            #    TimeInFile               0.000000  1.000000
+            #    PrecedingIntrvl          0.000000  1.000000
+            #    CallsPerSec              0.000000  1.000000
+            #    chirp_idx                0.944911  0.212296
+
+            res_df = filtered_df.apply(point_serial_one_var, axis='rows').T
+
+        else:
+            # Target is not dichotomous:
+            # Calculate correlation matrix (excluding target column itself)
+            corr_ser = filtered_df.corrwith(target_ser, axis='rows')
+            corr_ser.name = f"Corr_all_against_{target_col}"
+            nans = pd.Series([np.nan] * len(corr_ser), index=corr_ser.index, name='p_value')
+            res_df = pd.concat([corr_ser, nans], axis='columns')
+        return res_df
 
     #------------------------------------
     # make_chirp_sample_file

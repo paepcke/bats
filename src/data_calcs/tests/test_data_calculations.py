@@ -17,8 +17,8 @@ import os
 import pandas as pd
 import unittest
 
-TEST_ALL = True
-#TEST_ALL = False
+#******TEST_ALL = True
+TEST_ALL = False
 
 class DataPrepTester(unittest.TestCase):
 
@@ -533,6 +533,53 @@ class DataPrepTester(unittest.TestCase):
                           round(df.cos_year[0], 4)), 
                          tuple(map(lambda trig: round(trig, 4),
                                    Utils.cycle_time(dt_check.year, TimeGranularity.YEARS))))
+
+    #------------------------------------
+    # test_correlate_all_against_one
+    #-------------------
+    
+    #*******@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_correlate_all_against_one(self):
+        
+        # First case: continuous vars against one continuous var:
+        
+         
+        # Use self.tst_df4, corr all against CallsPerSec
+        #    TimeInFile  PrecedingIntrvl  CallsPerSec  file_id
+        # 0          10              100         1000       11
+        # 1          20              200         2000       12
+        # 2          30              300         3000       13
+        
+        corrs = DataCalcs.correlate_all_against_one(self.tst_df4, 'CallsPerSec')
+        self.assertEqual(list(corrs.columns), ['Corr_all_against_CallsPerSec', 'p_value'])
+        corr_col = corrs.Corr_all_against_CallsPerSec
+        expected = pd.Series({'TimeInFile' : 1.0,
+                              'PrecedingIntrvl' : 1.0,
+                              'file_id'         : 1.0,
+                              'chirp_idx'       : 0.3273
+                              }, name='Corr_all_against_CallsPerSec')
+        pd.testing.assert_series_equal(corr_col.round(4), expected)
+        
+        # Now, continuous vars against a dichotomous var:
+        df = self.tst_df4.copy()
+        df.file_id = [0, 1, 0]
+        
+        corrs = DataCalcs.correlate_all_against_one(df, 'file_id')
+        self.assertEqual(list(corrs.columns), ['Corr_all_against_file_id', 'p_value'])
+        
+        corr_col = corrs.Corr_all_against_file_id.round(4)
+        expected = pd.Series([0.0, 0.0, 0.0, 0.9449], 
+                             name='Corr_all_against_file_id',
+                             index=['TimeInFile', 'PrecedingIntrvl', 'CallsPerSec', 'chirp_idx']
+                             )
+        pd.testing.assert_series_equal(corr_col, expected)
+        p_values = corrs.p_value.round(4)
+        expected = pd.Series([1.0, 1.0, 1.0, 0.2123], name='p_value',
+                             index=['TimeInFile', 'PrecedingIntrvl', 'CallsPerSec', 'chirp_idx']
+                             )
+        pd.testing.assert_series_equal(p_values, expected)
+        
+
 
     # ----------------------- Utilities ----------------
 

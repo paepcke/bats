@@ -12,8 +12,6 @@ from datetime import (
 from enum import (
     Enum,
     auto)
-from numba.tests.test_svml import (
-    other_funcs)
 from pathlib import (
     Path)
 import json
@@ -210,7 +208,7 @@ class Utils:
         
         NOTE: this method works with timestamps created
         by file_timestamp(), not with the timestamps 
-        used in SonoBat .wav files.
+        used in SonoBat .wav files. For those, use time_from_fname()
         
         :param fname: name to search
         :type fname: str
@@ -239,12 +237,15 @@ class Utils:
     def time_from_fname(cls, fname):
         '''
         Given a SonoBat recording .wav filename, 
-        extract, and return the recording time
+        extract, and return the recording time.
+        Note: this method is not for timestamps of
+        analysis results. For those, use extract_file_timestamp()
         
         :param fname: .wav file name from which to extract recording time
         :type fname: str
         :return recording date and time
         :rtype: datetime.datetime
+        :raise ValueError if given filename does not encode date and time
         '''
         dt = cls.rec_time_util.time_from_fname(fname)
         return dt
