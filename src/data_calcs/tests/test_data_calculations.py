@@ -31,8 +31,8 @@ import os
 import pandas as pd
 import unittest
 
-TEST_ALL = True
-#TEST_ALL = False
+#*******TEST_ALL = True
+TEST_ALL = False
 
 class DataPrepTester(unittest.TestCase):
 
@@ -720,6 +720,39 @@ class DataPrepTester(unittest.TestCase):
         expected = pd.Series([0, 17.320508])
         pd.testing.assert_series_equal(dist, expected)        
 
+    #------------------------------------
+    # test_conditional_samples
+    #-------------------
+    
+    #*******@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_conditional_samples(self):
+        
+        df = self.big_df.copy()
+        
+        num_samples = 2
+        df_2s = DataCalcs.conditional_samples(df, num_samples)
+        self.assertEqual(len(df_2s), num_samples)
+        
+        
+        # 4 samples in which file_id > 11:
+        num_samples = 4
+        df_4s_gt11 = DataCalcs.conditional_samples(df, 
+                                                   num_samples,
+                                                   cond=lambda row: row.file_id > 11)
+        self.assertEqual(len(df_4s_gt11), num_samples)
+        file_ids = df_4s_gt11.file_id
+        self.assertNotIn(11, file_ids)
+        
+        # Ask for as many samples as there are rows:
+        num_samples = len(df)
+        df_all = DataCalcs.conditional_samples(df, num_samples)
+        pd.testing.assert_frame_equal(df_all, df)
+        
+        # Ask for too many:
+        num_samples = len(df) + 1
+        with self.assertRaises(ValueError):
+            df_all = DataCalcs.conditional_samples(df, num_samples)
+
 # ------------------------- Utilities ---------
 
     #------------------------------------
@@ -849,6 +882,7 @@ class DataPrepTester(unittest.TestCase):
         self.split_df3 = pd.DataFrame([chirp9,chirp10], columns=cols)
         self.split_df3.file_id = pd.Series([15,19])
         
+        self.big_df = pd.concat([self.split_df1, self.split_df2, self.split_df3], axis='rows') 
         
 # ----------------------------- Main ------------------
 if __name__ == "__main__":

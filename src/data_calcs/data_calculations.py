@@ -46,6 +46,7 @@ import pandas as pd
 import random
 import re
 from torch.jit import isinstance
+from tifffile.tifffile import FILETYPE
 
 class Localization:
     # There is also a .csv version of the following .feather file:
@@ -1729,6 +1730,87 @@ class DataCalcs:
         
         return {'df' : df,
                 'out_fname' : save_fname}
+
+    #------------------------------------
+    # conditional_samples
+    #-------------------
+    
+    @staticmethod
+    def conditional_samples(df, 
+                            num_samples, 
+                            cond=None, 
+                            save_dir=None, 
+                            prefix=None, 
+                            timestamp=None, 
+                            save_format=FileType.CSV):
+        '''
+        Takes a dataframe and a number of samples. Returns a
+        subset of the df with num_samples rows. 
+        
+        If cond is provided, it must be a function that, when 
+        given a row, returns True if the row should be considered
+        for sampling. Else it must return False. 
+        
+        If save_dir is provided, a filename is created of the form:
+        
+           {prefix}{num_samples}_of_{population_size}_samples_{timestamp}{extension}
+           
+        where population_size is the number of rows left after 
+        rows are eliminated that do not satisfy cond. The file 
+        extension is automatically derived from the save_format enum 
+        member value.
+        
+        The timestamp is used if not None; else current datetime is used.
+        
+        It is a ValueError to ask for more samples than the available
+        qualified rows.
+        
+        :param df: dataframe from which to sample
+        :type df: pd.DataFrame
+        :param num_samples: number of samples without replacement
+        :type num_samples: int
+        :param cond: function that decides whether or not to include a given row
+        :type cond: optional[func]
+        :param save_dir: optional directory where to save the resulting df
+        :type save_dir: optional[str]
+        :param prefix: optional string to place a start of filename if saving
+        :type prefix: optional[str]
+        :param timestamp: optional timestamp string to use in filename
+        :type timestamp: optional[str]
+        :param save_format: whether to save as .csv, .csv.gz, or .feather
+        :type save_format: FileType
+        :return: a dataframe with num_samples rows that all satisfy cond
+        :rtype: pd.DataFrame
+        :raise ValueError: if requested num_samples exceeds number of
+            qualifying rows.
+        '''
+    
+        if cond is not None:
+            # Get a subset of the df that fulfills the condition:
+            df_excerpt = df.loc[cond]
+        else:
+            df_excerpt = df
+        
+        population_size = len(df_excerpt)
+        if num_samples > population_size:
+            raise ValueError(f"Dataframe only has {population_size} samples, but {num_samples} were requested")
+        if num_samples == population_size:
+            return df_excerpt
+        
+        sample_row_nums = random.sample(range(population_size), num_samples)
+        res = df_excerpt.iloc[sample_row_nums]
+        
+        if save_dir is not None:
+            # Create a file name that includes num of samples, population
+            # size (after applying condition), and timestamp:
+            if timestamp is None:
+                timestamp = Utils.file_timestamp()
+            fname = f"{prefix}{num_samples}_of_{population_size}_samples_{timestamp}{save_format.value}"
+            full_path = os.path.join(save_dir, fname)
+            with UniversalFd(full_path, 'w') as fd:
+                fd.write_df(res)
+        
+        return res
 
     #------------------------------------
     # pca_computation
