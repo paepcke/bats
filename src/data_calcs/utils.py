@@ -56,6 +56,7 @@ class Utils:
     '''
 
     rec_time_util = DaytimeFileSelector()
+    SPECIES_EXTRACT_PAT = pat = re.compile(r'[^-]*-([^.]*)\.wav')
 
     #------------------------------------
     # round_time
@@ -211,7 +212,7 @@ class Utils:
         used in SonoBat .wav files. For those, use time_from_fname()
         
         :param fname: name to search
-        :type fname: str
+        :type fname: union[str, Path]
         :return the timestamp if found, else None
         :rtype {None | str}
         '''
@@ -249,6 +250,38 @@ class Utils:
         '''
         dt = cls.rec_time_util.time_from_fname(fname)
         return dt
+
+    #------------------------------------
+    # extract_species_from_wav_filename
+    #-------------------
+    
+    @classmethod 
+    def extract_species_from_wav_filename(cls, fname):
+        '''
+        Takes filenames like:
+
+	        barn1_D20220207T215546m654-Laci-Tabr.wav
+	        barn1_D20220207T214358m129-Coto.wav
+	        barn1_D20220720T020517m043.wav
+	        
+        and returns a Python list of species names from the
+        end of the fname. The list may be empty, such as for
+        the third case above.
+         
+        :param fname: file name from whic to extract. May
+            be just the file name, or a longer pathname
+        :type fname: str
+        :returns extracted bat species
+        :rtype list[str]
+        '''
+        match = cls.SPECIES_EXTRACT_PAT.search(fname)
+        if match is None:
+            return []
+        else:
+            species_list = match[1].split('-')
+            return species_list
+        
+
 
     #------------------------------------
     # mk_fpath_from_other

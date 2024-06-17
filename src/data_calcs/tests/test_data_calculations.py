@@ -4,21 +4,35 @@ Created on Apr 27, 2024
 @author: paepcke
 '''
 
-from data_calcs.data_calculations import DataCalcs, PerplexitySearchResult
-from data_calcs.daytime_file_selection import DaytimeFileSelector
-from data_calcs.utils import Utils, TimeGranularity
-from datetime import datetime
-from logging_service.logging_service import LoggingService
-from pandas.testing import assert_frame_equal
-from tempfile import TemporaryDirectory
-from unittest.mock import MagicMock
+from data_calcs.data_calculations import (
+    DataCalcs,
+    PerplexitySearchResult)
+from data_calcs.daytime_file_selection import (
+    DaytimeFileSelector)
+from data_calcs.utils import (
+    Utils,
+    TimeGranularity)
+from datetime import (
+    datetime)
+from logging_service.logging_service import (
+    LoggingService)
+from pandas.testing import (
+    assert_frame_equal)
+from sklearn.cluster._kmeans import (
+    KMeans)
+from sklearn.datasets import (
+    make_blobs)
+from tempfile import (
+    TemporaryDirectory)
+from unittest.mock import (
+    MagicMock)
 import numpy as np
 import os
 import pandas as pd
 import unittest
 
-#******TEST_ALL = True
-TEST_ALL = False
+TEST_ALL = True
+#TEST_ALL = False
 
 class DataPrepTester(unittest.TestCase):
 
@@ -433,7 +447,7 @@ class DataPrepTester(unittest.TestCase):
         # Got correct number of samples?
         self.assertEqual(len(samples['df']), samples_wanted)
         # Same cols as the originals, plus augmentations:
-        new_cols_expected = cols.append(pd.Index(['rec_datetime', 'is_daytime', 'sin_hr', 'cos_hr',
+        new_cols_expected = cols.append(pd.Index(['rec_datetime', 'is_daytime', 'species', 'sin_hr', 'cos_hr',
        'sin_day', 'cos_day', 'sin_month', 'cos_month', 'sin_year', 'cos_year']))
         
         pd.testing.assert_index_equal(samples['df'].columns, new_cols_expected)
@@ -538,7 +552,7 @@ class DataPrepTester(unittest.TestCase):
     # test_correlate_all_against_one
     #-------------------
     
-    #*******@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_correlate_all_against_one(self):
         
         # First case: continuous vars against one continuous var:
@@ -578,7 +592,47 @@ class DataPrepTester(unittest.TestCase):
                              index=['TimeInFile', 'PrecedingIntrvl', 'CallsPerSec', 'chirp_idx']
                              )
         pd.testing.assert_series_equal(p_values, expected)
+
+        # Now, continuous vars against a dichotomous var that is not 0 and 1:
+        df = self.tst_df4.copy()
+        df.file_id = [False, True, False]
         
+        corrs = DataCalcs.correlate_all_against_one(df, 'file_id')
+        self.assertEqual(list(corrs.columns), ['Corr_all_against_file_id', 'p_value'])
+        
+        corr_col = corrs.Corr_all_against_file_id.round(4)
+        expected = pd.Series([0.0, 0.0, 0.0, 0.9449], 
+                             name='Corr_all_against_file_id',
+                             index=['TimeInFile', 'PrecedingIntrvl', 'CallsPerSec', 'chirp_idx']
+                             )
+        pd.testing.assert_series_equal(corr_col, expected)
+        p_values = corrs.p_value.round(4)
+        expected = pd.Series([1.0, 1.0, 1.0, 0.2123], name='p_value',
+                             index=['TimeInFile', 'PrecedingIntrvl', 'CallsPerSec', 'chirp_idx']
+                             )
+        pd.testing.assert_series_equal(p_values, expected)
+        
+    #------------------------------------
+    # test_find_optimal_k
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_find_optimal_k(self):
+
+        n_features = 3
+        X, _y = make_blobs(random_state=42, n_features=n_features)
+        X_df = pd.DataFrame(X, columns=['Feature1', 'Feature2', 'Feature3'])
+        
+        res_df = DataCalcs.find_optimal_k(X_df, range(2,5))
+        expected_first_2_cols = pd.DataFrame({'k' : [2,3,4],
+                                              'silhouette_score' : [0.804257,
+                                                                    0.739392,
+                                                                    0.597150
+                                                                    ]
+                                              })
+        pd.testing.assert_frame_equal(res_df[['k', 'silhouette_score']], expected_first_2_cols)
+        for row_idx in range(n_features):
+            self.assertTrue(isinstance(res_df.iloc[row_idx, 2], KMeans)) 
 
 
     # ----------------------- Utilities ----------------
@@ -621,6 +675,52 @@ class DataPrepTester(unittest.TestCase):
         self.assertEqual(len(jdict['tsne_df']), len(df))
         
 
+    #------------------------------------
+    # test_distances
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_distances(self):
+        
+        # Series with Series:
+        
+        obj1 = pd.Series([10, 20, 30])
+        obj2 = pd.Series([10, 20, 30])
+        dist = DataCalcs.distances(obj1, obj2, metric='euclidean')
+        expected = pd.Series([0.0])
+        pd.testing.assert_series_equal(dist, expected)        
+
+        obj1 = pd.Series([20, 30, 40])
+        obj2 = pd.Series([10, 20, 30])
+        
+        dist = DataCalcs.distances(obj1, obj2, metric='euclidean')
+        expected = pd.Series(np.sqrt(10**2 + 10**2 + 10**2))
+        pd.testing.assert_series_equal(dist, expected)        
+
+        # Series with df: want distance of series with each df row: 
+        obj1   = pd.Series([20, 30, 40])
+        obj2df = pd.DataFrame([[20, 30, 40], [10, 20, 30]])
+        dist   = DataCalcs.distances(obj1, obj2df, metric='euclidean')
+        expected = pd.Series([0, 17.320508])
+        pd.testing.assert_series_equal(dist, expected)        
+        
+        # df with Series:
+        obj1df = pd.DataFrame([[20, 30, 40], [10, 20, 30]])
+        obj2   = pd.Series([20, 30, 40])
+        dist   = DataCalcs.distances(obj1df, obj2, metric='euclidean')
+        expected = pd.Series([0, 17.320508])
+        pd.testing.assert_series_equal(dist, expected)        
+              
+        # df with df:
+        obj1df = pd.DataFrame([[20, 30, 40], 
+                               [10, 20, 30]])
+        obj2df = pd.DataFrame([[20, 30, 40], 
+                               [20, 30, 40]])
+        dist   = DataCalcs.distances(obj1df, obj2df, metric='euclidean')
+        expected = pd.Series([0, 17.320508])
+        pd.testing.assert_series_equal(dist, expected)        
+
+# ------------------------- Utilities ---------
 
     #------------------------------------
     # create_test_files

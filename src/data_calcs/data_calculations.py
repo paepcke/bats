@@ -4,20 +4,39 @@ Created on Apr 27, 2024
 @author: paepcke
 '''
 
-from collections import namedtuple
-from data_calcs.universal_fd import UniversalFd
-from data_calcs.utils import Utils, TimeGranularity
-from datetime import datetime
-from enum import Enum
-from io import StringIO
-from itertools import chain, accumulate
-from logging_service.logging_service import LoggingService
-from pathlib import Path
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
-from sklearn.metrics import silhouette_score
-from scipy import stats
+from collections import (
+    namedtuple)
+from data_calcs.universal_fd import (
+    UniversalFd)
+from data_calcs.utils import (
+    Utils,
+    TimeGranularity)
+from datetime import (
+    datetime)
+from enum import (
+    Enum)
+from io import (
+    StringIO)
+from itertools import (
+    chain,
+    accumulate)
+from logging_service.logging_service import (
+    LoggingService)
+from pathlib import (
+    Path)
+from scipy import (
+    stats)
+from sklearn.cluster import (
+    KMeans)
+from sklearn.decomposition import (
+    PCA)
+from sklearn.manifold import (
+    TSNE)
+from sklearn.metrics import (
+    silhouette_score)
+from sklearn.metrics.pairwise import (
+    pairwise_distances,
+    paired_distances)
 import csv
 import joblib
 import json
@@ -26,11 +45,14 @@ import os
 import pandas as pd
 import random
 import re
+from torch.jit import isinstance
 
 class Localization:
     # There is also a .csv version of the following .feather file:
     #all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.feather'
     proj_dir       = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+    # Results and visualizations:
+    proj_records   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/' 
     #analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/PCA_AllData')
     analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/Classifications')
     sampling_dst   = os.path.join(proj_dir, 'results/chirp_samples')
@@ -41,9 +63,12 @@ class Localization:
         proj_dir,
         'results/chirp_analysis/Classifications/PCA23Components_all_but_is_daytime/xformed2024-06-10T16_44_54_23components_297476samples.feather' 
         )
- 
-    all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.feather'
-    measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
+    
+    all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/scaled_chirps_2024-06-17T08_43_17.feather'
+    all_measures_descaled = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_orig_2024-05-27T10_00_32.feather'
+    scaler         = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Descaling/split_scaler_1.5.0.joblib'
+    #measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
+    measures_root  = '/Users/paepcke/quatro/home/vdesai/data/training_data/all/splits'
     inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
 
 
@@ -918,6 +943,18 @@ class DataCalcs:
         # Stanford's Jasper Ridge Preserve:
         was_day_rec = df['rec_datetime'].apply(lambda dt: Utils.is_daytime_recording(dt))
         df.loc[:, 'is_daytime'] = was_day_rec
+        
+        # Using the .wav file names again, extract the 
+        # bat species series from them, if SonoBat made them
+        # available. The cases are:
+        #     barn1_D20220207T215546m654-Laci-Tabr.wav
+        #     barn1_D20220207T214358m129-Coto.wav
+        #     barn1_D20220720T020517m043.wav
+        species_lists = list(map(lambda fname: Utils.extract_species_from_wav_filename(fname),
+                                 fnames))
+        species_lists_series = pd.Series(species_lists, name='species')
+        # Add recording times column:
+        df['species'] = species_lists_series
 
         return df
 
@@ -1228,6 +1265,21 @@ class DataCalcs:
         return result
 
     #------------------------------------
+    # find_optimal_k
+    #-------------------
+    
+    @staticmethod
+    def find_optimal_k(X_df, k_range):
+        sil_scores = []
+        for k in k_range:
+            kmeans = KMeans(n_clusters=k, random_state=1066)
+            sil_scores.append([k, 
+                               silhouette_score(X_df, kmeans.fit_predict(X_df)),
+                               kmeans
+                               ])
+        return pd.DataFrame(sil_scores, columns=['k', 'silhouette_score', 'kmeans'])
+
+    #------------------------------------
     # find_optimal_tsne_clustering
     #-------------------
     
@@ -1378,16 +1430,26 @@ class DataCalcs:
         :rtype pd.Series
         '''
 
-        target_ser = df[target_col]        
+        target_ser = df[target_col].copy()       
         # Exclude the target column
         filtered_df = df.drop(target_col, axis=1)
           
 
         # Is the target column dichotomous?
-        if len(df[target_col].unique()) == 2:
+        uniq_target_vals = df[target_col].unique() 
+        if len(uniq_target_vals) == 2:
+            # Values must be 1 and 0. Make a mapping, just
+            # in case. It's a pain to ensure that the values
+            # aren't True or False, which are == to 1 and 0,
+            # respectively, 
+            val0, val1 = uniq_target_vals
+            if type(val0) != int or val0 not in [0,1] or \
+               type(val1) != int or val1 not in [0,1]:
+                val_map = {val0 : 0, val1 : 1}
+                target_ser = target_ser.replace(val_map) 
+            
             # Result from one pointbiserial corr computation:
             # A correlation coefficient, and an associated p_value:
-            pt_ser_res = namedtuple('PtSerRes', ['corr', 'p_value'])
             # Dichotomous, use pointserial correlation variant:
             def point_serial_one_var(continuous_vals):
                 point_biserial_r, p_value = stats.pointbiserialr(continuous_vals, target_ser)
@@ -1419,6 +1481,79 @@ class DataCalcs:
             res_df = pd.concat([corr_ser, nans], axis='columns')
         return res_df
 
+    #------------------------------------
+    # distances
+    #-------------------
+    
+    @classmethod
+    def distances(cls, obj1, obj2, metric='euclidean'):
+        '''
+        Returns the distance(s) between obj1 and obj2.
+        These args may be DataFrames of dimension 
+        (n_samples, n_features), or Series of length 
+        n_samples. When obj1 and obj2 have different
+        types, the dimensions must match. Cases:
+
+              obj1     obj2       res 
+             Series   Series     Series of one element
+             Series   Df         Series of as many elements as df has rows
+                                   i.e distances are measured between the
+                                   Series and each of the df's rows.
+                                   
+            Df        Df         Dataframe with distances of corresponding 
+                                   rows
+            same with reversed  
+        
+        
+        
+        :param obj1: origin
+        :type obj1: union[pd.Series, pd.DataFrame]
+        :param obj2: destination
+        :type obj2: union[pd.Series, pd.DataFrame]
+        :returns pairwise distances
+        :rtype pd.Series
+        '''
+        if isinstance(obj1, pd.Series):
+            if isinstance(obj2, pd.Series):
+                # Series ==== Series
+                # distances between (X[0], Y[0]), (X[1], Y[1]), etc…:
+                # Need numpy and shapes corresponding to 
+                # 1 sample, multiple features:
+                obj1np = obj1.to_numpy().reshape(1,-1)
+                obj2np = obj2.to_numpy().reshape(1,-1)
+                res = paired_distances(obj1np, obj2np, metric=metric)
+                res_ser = pd.Series(res)
+                return res_ser
+            elif isinstance(obj2, pd.DataFrame):
+                # Series ==== DataFrame
+                # distances between obj1 and each row of obj2:
+                obj1np = obj1.to_numpy().reshape(1,-1)
+                res = pairwise_distances(obj1np, obj2, metric=metric)
+                res_ser = pd.Series(res[0])
+                return res_ser
+            else:
+                raise TypeError(f"Given obj1 of type pd.Series, obj2 must be pd.Series, or pd.DataFrame, not {obj2}")         
+        elif isinstance(obj1, pd.DataFrame):
+            if isinstance(obj2, pd.Series):
+                # Obj1 ==== DataFrame
+                # obj2 == Series
+                obj2np = obj2.to_numpy().reshape(1,-1)
+                res = pairwise_distances(obj1, obj2np, metric=metric)
+                # Got like:
+                # array([[ 0.        ],
+                #        [17.32050808]])
+                # Flatten the array into a Series
+                res_ser = pd.Series(res.ravel())
+                return res_ser
+            elif isinstance(obj2, pd.DataFrame):
+                # Obj1 ==== DataFrame
+                # Obj2 ==== DataFrame
+                res = pairwise_distances(obj1, obj2, metric=metric)
+                res_flat = np.apply_along_axis(lambda res_pair: res_pair[0], 1, res)
+                res_ser = pd.Series(res_flat)
+                return res_ser
+        return res
+    
     #------------------------------------
     # make_chirp_sample_file
     #-------------------
@@ -1582,7 +1717,8 @@ class DataCalcs:
         # Make a df from the extraced samples:            
         df_raw = pd.DataFrame(res_np_arr, columns=res_cols)
         # Replace file_id with recording datetime object, and
-        # add whether recording was daylight or not:
+        # add whether recording was daylight or not, as well
+        # as species:
         df_with_rectime = self.add_recording_datetime(df_raw)
         # Add sin and cos columns for each granularity of rec_datetime:
         df = self._add_trig_cols(df_with_rectime, 'rec_datetime')  

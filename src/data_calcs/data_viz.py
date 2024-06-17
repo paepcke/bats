@@ -5,8 +5,13 @@ Created on Apr 28, 2024
 '''
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
+from matplotlib import colormaps
+
 import seaborn as sb
 import pandas as pd
+import numpy as np
+
 #import sys
 #sys.path.pop(0)
 
@@ -120,6 +125,67 @@ class DataViz:
             fig.supylabel(ylabel)
         
         return fig    
+
+    #------------------------------------
+    # plot_kmeans
+    #-------------------
+    
+    @staticmethod
+    def plot_kmeans(X_df, cluster_labels):
+    
+        # Assuming you have your data points (X) and
+        # cluster labels (y_kmeans) after running k-means
+    
+        # Define a list of colors for different clusters (you can customize this)
+        colors = colormaps.get_cmap('viridis')(np.linspace(0, 1, len(np.unique(cluster_labels))))
+    
+        fig,ax = plt.subplots()
+        # Plot the data points with assigned cluster colors
+        ax.scatter(X_df.iloc[:, 0], X_df.iloc[:, 1], c=colors[cluster_labels])
+            
+        # Add labels and title
+        ax.set_xlabel("Feature 1")
+        ax.set_ylabel("Feature 2")
+        fig.suptitle("K-Means Clustering Results")
+    
+        fig.show()
+    
+
+
+    #------------------------------------
+    # hour_xticker
+    #-------------------
+    
+    @staticmethod
+    def hour_xticker():
+        '''
+        Creates a MajorXLocator that has matplotlib
+        put X ticks only when the hour in a time series
+        changes.
+        
+        Assumed is that the X label values are strings
+        of the form '<hr>:<m
+        '''
+        class MajorXLocator(MultipleLocator):
+
+            def __init__(self, major_interval):
+                super().__init__(major_interval)
+                # No hours transition found so far:
+                self.hours_found = []
+                
+            def __call__(self, x=None):
+                if x is None:
+                    # No tick wanted:
+                    return False
+                hr = x[:x.index(':')]
+                if hr not in self.hours_found:
+                    self.hours_found.append(hr)
+                    return True
+                else:
+                    return False
+        # Return an instance that puts an X tick label
+        # at every hour change:
+        return MajorXLocator(1) 
 
     #------------------------------------
     # heatmap

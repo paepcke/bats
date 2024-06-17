@@ -6,9 +6,13 @@ Created on Feb 22, 2024
 from data_calcs.data_cleaning import DataCleaner
 from tempfile import TemporaryDirectory
 import pandas as pd
+import numpy as np
 import sys
 import os
 import unittest
+from sklearn.preprocessing import StandardScaler
+import tempfile
+import joblib
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -283,6 +287,56 @@ class DataCleanerTester(unittest.TestCase):
         expected.drop(['LnExpA_EndAmp', 'TimeIndex'], axis='columns', inplace=True)
         
         pd.testing.assert_frame_equal(df_culled_trunc, expected)
+        
+    #------------------------------------
+    # test_original_from_scaled_data
+    #-------------------
+    
+    #********@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_original_from_scaled_data(self):
+        
+        df_orig = self.df_stats[
+            ['PrecedingIntrvl', 'LnExpB_StartAmp', 'Amp2ndMean',
+             'LnExpA_EndAmp', 'TimeIndex']]
+
+        scaler  = StandardScaler()
+        xformed = scaler.fit_transform(df_orig)
+        
+        cleaner   = DataCleaner()
+        recovered = cleaner.recover_orig_from_scaled_data(scaler, xformed)
+        
+        # Because we did *not* save df_orig's index with
+        # the scaler, the df_orig.index and recovered.index should
+        # differ (df_orig.index is a dup of the time_index column):
+        try:
+            pd.testing.assert_index_equal(recovered.index, df_orig.index)
+            raise AssertionError("The recovered.index and df_orig.index should differ")
+        except AssertionError:
+            # Good, not equal
+            pass
+        
+        # Now add the df_orig's index to the scaler instance,
+        # and recovery should work:
+        scaler.df_index = df_orig.index
+        recovered_again = cleaner.recover_orig_from_scaled_data(scaler, xformed)
+        # The TimeIndex column's data types will have
+        # changed from np.int64 to np.float64:
+        recovered_again.TimeIndex = recovered_again.TimeIndex.astype(np.int64)
+        pd.testing.assert_frame_equal(recovered_again, df_orig)
+         
+        # Now save the scaler, and repeat, but passing the
+        # path to the saved scaler:
+        
+        tmp_file = tempfile.NamedTemporaryFile(suffix='.joblib', 
+                                               prefix='scaler_', 
+                                               dir=self.tmp_dir.name, 
+                                               delete=False)
+        joblib.dump(scaler, tmp_file.name)
+        
+        recovered_yet_again = cleaner.recover_orig_from_scaled_data(tmp_file.name, xformed)
+        recovered_yet_again.TimeIndex = recovered_yet_again.TimeIndex.astype(np.int64)        
+        
+        pd.testing.assert_frame_equal(recovered_yet_again, df_orig)
         
     # ---------------- Utilities ------------
 

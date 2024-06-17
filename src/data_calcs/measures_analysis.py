@@ -11,6 +11,8 @@ from data_calcs.data_calculations import (
     FileType,
     Localization,
     PerplexitySearchResult)
+from data_calcs.data_cleaning import (
+    DataCleaner)
 from data_calcs.data_viz import (
     DataViz)
 from data_calcs.universal_fd import (
@@ -33,10 +35,10 @@ from pathlib import (
     Path)
 from sklearn.decomposition import (
     PCA)
-from sklearn.linear_model import (
-    LogisticRegression)
 from sklearn.ensemble import (
     RandomForestClassifier)
+from sklearn.linear_model import (
+    LogisticRegression)
 from sklearn.metrics._plot.confusion_matrix import (
     ConfusionMatrixDisplay)
 from sklearn.metrics._plot.precision_recall_curve import (
@@ -52,10 +54,10 @@ import numpy as np
 import os
 import pandas as pd
 import random
+import re
 import shutil
 import sys
 import time
-from numba.core.types import none
 
 # Members of the Action enum are passed to run
 # to specify which task the program is to perform: 
@@ -170,26 +172,31 @@ class MeasuresAnalysis:
         self.action = action
         
         self.res_file_prefix = 'perplexity_n_clusters_optimum'
-        self.fid_map_file = 'split_filename_to_id.csv'
+        self.fid_map_file = os.path.join(Localization.measures_root, 'split_filename_to_id.csv')
         self.data_calcs = DataCalcs()
         self.data_calcs = DataCalcs(measures_root=Localization.measures_root,
                                     inference_root=Localization.inference_root,
                                     fid_map_file=self.fid_map_file
                                     )
         
-        # All measures from 10 split files combined
+        # All measures from many split files combined
         # into one df, and augmented with rec_datetime,
         # the recording time's sin/cos transformations for
         # hour, day, month, and year, and the is_daytime
         # column. This df includes the split number, file_id,
         # And a few other administrative data that should not
-        # be used for training:
+        # be used for training. This file may not yet exist,
+        # for instance when the action is CONCAT, which creates
+        # the file in the first place:
         
         all_measures_with_admins_fname = Localization.all_measures
-        self.all_measures_with_admins = pd.read_feather(all_measures_with_admins_fname)
-        
-        # Take out the administrative data:
-        self.all_measures = self.all_measures_with_admins.drop(columns=['file_id', 'split','rec_datetime'])
+        try:
+            self.all_measures_with_admins = pd.read_feather(all_measures_with_admins_fname)
+            
+            # Take out the administrative data:
+            self.all_measures = self.all_measures_with_admins.drop(columns=['file_id', 'split','rec_datetime'])
+        except FileNotFoundError:
+            self.log.info(f"The all_measures dataframe not loaded, b/c all_measures '{all_measures_with_admins_fname}' not found")
 
         if action is None:
             # Caller just wanted data init:
@@ -924,9 +931,11 @@ class MeasuresAnalysis:
         :param df_sources: list of dataframe file sources
         :type df_sources: union[str | list[str]]
         :param idx_columns: if provided, a list of column names that are
-            to be used as names for the respective index, rather than
-            as a column name. Only used for .csv and .csv.gz
-        :type idx_columns: union[None | list[str]]
+            to be used as index in the respective input file, rather than
+            as a column name. Only used for .csv and .csv.gz. If the arg
+            is a single string, or a single-value list, the string is taken 
+            as a column name that is common to all input files. 
+        :type idx_columns: union[None | list[str] | str]
         :param dst_dir: directory where combined file is placed. No saving, if None
         :type dst_dir: union[None | str]
         :param out_file_type: if saving to disk, which file type to use 
@@ -950,8 +959,17 @@ class MeasuresAnalysis:
         
         # Ensure that idx_columns are the same length as df_sources:
         if idx_columns is not None:
-            if len(idx_columns) != len(df_sources):
-                raise ValueError(f"A non-None idx_columns arg must be same length as df_sources (lenght {len(df_sources)}, not {len(idx_columns)}")
+            idx_col = None
+            if type(idx_columns) == list and len(idx_columns) == 1:
+                idx_col = idx_columns[0]
+            elif type(idx_columns) == str:
+                idx_col = idx_columns 
+            if idx_col is not None:
+                idx_columns = [idx_col]*len(df_sources)
+            
+            elif len(idx_columns) != len(df_sources):
+                # One last chance: if 
+                raise ValueError(f"A non-None idx_columns arg must be same length as df_sources (length {len(df_sources)}, not {len(idx_columns)}")
         else:
             # For convenience, generate a list of None idx_column names:
             idx_columns = [None]*len(df_sources)
@@ -983,6 +1001,7 @@ class MeasuresAnalysis:
         dfs  = []
         cols = None
         for path, idx_col_nm in zip(df_sources, idx_columns):
+            self.log.info(f"Concatenating {path}...")
             with UniversalFd(path, 'r') as fd:
                 dfs.append(fd.asdf(index_col=idx_col_nm))
             if cols is None:
@@ -1002,16 +1021,25 @@ class MeasuresAnalysis:
             # column: 'is_daytime' will be added. This is done inplace,
             # so no back-assignment is needed:
             df_with_rectime = data_calc.add_recording_datetime(df_raw)
-            df = data_calc._add_trig_cols(df_with_rectime, 'rec_datetime')  
+            df = data_calc._add_trig_cols(df_with_rectime, 'rec_datetime')
             df.reset_index(drop=True, inplace=True)
         else:
             df = df_raw
  
+        df.set_index('level_0', inplace=True)
+        df.index.name = 'row_num'
         if fname is not None:
-            df.to_csv(fname, index=include_index)
+            with UniversalFd(fname, 'w') as fd:
+                fd.write_df(df)
+            #df.to_csv(fname, index=include_index)
             self.log.info(f"Concatenated {len(df_sources)} bat measures files with total of {len(df)} rows (chirps) to {fname}")
 
         res_dict = {'df' : df, 'out_file' : fname}
+        #*********
+        #df_recovered = DataCleaner().recover_orig_from_scaled_data(
+        #    '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/split_scaler.joblib',
+        #    df)
+        #*********
         return res_dict
 
     #------------------------------------
@@ -2167,6 +2195,89 @@ def get_timestamp():
 # ------------------------ Main ------------
 if __name__ == '__main__':
 
+    log = LoggingService()
+    
+    # -------------------------------------------------------------------
+    # Create one DF from all demeaned split files. They
+    # are all of the form splitnn.feather, with nn being
+    # a number. Then create a second df, which will contain
+    # the unscaled values. Returned is a dict:
+    #   res_dict: {df_scaled : <combined data from all (scaled) split files
+    #                          with columns, like is_daylight added.
+    #              df_orig   : <unscaled, original SonoBat data, including
+    #                          columns that were not included (and therefore
+    #                          scaled) in the split files.
+    
+    split_file_pat = re.compile(f"^split[\\d]*.feather")
+    split_files = []
+    for maybe_split_fname in os.listdir(Localization.measures_root):
+        match = split_file_pat.search(maybe_split_fname)
+        if match is None:
+            continue
+        else:
+            split_files.append(os.path.join(Localization.measures_root, maybe_split_fname))
+    
+    # Sort the split files by split number (which is taken
+    # from the split file name):
+    split_files.sort(key=lambda fname: int(re.search(r"\d+", fname)[0]))
+    
+    #df_sources = ['/Users/paepcke/quatro/home/vdesai/data/training_data/all/splits/split20.feather',
+    #              '/Users/paepcke/quatro/home/vdesai/data/training_data/all/splits/split21.feather'
+    #              ]
+    # The split files have a col called 'level_0', which contains
+    # row number that runs across all split files. Make that
+    # column the pandas index. That column 
+    ma = MeasuresAnalysis(action=Action.CONCAT, 
+                          df_sources=split_files, 
+                          dst_dir=os.path.dirname(Localization.all_measures), 
+                          prefix='scaled',
+                          idx_columns='level_0',
+                          out_file_type=FileType.FEATHER
+                          )
+    res_dict = ma.experiment_result
+    df_out_file = res_dict['out_file']
+    df = res_dict['df']
+    df_orig = DataCleaner.recover_orig_from_scaled_data(Localization.scaler, df)
+    # Save this unscaled version as well:
+    all_measures_path = Path(df_out_file)
+    # Use the same time stamp for the original (descaled)
+    # df as was used for the scaled on
+    timestamp = Utils.extract_file_timestamp(all_measures_path)
+    df_orig_path = all_measures_path.parent / Path(f'orig_chirps_{timestamp}.feather')
+    df_orig.to_feather(df_orig_path)
+    res_dict['df_orig'] = df_orig
+    #print(res_dict)
+    print('Done')
+    sys.exit()
+
+    
+    # -------------------------------------------------------------------
+    # Descaling and re-meaning a StandardScaler treated df:
+    # src_file = Localization.all_measures
+    # with UniversalFd(src_file, 'r') as fd:
+    #     df_scaled = fd.asdf()
+    # df_orig = DataCleaner.recover_orig_from_scaled_data(Localization.scaler, df_scaled)
+    #
+    # additional_cols = ['file_id','chirp_idx','split',
+    #                    'rec_datetime','is_daytime','sin_hr',
+    #                    'cos_hr','sin_day',
+    #                    'cos_day','sin_month',
+    #                    'cos_month','sin_year','cos_year']
+    # additionals_df = pd.DataFrame(df_scaled[additional_cols])
+    # df_orig = pd.concat([df_orig, additionals_df], axis='columns')
+    #
+    # dst_fpath   = Path(Localization.all_measures_descaled)
+    # dst_feather = dst_fpath.with_suffix('.feather')
+    # dst_csv     = dst_fpath.with_suffix('.csv')
+    #
+    # log.info(f"Saving reconstituted data as .feather to {dst_feather}...")
+    # df_orig.to_feather(dst_feather)
+    # log.info(f"Saving reconstituted data as .csv to {dst_csv}...")    
+    # df_orig.to_csv(dst_csv)
+    #
+    # print('Done')
+    # sys.exit()
+    
     # -------------------------------------------------------------------   
     # Stats of data: a df like:
     #                      numFiles   numChirps    meanChirpsPerFile
@@ -2228,6 +2339,74 @@ if __name__ == '__main__':
     # tbl_fname = f"data_summmary_tbl_{timestamp}.txt"
     # with open(os.path.join(Localization.analysis_dst, tbl_fname), 'w') as fd:
     #     fd.write(tbl_txt)
+    # sys.exit()
+
+    # -------------------------------------------------------------------
+    # Print correlation of everyone against is_daytime:
+    # mc = MeasuresAnalysis(action=None)
+    # df = mc.all_measures_with_admins.copy()
+    # df.rec_datetime = df.rec_datetime.apply(lambda dt_str: Utils.datetime_from_timestamp(dt_str).hour)
+    #
+    # corrs_with_is_daytime = DataCalcs.correlate_all_against_one(df, 'is_daytime')
+    # print(corrs_with_is_daytime)
+
+    # -------------------------------------------------------------------
+    # Histogram of all daytime chirps, hour by hour:
+    
+    # mc = MeasuresAnalysis(action=None)
+    # df = mc.all_measures_with_admins
+    #
+    # # All rec_daytime xformed to datetime objs:
+    # rec_times = mc.all_measures_with_admins.rec_datetime.apply(
+    #     lambda dtstr: Utils.datetime_from_timestamp(dtstr))
+    #
+    # daytime_idxs = df.loc[df.is_daytime].index
+    # daytime_dates  = rec_times.iloc[daytime_idxs]
+    # daytime_hrs    = daytime_dates.apply(lambda dt : dt.hour)
+    # daytime_hrs.name = 'hour'
+    # daytime_mins   = daytime_dates.apply(lambda dt : dt.minute)
+    # daytime_mins.name = 'minute'
+    # daytime_hr_min = pd.concat([daytime_hrs, daytime_mins], axis='columns')
+    # hr_grouped = daytime_hr_min.groupby(by=['hour', 'minute'])
+    # # Now:
+    # # hr_grouped.groups
+    # #{(19, 0): [15505, ...],
+    # # (19, 1): [15090, ...],
+    # #      ...
+    # # (20, 1): [12758, ...],
+    # # (20, 2): [13758, ...],
+    # #      ...
+    # # }
+    #
+    # # Get the lengths of each minute:
+    # num_chirps_by_min = {key : len(vals) for key, vals in hr_grouped.groups.items()}
+    # # Now have like:
+    # #    {(19, 0): 105, (19, 1): 129, (19, 2): 158, (19, 3): 154,...,
+    # #     (20, 0): 493, (20, 1): 447, (20, 2): 579, (20, 3): 504, 
+    # #     }
+    #
+    # times    = list(num_chirps_by_min.keys())
+    # freqs    = list(num_chirps_by_min.values())
+    # # Turn the tuples (19, 0), (20, 32), etc. into
+    # # strings like '19:00', '20:32', etc.. The zfill(2)
+    # # ensures leading zeroes if hours or minutes are
+    # # only one digit long:
+    # times    = [f"{str(hr_min[0]).zfill(2)}:{str(hr_min[1]).zfill(2)}" 
+    #             for hr_min 
+    #             in num_chirps_by_min.keys()]
+    #
+    # histo_df = pd.DataFrame(freqs, index=times, columns=['num_chirps'])
+    # histo_df.index.name = 'chirp_time'
+    #
+    # fig = DataViz.simple_chart(histo_df, 
+    #                            xlabel='Time', 
+    #                            ylabel='Chirp Activity', 
+    #                            kind='bar', 
+    #                            title="Daylight Bat Hourly Activity")
+    # ax = fig.gca()
+    # # Thin out the x axis ticks to only be when
+    # # the hour changes:
+    # ax.xaxis.set_major_locator(DataViz.hour_xticker())
     # sys.exit()
 
     # -------------------------------------------------------------------   
@@ -2322,61 +2501,61 @@ if __name__ == '__main__':
     # Train to predict is_daytime with top23 measures PLUS recording time:
     # See commented-out sin/cos entries to vary with or without time info:
     
-    timestamp = get_timestamp()        
-    clf = Classification()
-    
+    # timestamp = get_timestamp()        
+    # clf = Classification()
+    #
+    # # inclusions = [ 
+    # #             'TimeInFile', 'PrecedingIntrvl', 'CallsPerSec',
+    # #             'CallDuration', 'Fc', 'HiFreq', 'LowFreq',
+    # #             'Bndwdth', 'FreqMaxPwr', 'PrcntMaxAmpDur',
+    # #             'TimeFromMaxToFc', 'FreqKnee', 'PrcntKneeDur',
+    # #             'StartF', 'EndF', 'DominantSlope', 'SlopeAtFc',
+    # #             'StartSlope', 'EndSlope', 'SteepestSlope',
+    # #             'LowestSlope', 'TotalSlope', 'HiFtoKnSlope',
+    # #             #'sin_hr', 'cos_hr',
+    # #             'is_daytime' # The var to predict
+    # #             ]
     # inclusions = [ 
-    #             'TimeInFile', 'PrecedingIntrvl', 'CallsPerSec',
-    #             'CallDuration', 'Fc', 'HiFreq', 'LowFreq',
-    #             'Bndwdth', 'FreqMaxPwr', 'PrcntMaxAmpDur',
-    #             'TimeFromMaxToFc', 'FreqKnee', 'PrcntKneeDur',
-    #             'StartF', 'EndF', 'DominantSlope', 'SlopeAtFc',
-    #             'StartSlope', 'EndSlope', 'SteepestSlope',
-    #             'LowestSlope', 'TotalSlope', 'HiFtoKnSlope',
+    #             'CallsPerSec', 'CallDuration', 'Fc', 'Bndwdth', 
+    #             'PrcntMaxAmpDur', 'FreqKnee', 'DominantSlope',
     #             #'sin_hr', 'cos_hr',
     #             'is_daytime' # The var to predict
     #             ]
-    inclusions = [ 
-                'CallsPerSec', 'CallDuration', 'Fc', 'Bndwdth', 
-                'PrcntMaxAmpDur', 'FreqKnee', 'DominantSlope',
-                #'sin_hr', 'cos_hr',
-                'is_daytime' # The var to predict
-                ]
-    
-    res_dict = clf.classify(
-        'is_daytime',
-        #to_exclude=exclusions,
-        to_include=inclusions,
-        class_label_map={True : 'Daytime',
-                         False: 'Nighttime'},
-        cm_title="Daytime Prediction: Confusion Matrix",
-        pr_title="Daytime Prediction: Precision/Recall Tradeoff",
-        timestamp=timestamp,
-        class_imbalance_fix=SMOTEOption.MINORITY,
-        cm_normalization=None,
-        # NOTE: not logistic regression here:
-        classifier=RandomForestClassifier(
-            max_depth=6,
-            min_samples_leaf=5,
-            n_jobs=5
-            ),
-        n_fold=3,
-        #****comment="Predict daytime rec. Sin/Cos time provided. Imbalance fix: SMOTE.Minority",
-        #****comment="Top 23 features. Predict daytime rec. Cos/sin NOT provided Imbalance fix: SMOTE.Minority",
-        #****comment="Top 23 features. Predict daytime rec. Cos/sin NOT provided. Random Forest. Imbalance fix: SMOTE.Minority",
-        comment="Small selection of top23. Folds: 3. Predict daytime. Cos/sin NOT provided. Random Forest. Imbalance fix: SMOTE.Minority"
-        #***************
-        #n_fold=2
-        #***************
-        )
-    # Place two files into the Localization.analysis_dst dir:
-    # A .csv file with the scores as a table. This file cannot
-    # be used for recovering the scores. Just for spreadsheets.
-    # The second file is a printable .txt file withe a human
-    # readable table with the classification results. The scores
-    # will be read from the json files that clf.classify placed
-    # in Localization.analysis_dst:
-    MeasuresAnalysis(Action.PRINT_CLF_RESULTS)
+    #
+    # res_dict = clf.classify(
+    #     'is_daytime',
+    #     #to_exclude=exclusions,
+    #     to_include=inclusions,
+    #     class_label_map={True : 'Daytime',
+    #                      False: 'Nighttime'},
+    #     cm_title="Daytime Prediction: Confusion Matrix",
+    #     pr_title="Daytime Prediction: Precision/Recall Tradeoff",
+    #     timestamp=timestamp,
+    #     class_imbalance_fix=SMOTEOption.MINORITY,
+    #     cm_normalization=None,
+    #     # NOTE: not logistic regression here:
+    #     classifier=RandomForestClassifier(
+    #         max_depth=6,
+    #         min_samples_leaf=5,
+    #         n_jobs=5
+    #         ),
+    #     n_fold=3,
+    #     #****comment="Predict daytime rec. Sin/Cos time provided. Imbalance fix: SMOTE.Minority",
+    #     #****comment="Top 23 features. Predict daytime rec. Cos/sin NOT provided Imbalance fix: SMOTE.Minority",
+    #     #****comment="Top 23 features. Predict daytime rec. Cos/sin NOT provided. Random Forest. Imbalance fix: SMOTE.Minority",
+    #     comment="Small selection of top23. Folds: 3. Predict daytime. Cos/sin NOT provided. Random Forest. Imbalance fix: SMOTE.Minority"
+    #     #***************
+    #     #n_fold=2
+    #     #***************
+    #     )
+    # # Place two files into the Localization.analysis_dst dir:
+    # # A .csv file with the scores as a table. This file cannot
+    # # be used for recovering the scores. Just for spreadsheets.
+    # # The second file is a printable .txt file withe a human
+    # # readable table with the classification results. The scores
+    # # will be read from the json files that clf.classify placed
+    # # in Localization.analysis_dst:
+    # MeasuresAnalysis(Action.PRINT_CLF_RESULTS)
     
     #----------------------------------------------
     
@@ -2410,3 +2589,47 @@ if __name__ == '__main__':
     # MeasuresAnalysis(Action.PRINT_CLF_RESULTS)
     #
     # print(clf)
+
+    #----------------------------------------------
+    # Find best cluster k for top 23, and make chart:
+    inclusions = [ 
+                    #'TimeInFile', 
+                    'PrecedingIntrvl', 'CallsPerSec',
+                    'CallDuration', 'Fc', 'HiFreq', 'LowFreq',
+                    'Bndwdth', 'FreqMaxPwr', 'PrcntMaxAmpDur',
+                    'TimeFromMaxToFc', 'FreqKnee', 'PrcntKneeDur',
+                    'StartF', 'EndF', 'DominantSlope', 'SlopeAtFc',
+                    'StartSlope', 'EndSlope', 'SteepestSlope',
+                    'LowestSlope', 'TotalSlope', 'HiFtoKnSlope',
+                    #'sin_hr', 'cos_hr'
+                    ]
+    ma = MeasuresAnalysis(action=None)
+    
+    X_df = ma.all_measures[inclusions].sample(10000)
+    k_silhouttes_df = DataCalcs.find_optimal_k(X_df, range(2,6))
+    sil_scores = k_silhouttes_df['silhouette_score']
+    best_row   = sil_scores.idxmax()
+    best_k     = k_silhouttes_df.loc[best_row, 'k']
+    kmeans    = k_silhouttes_df.loc[best_row, 'kmeans']
+    
+    # Get cluster labels
+    cluster_labels = kmeans.labels_
+    
+    #*****
+    from sklearn.manifold import TSNE
+    #*****
+    # Define desired lower dimension (e.g., 2 for visualization)
+    tsne_obj = TSNE(n_components=2, 
+                    init='pca', 
+                    #perplexity=30,
+                    perplexity=100,
+                    metric='cosine',
+                    n_jobs=8,
+                    random_state=3
+                    )
+    
+    # Apply t-SNE to the data
+    embedded_data = tsne_obj.fit_transform(X_df)
+    tsne_df = pd.DataFrame(embedded_data, columns=['tsne_x', 'tsne_y'])
+    DataViz.plot_tsne(tsne_df, cluster_labels, title='Cluster Top Features', show_plot=True)
+    print('Done')
