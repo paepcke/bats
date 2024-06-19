@@ -65,8 +65,8 @@ class Localization:
         'results/chirp_analysis/Classifications/PCA23Components_all_but_is_daytime/xformed2024-06-10T16_44_54_23components_297476samples.feather' 
         )
     
-    all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/scaled_chirps_2024-06-17T08_43_17.feather'
-    all_measures_descaled = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_orig_2024-05-27T10_00_32.feather'
+    all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/scaled_chirps_2024-06-17T11_12_08.feather'
+    all_measures_descaled = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/orig_chirps_2024-06-17T11_12_08.feather'
     scaler         = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Descaling/split_scaler_1.5.0.joblib'
     #measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
     measures_root  = '/Users/paepcke/quatro/home/vdesai/data/training_data/all/splits'
@@ -898,10 +898,10 @@ class DataCalcs:
         return new_df
 
     #------------------------------------
-    # add_recording_datetime
+    # add_recording_datetime_and_more
     #-------------------
 
-    def add_recording_datetime(self, df):
+    def add_recording_datetime_and_more(self, df):
         '''
         Modifies df:
         
@@ -911,6 +911,16 @@ class DataCalcs:
 
             o Adds a new boolean column 'is_daytime' that indicates
               whether the chirp was recorded during daytime.
+              
+            o Adds a new column called 'species' with entries like:
+                'Coto'
+                'Laci,Coto'
+                ''
+            o Replaces nuisance 'species' names like 'HiF', 'none',
+              with empty strings.
+              
+            o Adds column freq_mean: the mean of chirp freqs: (HiF - LoF) / 2 
+            
               
         These changes occur in place.  
         
@@ -936,6 +946,8 @@ class DataCalcs:
     
         rec_times = list(map(lambda fname: Utils.time_from_fname(fname), fnames))
         rec_times_series = pd.Series(rec_times, name='rec_datetime')
+        # Turn them into Pandas date-time instances:
+        rec_times_series = pd.to_datetime(rec_times_series)
         # Add recording times column:
         df['rec_datetime'] = rec_times_series
     
@@ -953,9 +965,35 @@ class DataCalcs:
         #     barn1_D20220720T020517m043.wav
         species_lists = list(map(lambda fname: Utils.extract_species_from_wav_filename(fname),
                                  fnames))
-        species_lists_series = pd.Series(species_lists, name='species')
-        # Add recording times column:
+        # Remove duplicates from all the lists, and remove
+        # the non-bat 'Hif' annotation present in some .wav
+        # file names, like:
+        #   'barn1_D20220205T192049m784-HiF.wav'
+        
+        def uniquifi(species_list):
+            uniq_list = [','.join(list(set(species_list)))]
+            # Remove 'HiF' and other nuisance vals if present, replacing them
+            # w/ an empty str, which is equivalent to 'unknown species'AXS
+            uniq_list = ['' if el in ['LoF', 'HiF', 'HiLo', 'null'] else el 
+                         for el in 
+                         uniq_list]
+            strs_list = ','.join(uniq_list)
+            return strs_list
+            
+        uniq_species_lists = [uniquifi(species_list) 
+                              for species_list
+                              in species_lists
+                              ]
+        species_lists_series = pd.Series(uniq_species_lists, 
+                                         name='species',
+                                         dtype="string"
+                                         )
+        # Add species column:
         df['species'] = species_lists_series
+        
+        # Add column with mean frequency:
+        df['freq_mean'] = (df.LowFreq + df.HiFreq) / 2.
+        
 
         return df
 
@@ -1573,7 +1611,10 @@ class DataCalcs:
         
         Result df will have:
              o All the columns in the split files
-             o Columns
+             o Plus columns
+            
+                    'rec_datetime', 'is_daytime', 
+                    'species', 'freq_mean',
                 	'sin_hr', 'cos_hr', 
                 	'sin_day', 'cos_day', 
                 	'sin_month', 'cos_month', 
@@ -1720,7 +1761,7 @@ class DataCalcs:
         # Replace file_id with recording datetime object, and
         # add whether recording was daylight or not, as well
         # as species:
-        df_with_rectime = self.add_recording_datetime(df_raw)
+        df_with_rectime = self.add_recording_datetime_and_more(df_raw)
         # Add sin and cos columns for each granularity of rec_datetime:
         df = self._add_trig_cols(df_with_rectime, 'rec_datetime')  
         df.reset_index(drop=True, inplace=True)

@@ -56,7 +56,7 @@ class Utils:
     '''
 
     rec_time_util = DaytimeFileSelector()
-    SPECIES_EXTRACT_PAT = pat = re.compile(r'[^-]*-([^.]*)\.wav')
+    SPECIES_EXTRACT_PAT = re.compile(r'[^-]*-([^.]*)\.wav')
 
     #------------------------------------
     # round_time

@@ -31,8 +31,8 @@ import os
 import pandas as pd
 import unittest
 
-#*******TEST_ALL = True
-TEST_ALL = False
+TEST_ALL = True
+#TEST_ALL = False
 
 class DataPrepTester(unittest.TestCase):
 
@@ -157,8 +157,8 @@ class DataPrepTester(unittest.TestCase):
     @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_add_recording_datetime(self):
         dp = DataCalcs(self.tmpdir.name, self.tmpdir.name)
-        df = self.tst_df_large
-        new_df = dp.add_recording_datetime(df)
+        df = self.tst_df_wide.copy()
+        new_df = dp.add_recording_datetime_and_more(df)
         
         # Since mods are done inplace, the new and old
         # dfs should be the same:
@@ -186,6 +186,23 @@ class DataPrepTester(unittest.TestCase):
         #   'barn1_D20220205T140541m567-Myca-Myca.wav', so: afternoon
         is_day1 = df.is_daytime.iloc[1]
         self.assertTrue(is_day1)
+        
+        # The species: The name triplet in expected, coming from a
+        # set, may be in different order. So, check all before and
+        # after separately
+        expected = pd.Series(['', 'Myca', '', 'Tabr', '', 'Myca', 'Myca,Laci,Tabr', 'Tabr', ''],
+                             name='species')
+        first_part_exp = expected.iloc[:4]
+        first_part_exp = first_part_exp.astype("string")
+        first_part_df  = new_df.species.iloc[:4]
+        pd.testing.assert_series_equal(first_part_df, first_part_exp)
+        
+        # Check last element:
+        self.assertEqual(new_df.species.iloc[-1], expected.iloc[-1])
+        # The triple name:
+        expected_triple_set = set(expected.iloc[-3].split(','))
+        found_triple_set    = set(new_df.species.iloc[-3].split(','))
+        self.assertSetEqual(found_triple_set, expected_triple_set)
         
 
     #------------------------------------
@@ -244,10 +261,14 @@ class DataPrepTester(unittest.TestCase):
         self.assertSetEqual(set(tsne_df.columns), set(expected))
         
         # Now try TSNE on a df with recording time and daylight information:
-        df = dp.add_recording_datetime(self.tst_df_large).copy()
+        #*****df = dp.add_recording_datetime_and_more(self.tst_df_large).copy()
+        df = dp.add_recording_datetime_and_more(self.tst_df_wide).copy()
         tsne_df = dp.run_tsne(df, cols_to_keep=['rec_datetime', 'is_daytime'])
         
-        expected = ['tsne_x', 'tsne_y', 'PrecedingIntrvl', 'CallsPerSec', 'is_daytime', 'rec_datetime']
+        expected = ['tsne_x', 'tsne_y', 
+                    'PrecedingIntrvl', 'HiFreq', 'LowFreq', 
+                    'CallsPerSec', 
+                    'is_daytime', 'rec_datetime']
         self.assertSetEqual(set(tsne_df.columns), set(expected))
         self.assertEqual(len(tsne_df), len(df))
         
@@ -447,12 +468,13 @@ class DataPrepTester(unittest.TestCase):
         # Got correct number of samples?
         self.assertEqual(len(samples['df']), samples_wanted)
         # Same cols as the originals, plus augmentations:
-        new_cols_expected = cols.append(pd.Index(['rec_datetime', 'is_daytime', 'species', 'sin_hr', 'cos_hr',
-       'sin_day', 'cos_day', 'sin_month', 'cos_month', 'sin_year', 'cos_year']))
+        new_cols_expected = cols.append(pd.Index(['rec_datetime', 'is_daytime',
+       'species', 'freq_mean', 'sin_hr', 'cos_hr', 'sin_day', 'cos_day',
+       'sin_month', 'cos_month', 'sin_year', 'cos_year']))
         
         pd.testing.assert_index_equal(samples['df'].columns, new_cols_expected)
 
-        # Get exactly as many samles as are in the the dfs:
+        # Get exactly as many samles as are in the dfs:
 
         samples_wanted = total_rows 
         samples = dp.make_chirp_sample_file(samples_wanted, unittests=tst_dfs)
@@ -724,7 +746,7 @@ class DataPrepTester(unittest.TestCase):
     # test_conditional_samples
     #-------------------
     
-    #*******@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_conditional_samples(self):
         
         df = self.big_df.copy()
@@ -829,7 +851,7 @@ class DataPrepTester(unittest.TestCase):
             #       TmInFil PredIntv ClsPSec  FID  ChirpIDX  
             new_row = [i*10, i*100,   i*1000, 10+i, i]
             self.tst_df_large.loc[i] = new_row 
-        
+
         # Ensure the index is 0-10:
         self.tst_df_large.reset_index(drop=True, inplace=True)        
         
@@ -841,7 +863,7 @@ class DataPrepTester(unittest.TestCase):
                                  'barn1_D20220205T205824m469-Tabr-Tabr-Tabr.wav,14\n'
                                  'barn1_D20220205T211937m700-HiF.wav,15\n'
                                  'barn1_D20220205T231442m354-Myca-Myca.wav,16\n'
-                                 'barn1_D20220205T235354m889-Tabr-Tabr-Tabr.wav,17\n'
+                                 'barn1_D20220205T235354m889-Tabr-Myca-Laci.wav,17\n'
                                  'barn1_D20220206T001144m425-Tabr-Tabr.wav,18\n'
                                  'barn1_D20220206T012049m898.wav,19')
         self.fname_to_id_file = os.path.join(self.tmpdir.name, 'split_filename_to_id.csv')
@@ -857,6 +879,14 @@ class DataPrepTester(unittest.TestCase):
                                    for fname, fid 
                                    in fname_id_pairs[1:] # Skip header 
                                    }
+        
+        # One more df that includes LowFreq and HiFreq:
+        # Add two cols: LowFreq and HiFreq:
+        self.tst_df_wide = self.tst_df_large.copy()
+        low_freq = pd.Series(np.arange(1,len(self.tst_df_large)+1), name='LowFreq')
+        hi_freq  = pd.Series(np.arange(1,len(self.tst_df_large)+1) + 10, name='HiFreq')
+        self.tst_df_wide = pd.concat([self.tst_df_wide, low_freq, hi_freq], axis='columns')
+        
             
         # ________________________ Example split file exerpts -------------------
         

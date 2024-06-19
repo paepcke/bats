@@ -72,6 +72,7 @@ class Action(Enum):
     PCA                 = 7
     PCA_ANALYSIS        = 8
     PRINT_CLF_RESULTS   = 9
+    CHIRP_SIMILARITY    = 10
 
 # Options for how the SMOTE algorithm fixes
 # class imbalance during classification:
@@ -155,6 +156,8 @@ class MeasuresAnalysis:
             
             ORGANIZE          <none>
                 returns       None
+                
+            CHIRP_SIMILARITY  <none>
         
         :param action: action to perform
         :type action: Action
@@ -285,6 +288,10 @@ class MeasuresAnalysis:
             self.log.info("Printing classification results:")
             self.print_clf_results_action()
             res = None
+            
+        elif action == Action.CHIRP_SIMILARITY:
+            self.log_info("Examining chirp similarity within 10sec recordings")
+            res = self._chirp_similarities()
         
         # Save the results, usually packaged as a dict:
         if res is not None:
@@ -629,10 +636,34 @@ class MeasuresAnalysis:
             raise FileNotFoundError(f"Bad classification result path: {json_path}")
 
     #------------------------------------
+    # _chirp_similarities
+    #-------------------
+    
+    def _chirp_similarities(self):
+        '''
+        From the current self.all_measures, extract some 
+        chirp sequences, and examine how similar the
+        chirps within a sequence tend to be to each other.
+        '''
+        
+        
+        
+
+    #------------------------------------
     # _sample_chirps
     #-------------------
     
     def _sample_chirps(self, num_samples=None, save_dir=None):
+        '''
+        Sample chirps from many split files. For sampling
+        chirps that also satisfy a condition from a single
+        df, see DataCalcs.conditional_samples()
+        
+        :param num_samples:
+        :type num_samples:
+        :param save_dir:
+        :type save_dir:
+        '''
         data_calculator = DataCalcs(measures_root=self.data_calcs.measures_root,
                                     inference_root=self.data_calcs.inference_root,
                                     fid_map_file=self.fid_map_file
@@ -711,7 +742,7 @@ class MeasuresAnalysis:
         # column will be called 'rec_datetime', and an additional
         # column: 'is_daytime' will be added. This is done inplace,
         # so no back-assignment is needed:
-        calc.add_recording_datetime(calc.df) 
+        calc.add_recording_datetime_and_more(calc.df) 
         
         # Find best self.optimal_perplexity, self.optimal_n_clusters:
         # Perplexity for small datasets should be small:
@@ -1020,7 +1051,7 @@ class MeasuresAnalysis:
             # column will be called 'rec_datetime', and an additional
             # column: 'is_daytime' will be added. This is done inplace,
             # so no back-assignment is needed:
-            df_with_rectime = data_calc.add_recording_datetime(df_raw)
+            df_with_rectime = data_calc.add_recording_datetime_and_more(df_raw)
             df = data_calc._add_trig_cols(df_with_rectime, 'rec_datetime')
             df.reset_index(drop=True, inplace=True)
         else:
@@ -2197,6 +2228,14 @@ if __name__ == '__main__':
 
     log = LoggingService()
     
+    #******************
+    # df_raw = pd.read_feather('/tmp/df_raw.feather')
+    # fid_map_file = os.path.join(Localization.measures_root, 'split_filename_to_id.csv')
+    # data_calc = DataCalcs(fid_map_file=fid_map_file)
+    # df_with_rectime = data_calc.add_recording_datetime_and_more(df_raw)
+    # df = data_calc._add_trig_cols(df_with_rectime, 'rec_datetime')
+    
+    #******************
     # -------------------------------------------------------------------
     # Create one DF from all demeaned split files. They
     # are all of the form splitnn.feather, with nn being
@@ -2250,33 +2289,42 @@ if __name__ == '__main__':
     print('Done')
     sys.exit()
 
+    # -------------------------------------------------------------------
+    # Explore how different chirps are within one 10sec recording:
     
+    
+    # Make repeatable
+    # ma = MeasuresAnalysis(action=Action.CHIRP_SIMILARITY)
+    # random.seed = 1066
+    # random.randint()
+    
+        
     # -------------------------------------------------------------------
     # Descaling and re-meaning a StandardScaler treated df:
-    # src_file = Localization.all_measures
-    # with UniversalFd(src_file, 'r') as fd:
-    #     df_scaled = fd.asdf()
-    # df_orig = DataCleaner.recover_orig_from_scaled_data(Localization.scaler, df_scaled)
-    #
-    # additional_cols = ['file_id','chirp_idx','split',
-    #                    'rec_datetime','is_daytime','sin_hr',
-    #                    'cos_hr','sin_day',
-    #                    'cos_day','sin_month',
-    #                    'cos_month','sin_year','cos_year']
-    # additionals_df = pd.DataFrame(df_scaled[additional_cols])
-    # df_orig = pd.concat([df_orig, additionals_df], axis='columns')
-    #
-    # dst_fpath   = Path(Localization.all_measures_descaled)
-    # dst_feather = dst_fpath.with_suffix('.feather')
-    # dst_csv     = dst_fpath.with_suffix('.csv')
-    #
-    # log.info(f"Saving reconstituted data as .feather to {dst_feather}...")
-    # df_orig.to_feather(dst_feather)
-    # log.info(f"Saving reconstituted data as .csv to {dst_csv}...")    
-    # df_orig.to_csv(dst_csv)
-    #
-    # print('Done')
-    # sys.exit()
+    src_file = Localization.all_measures
+    with UniversalFd(src_file, 'r') as fd:
+        df_scaled = fd.asdf()
+    df_orig = DataCleaner.recover_orig_from_scaled_data(Localization.scaler, df_scaled)
+    
+    additional_cols = ['file_id','chirp_idx','split',
+                       'rec_datetime','is_daytime','sin_hr',
+                       'cos_hr','sin_day',
+                       'cos_day','sin_month',
+                       'cos_month','sin_year','cos_year']
+    additionals_df = pd.DataFrame(df_scaled[additional_cols])
+    df_orig = pd.concat([df_orig, additionals_df], axis='columns')
+    
+    dst_fpath   = Path(Localization.all_measures_descaled)
+    dst_feather = dst_fpath.with_suffix('.feather')
+    dst_csv     = dst_fpath.with_suffix('.csv')
+    
+    log.info(f"Saving reconstituted data as .feather to {dst_feather}...")
+    df_orig.to_feather(dst_feather)
+    log.info(f"Saving reconstituted data as .csv to {dst_csv}...")    
+    df_orig.to_csv(dst_csv)
+    
+    print('Done')
+    sys.exit()
     
     # -------------------------------------------------------------------   
     # Stats of data: a df like:
