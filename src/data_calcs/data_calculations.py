@@ -4,20 +4,39 @@ Created on Apr 27, 2024
 @author: paepcke
 '''
 
-from collections import namedtuple
-from data_calcs.universal_fd import UniversalFd
-from data_calcs.utils import Utils, TimeGranularity
-from datetime import datetime
-from enum import Enum
-from io import StringIO
-from itertools import chain, accumulate
-from logging_service.logging_service import LoggingService
-from pathlib import Path
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
-from sklearn.metrics import silhouette_score
-from scipy import stats
+from collections import (
+    namedtuple)
+from data_calcs.universal_fd import (
+    UniversalFd)
+from data_calcs.utils import (
+    Utils,
+    TimeGranularity)
+from datetime import (
+    datetime)
+from enum import (
+    Enum)
+from io import (
+    StringIO)
+from itertools import (
+    chain,
+    accumulate)
+from logging_service.logging_service import (
+    LoggingService)
+from pathlib import (
+    Path)
+from scipy import (
+    stats)
+from sklearn.cluster import (
+    KMeans)
+from sklearn.decomposition import (
+    PCA)
+from sklearn.manifold import (
+    TSNE)
+from sklearn.metrics import (
+    silhouette_score)
+from sklearn.metrics.pairwise import (
+    pairwise_distances,
+    paired_distances)
 import csv
 import joblib
 import json
@@ -26,11 +45,15 @@ import os
 import pandas as pd
 import random
 import re
+from torch.jit import isinstance
+from tifffile.tifffile import FILETYPE
 
 class Localization:
     # There is also a .csv version of the following .feather file:
     #all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.feather'
     proj_dir       = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+    # Results and visualizations:
+    proj_records   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/' 
     #analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/PCA_AllData')
     analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/Classifications')
     sampling_dst   = os.path.join(proj_dir, 'results/chirp_samples')
@@ -41,9 +64,12 @@ class Localization:
         proj_dir,
         'results/chirp_analysis/Classifications/PCA23Components_all_but_is_daytime/xformed2024-06-10T16_44_54_23components_297476samples.feather' 
         )
- 
-    all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/concat_10__chirps_20240527T100032.314015.feather'
-    measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
+    
+    all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/scaled_chirps_2024-06-17T11_12_08.feather'
+    all_measures_descaled = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/orig_chirps_2024-06-17T11_12_08.feather'
+    scaler         = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Descaling/split_scaler_1.5.0.joblib'
+    #measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
+    measures_root  = '/Users/paepcke/quatro/home/vdesai/data/training_data/all/splits'
     inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
 
 
@@ -872,10 +898,10 @@ class DataCalcs:
         return new_df
 
     #------------------------------------
-    # add_recording_datetime
+    # add_recording_datetime_and_more
     #-------------------
 
-    def add_recording_datetime(self, df):
+    def add_recording_datetime_and_more(self, df):
         '''
         Modifies df:
         
@@ -885,6 +911,16 @@ class DataCalcs:
 
             o Adds a new boolean column 'is_daytime' that indicates
               whether the chirp was recorded during daytime.
+              
+            o Adds a new column called 'species' with entries like:
+                'Coto'
+                'Laci,Coto'
+                ''
+            o Replaces nuisance 'species' names like 'HiF', 'none',
+              with empty strings.
+              
+            o Adds column freq_mean: the mean of chirp freqs: (HiF - LoF) / 2 
+            
               
         These changes occur in place.  
         
@@ -910,6 +946,8 @@ class DataCalcs:
     
         rec_times = list(map(lambda fname: Utils.time_from_fname(fname), fnames))
         rec_times_series = pd.Series(rec_times, name='rec_datetime')
+        # Turn them into Pandas date-time instances:
+        rec_times_series = pd.to_datetime(rec_times_series)
         # Add recording times column:
         df['rec_datetime'] = rec_times_series
     
@@ -918,6 +956,44 @@ class DataCalcs:
         # Stanford's Jasper Ridge Preserve:
         was_day_rec = df['rec_datetime'].apply(lambda dt: Utils.is_daytime_recording(dt))
         df.loc[:, 'is_daytime'] = was_day_rec
+        
+        # Using the .wav file names again, extract the 
+        # bat species series from them, if SonoBat made them
+        # available. The cases are:
+        #     barn1_D20220207T215546m654-Laci-Tabr.wav
+        #     barn1_D20220207T214358m129-Coto.wav
+        #     barn1_D20220720T020517m043.wav
+        species_lists = list(map(lambda fname: Utils.extract_species_from_wav_filename(fname),
+                                 fnames))
+        # Remove duplicates from all the lists, and remove
+        # the non-bat 'Hif' annotation present in some .wav
+        # file names, like:
+        #   'barn1_D20220205T192049m784-HiF.wav'
+        
+        def uniquifi(species_list):
+            uniq_list = [','.join(list(set(species_list)))]
+            # Remove 'HiF' and other nuisance vals if present, replacing them
+            # w/ an empty str, which is equivalent to 'unknown species'AXS
+            uniq_list = ['' if el in ['LoF', 'HiF', 'HiLo', 'null'] else el 
+                         for el in 
+                         uniq_list]
+            strs_list = ','.join(uniq_list)
+            return strs_list
+            
+        uniq_species_lists = [uniquifi(species_list) 
+                              for species_list
+                              in species_lists
+                              ]
+        species_lists_series = pd.Series(uniq_species_lists, 
+                                         name='species',
+                                         dtype="string"
+                                         )
+        # Add species column:
+        df['species'] = species_lists_series
+        
+        # Add column with mean frequency:
+        df['freq_mean'] = (df.LowFreq + df.HiFreq) / 2.
+        
 
         return df
 
@@ -1228,6 +1304,21 @@ class DataCalcs:
         return result
 
     #------------------------------------
+    # find_optimal_k
+    #-------------------
+    
+    @staticmethod
+    def find_optimal_k(X_df, k_range):
+        sil_scores = []
+        for k in k_range:
+            kmeans = KMeans(n_clusters=k, random_state=1066)
+            sil_scores.append([k, 
+                               silhouette_score(X_df, kmeans.fit_predict(X_df)),
+                               kmeans
+                               ])
+        return pd.DataFrame(sil_scores, columns=['k', 'silhouette_score', 'kmeans'])
+
+    #------------------------------------
     # find_optimal_tsne_clustering
     #-------------------
     
@@ -1378,16 +1469,26 @@ class DataCalcs:
         :rtype pd.Series
         '''
 
-        target_ser = df[target_col]        
+        target_ser = df[target_col].copy()       
         # Exclude the target column
         filtered_df = df.drop(target_col, axis=1)
           
 
         # Is the target column dichotomous?
-        if len(df[target_col].unique()) == 2:
+        uniq_target_vals = df[target_col].unique() 
+        if len(uniq_target_vals) == 2:
+            # Values must be 1 and 0. Make a mapping, just
+            # in case. It's a pain to ensure that the values
+            # aren't True or False, which are == to 1 and 0,
+            # respectively, 
+            val0, val1 = uniq_target_vals
+            if type(val0) != int or val0 not in [0,1] or \
+               type(val1) != int or val1 not in [0,1]:
+                val_map = {val0 : 0, val1 : 1}
+                target_ser = target_ser.replace(val_map) 
+            
             # Result from one pointbiserial corr computation:
             # A correlation coefficient, and an associated p_value:
-            pt_ser_res = namedtuple('PtSerRes', ['corr', 'p_value'])
             # Dichotomous, use pointserial correlation variant:
             def point_serial_one_var(continuous_vals):
                 point_biserial_r, p_value = stats.pointbiserialr(continuous_vals, target_ser)
@@ -1420,6 +1521,79 @@ class DataCalcs:
         return res_df
 
     #------------------------------------
+    # distances
+    #-------------------
+    
+    @classmethod
+    def distances(cls, obj1, obj2, metric='euclidean'):
+        '''
+        Returns the distance(s) between obj1 and obj2.
+        These args may be DataFrames of dimension 
+        (n_samples, n_features), or Series of length 
+        n_samples. When obj1 and obj2 have different
+        types, the dimensions must match. Cases:
+
+              obj1     obj2       res 
+             Series   Series     Series of one element
+             Series   Df         Series of as many elements as df has rows
+                                   i.e distances are measured between the
+                                   Series and each of the df's rows.
+                                   
+            Df        Df         Dataframe with distances of corresponding 
+                                   rows
+            same with reversed  
+        
+        
+        
+        :param obj1: origin
+        :type obj1: union[pd.Series, pd.DataFrame]
+        :param obj2: destination
+        :type obj2: union[pd.Series, pd.DataFrame]
+        :returns pairwise distances
+        :rtype pd.Series
+        '''
+        if isinstance(obj1, pd.Series):
+            if isinstance(obj2, pd.Series):
+                # Series ==== Series
+                # distances between (X[0], Y[0]), (X[1], Y[1]), etc…:
+                # Need numpy and shapes corresponding to 
+                # 1 sample, multiple features:
+                obj1np = obj1.to_numpy().reshape(1,-1)
+                obj2np = obj2.to_numpy().reshape(1,-1)
+                res = paired_distances(obj1np, obj2np, metric=metric)
+                res_ser = pd.Series(res)
+                return res_ser
+            elif isinstance(obj2, pd.DataFrame):
+                # Series ==== DataFrame
+                # distances between obj1 and each row of obj2:
+                obj1np = obj1.to_numpy().reshape(1,-1)
+                res = pairwise_distances(obj1np, obj2, metric=metric)
+                res_ser = pd.Series(res[0])
+                return res_ser
+            else:
+                raise TypeError(f"Given obj1 of type pd.Series, obj2 must be pd.Series, or pd.DataFrame, not {obj2}")         
+        elif isinstance(obj1, pd.DataFrame):
+            if isinstance(obj2, pd.Series):
+                # Obj1 ==== DataFrame
+                # obj2 == Series
+                obj2np = obj2.to_numpy().reshape(1,-1)
+                res = pairwise_distances(obj1, obj2np, metric=metric)
+                # Got like:
+                # array([[ 0.        ],
+                #        [17.32050808]])
+                # Flatten the array into a Series
+                res_ser = pd.Series(res.ravel())
+                return res_ser
+            elif isinstance(obj2, pd.DataFrame):
+                # Obj1 ==== DataFrame
+                # Obj2 ==== DataFrame
+                res = pairwise_distances(obj1, obj2, metric=metric)
+                res_flat = np.apply_along_axis(lambda res_pair: res_pair[0], 1, res)
+                res_ser = pd.Series(res_flat)
+                return res_ser
+        return res
+    
+    #------------------------------------
     # make_chirp_sample_file
     #-------------------
     
@@ -1437,7 +1611,10 @@ class DataCalcs:
         
         Result df will have:
              o All the columns in the split files
-             o Columns
+             o Plus columns
+            
+                    'rec_datetime', 'is_daytime', 
+                    'species', 'freq_mean',
                 	'sin_hr', 'cos_hr', 
                 	'sin_day', 'cos_day', 
                 	'sin_month', 'cos_month', 
@@ -1582,8 +1759,9 @@ class DataCalcs:
         # Make a df from the extraced samples:            
         df_raw = pd.DataFrame(res_np_arr, columns=res_cols)
         # Replace file_id with recording datetime object, and
-        # add whether recording was daylight or not:
-        df_with_rectime = self.add_recording_datetime(df_raw)
+        # add whether recording was daylight or not, as well
+        # as species:
+        df_with_rectime = self.add_recording_datetime_and_more(df_raw)
         # Add sin and cos columns for each granularity of rec_datetime:
         df = self._add_trig_cols(df_with_rectime, 'rec_datetime')  
         df.reset_index(drop=True, inplace=True)
@@ -1593,6 +1771,87 @@ class DataCalcs:
         
         return {'df' : df,
                 'out_fname' : save_fname}
+
+    #------------------------------------
+    # conditional_samples
+    #-------------------
+    
+    @staticmethod
+    def conditional_samples(df, 
+                            num_samples, 
+                            cond=None, 
+                            save_dir=None, 
+                            prefix=None, 
+                            timestamp=None, 
+                            save_format=FileType.CSV):
+        '''
+        Takes a dataframe and a number of samples. Returns a
+        subset of the df with num_samples rows. 
+        
+        If cond is provided, it must be a function that, when 
+        given a row, returns True if the row should be considered
+        for sampling. Else it must return False. 
+        
+        If save_dir is provided, a filename is created of the form:
+        
+           {prefix}{num_samples}_of_{population_size}_samples_{timestamp}{extension}
+           
+        where population_size is the number of rows left after 
+        rows are eliminated that do not satisfy cond. The file 
+        extension is automatically derived from the save_format enum 
+        member value.
+        
+        The timestamp is used if not None; else current datetime is used.
+        
+        It is a ValueError to ask for more samples than the available
+        qualified rows.
+        
+        :param df: dataframe from which to sample
+        :type df: pd.DataFrame
+        :param num_samples: number of samples without replacement
+        :type num_samples: int
+        :param cond: function that decides whether or not to include a given row
+        :type cond: optional[func]
+        :param save_dir: optional directory where to save the resulting df
+        :type save_dir: optional[str]
+        :param prefix: optional string to place a start of filename if saving
+        :type prefix: optional[str]
+        :param timestamp: optional timestamp string to use in filename
+        :type timestamp: optional[str]
+        :param save_format: whether to save as .csv, .csv.gz, or .feather
+        :type save_format: FileType
+        :return: a dataframe with num_samples rows that all satisfy cond
+        :rtype: pd.DataFrame
+        :raise ValueError: if requested num_samples exceeds number of
+            qualifying rows.
+        '''
+    
+        if cond is not None:
+            # Get a subset of the df that fulfills the condition:
+            df_excerpt = df.loc[cond]
+        else:
+            df_excerpt = df
+        
+        population_size = len(df_excerpt)
+        if num_samples > population_size:
+            raise ValueError(f"Dataframe only has {population_size} samples, but {num_samples} were requested")
+        if num_samples == population_size:
+            return df_excerpt
+        
+        sample_row_nums = random.sample(range(population_size), num_samples)
+        res = df_excerpt.iloc[sample_row_nums]
+        
+        if save_dir is not None:
+            # Create a file name that includes num of samples, population
+            # size (after applying condition), and timestamp:
+            if timestamp is None:
+                timestamp = Utils.file_timestamp()
+            fname = f"{prefix}{num_samples}_of_{population_size}_samples_{timestamp}{save_format.value}"
+            full_path = os.path.join(save_dir, fname)
+            with UniversalFd(full_path, 'w') as fd:
+                fd.write_df(res)
+        
+        return res
 
     #------------------------------------
     # pca_computation

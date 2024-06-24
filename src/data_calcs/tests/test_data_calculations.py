@@ -4,21 +4,35 @@ Created on Apr 27, 2024
 @author: paepcke
 '''
 
-from data_calcs.data_calculations import DataCalcs, PerplexitySearchResult
-from data_calcs.daytime_file_selection import DaytimeFileSelector
-from data_calcs.utils import Utils, TimeGranularity
-from datetime import datetime
-from logging_service.logging_service import LoggingService
-from pandas.testing import assert_frame_equal
-from tempfile import TemporaryDirectory
-from unittest.mock import MagicMock
+from data_calcs.data_calculations import (
+    DataCalcs,
+    PerplexitySearchResult)
+from data_calcs.daytime_file_selection import (
+    DaytimeFileSelector)
+from data_calcs.utils import (
+    Utils,
+    TimeGranularity)
+from datetime import (
+    datetime)
+from logging_service.logging_service import (
+    LoggingService)
+from pandas.testing import (
+    assert_frame_equal)
+from sklearn.cluster._kmeans import (
+    KMeans)
+from sklearn.datasets import (
+    make_blobs)
+from tempfile import (
+    TemporaryDirectory)
+from unittest.mock import (
+    MagicMock)
 import numpy as np
 import os
 import pandas as pd
 import unittest
 
-#******TEST_ALL = True
-TEST_ALL = False
+TEST_ALL = True
+#TEST_ALL = False
 
 class DataPrepTester(unittest.TestCase):
 
@@ -143,8 +157,8 @@ class DataPrepTester(unittest.TestCase):
     @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_add_recording_datetime(self):
         dp = DataCalcs(self.tmpdir.name, self.tmpdir.name)
-        df = self.tst_df_large
-        new_df = dp.add_recording_datetime(df)
+        df = self.tst_df_wide.copy()
+        new_df = dp.add_recording_datetime_and_more(df)
         
         # Since mods are done inplace, the new and old
         # dfs should be the same:
@@ -172,6 +186,23 @@ class DataPrepTester(unittest.TestCase):
         #   'barn1_D20220205T140541m567-Myca-Myca.wav', so: afternoon
         is_day1 = df.is_daytime.iloc[1]
         self.assertTrue(is_day1)
+        
+        # The species: The name triplet in expected, coming from a
+        # set, may be in different order. So, check all before and
+        # after separately
+        expected = pd.Series(['', 'Myca', '', 'Tabr', '', 'Myca', 'Myca,Laci,Tabr', 'Tabr', ''],
+                             name='species')
+        first_part_exp = expected.iloc[:4]
+        first_part_exp = first_part_exp.astype("string")
+        first_part_df  = new_df.species.iloc[:4]
+        pd.testing.assert_series_equal(first_part_df, first_part_exp)
+        
+        # Check last element:
+        self.assertEqual(new_df.species.iloc[-1], expected.iloc[-1])
+        # The triple name:
+        expected_triple_set = set(expected.iloc[-3].split(','))
+        found_triple_set    = set(new_df.species.iloc[-3].split(','))
+        self.assertSetEqual(found_triple_set, expected_triple_set)
         
 
     #------------------------------------
@@ -230,10 +261,14 @@ class DataPrepTester(unittest.TestCase):
         self.assertSetEqual(set(tsne_df.columns), set(expected))
         
         # Now try TSNE on a df with recording time and daylight information:
-        df = dp.add_recording_datetime(self.tst_df_large).copy()
+        #*****df = dp.add_recording_datetime_and_more(self.tst_df_large).copy()
+        df = dp.add_recording_datetime_and_more(self.tst_df_wide).copy()
         tsne_df = dp.run_tsne(df, cols_to_keep=['rec_datetime', 'is_daytime'])
         
-        expected = ['tsne_x', 'tsne_y', 'PrecedingIntrvl', 'CallsPerSec', 'is_daytime', 'rec_datetime']
+        expected = ['tsne_x', 'tsne_y', 
+                    'PrecedingIntrvl', 'HiFreq', 'LowFreq', 
+                    'CallsPerSec', 
+                    'is_daytime', 'rec_datetime']
         self.assertSetEqual(set(tsne_df.columns), set(expected))
         self.assertEqual(len(tsne_df), len(df))
         
@@ -433,12 +468,13 @@ class DataPrepTester(unittest.TestCase):
         # Got correct number of samples?
         self.assertEqual(len(samples['df']), samples_wanted)
         # Same cols as the originals, plus augmentations:
-        new_cols_expected = cols.append(pd.Index(['rec_datetime', 'is_daytime', 'sin_hr', 'cos_hr',
-       'sin_day', 'cos_day', 'sin_month', 'cos_month', 'sin_year', 'cos_year']))
+        new_cols_expected = cols.append(pd.Index(['rec_datetime', 'is_daytime',
+       'species', 'freq_mean', 'sin_hr', 'cos_hr', 'sin_day', 'cos_day',
+       'sin_month', 'cos_month', 'sin_year', 'cos_year']))
         
         pd.testing.assert_index_equal(samples['df'].columns, new_cols_expected)
 
-        # Get exactly as many samles as are in the the dfs:
+        # Get exactly as many samles as are in the dfs:
 
         samples_wanted = total_rows 
         samples = dp.make_chirp_sample_file(samples_wanted, unittests=tst_dfs)
@@ -538,7 +574,7 @@ class DataPrepTester(unittest.TestCase):
     # test_correlate_all_against_one
     #-------------------
     
-    #*******@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_correlate_all_against_one(self):
         
         # First case: continuous vars against one continuous var:
@@ -578,7 +614,47 @@ class DataPrepTester(unittest.TestCase):
                              index=['TimeInFile', 'PrecedingIntrvl', 'CallsPerSec', 'chirp_idx']
                              )
         pd.testing.assert_series_equal(p_values, expected)
+
+        # Now, continuous vars against a dichotomous var that is not 0 and 1:
+        df = self.tst_df4.copy()
+        df.file_id = [False, True, False]
         
+        corrs = DataCalcs.correlate_all_against_one(df, 'file_id')
+        self.assertEqual(list(corrs.columns), ['Corr_all_against_file_id', 'p_value'])
+        
+        corr_col = corrs.Corr_all_against_file_id.round(4)
+        expected = pd.Series([0.0, 0.0, 0.0, 0.9449], 
+                             name='Corr_all_against_file_id',
+                             index=['TimeInFile', 'PrecedingIntrvl', 'CallsPerSec', 'chirp_idx']
+                             )
+        pd.testing.assert_series_equal(corr_col, expected)
+        p_values = corrs.p_value.round(4)
+        expected = pd.Series([1.0, 1.0, 1.0, 0.2123], name='p_value',
+                             index=['TimeInFile', 'PrecedingIntrvl', 'CallsPerSec', 'chirp_idx']
+                             )
+        pd.testing.assert_series_equal(p_values, expected)
+        
+    #------------------------------------
+    # test_find_optimal_k
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_find_optimal_k(self):
+
+        n_features = 3
+        X, _y = make_blobs(random_state=42, n_features=n_features)
+        X_df = pd.DataFrame(X, columns=['Feature1', 'Feature2', 'Feature3'])
+        
+        res_df = DataCalcs.find_optimal_k(X_df, range(2,5))
+        expected_first_2_cols = pd.DataFrame({'k' : [2,3,4],
+                                              'silhouette_score' : [0.804257,
+                                                                    0.739392,
+                                                                    0.597150
+                                                                    ]
+                                              })
+        pd.testing.assert_frame_equal(res_df[['k', 'silhouette_score']], expected_first_2_cols)
+        for row_idx in range(n_features):
+            self.assertTrue(isinstance(res_df.iloc[row_idx, 2], KMeans)) 
 
 
     # ----------------------- Utilities ----------------
@@ -621,6 +697,85 @@ class DataPrepTester(unittest.TestCase):
         self.assertEqual(len(jdict['tsne_df']), len(df))
         
 
+    #------------------------------------
+    # test_distances
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_distances(self):
+        
+        # Series with Series:
+        
+        obj1 = pd.Series([10, 20, 30])
+        obj2 = pd.Series([10, 20, 30])
+        dist = DataCalcs.distances(obj1, obj2, metric='euclidean')
+        expected = pd.Series([0.0])
+        pd.testing.assert_series_equal(dist, expected)        
+
+        obj1 = pd.Series([20, 30, 40])
+        obj2 = pd.Series([10, 20, 30])
+        
+        dist = DataCalcs.distances(obj1, obj2, metric='euclidean')
+        expected = pd.Series(np.sqrt(10**2 + 10**2 + 10**2))
+        pd.testing.assert_series_equal(dist, expected)        
+
+        # Series with df: want distance of series with each df row: 
+        obj1   = pd.Series([20, 30, 40])
+        obj2df = pd.DataFrame([[20, 30, 40], [10, 20, 30]])
+        dist   = DataCalcs.distances(obj1, obj2df, metric='euclidean')
+        expected = pd.Series([0, 17.320508])
+        pd.testing.assert_series_equal(dist, expected)        
+        
+        # df with Series:
+        obj1df = pd.DataFrame([[20, 30, 40], [10, 20, 30]])
+        obj2   = pd.Series([20, 30, 40])
+        dist   = DataCalcs.distances(obj1df, obj2, metric='euclidean')
+        expected = pd.Series([0, 17.320508])
+        pd.testing.assert_series_equal(dist, expected)        
+              
+        # df with df:
+        obj1df = pd.DataFrame([[20, 30, 40], 
+                               [10, 20, 30]])
+        obj2df = pd.DataFrame([[20, 30, 40], 
+                               [20, 30, 40]])
+        dist   = DataCalcs.distances(obj1df, obj2df, metric='euclidean')
+        expected = pd.Series([0, 17.320508])
+        pd.testing.assert_series_equal(dist, expected)        
+
+    #------------------------------------
+    # test_conditional_samples
+    #-------------------
+    
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_conditional_samples(self):
+        
+        df = self.big_df.copy()
+        
+        num_samples = 2
+        df_2s = DataCalcs.conditional_samples(df, num_samples)
+        self.assertEqual(len(df_2s), num_samples)
+        
+        
+        # 4 samples in which file_id > 11:
+        num_samples = 4
+        df_4s_gt11 = DataCalcs.conditional_samples(df, 
+                                                   num_samples,
+                                                   cond=lambda row: row.file_id > 11)
+        self.assertEqual(len(df_4s_gt11), num_samples)
+        file_ids = df_4s_gt11.file_id
+        self.assertNotIn(11, file_ids)
+        
+        # Ask for as many samples as there are rows:
+        num_samples = len(df)
+        df_all = DataCalcs.conditional_samples(df, num_samples)
+        pd.testing.assert_frame_equal(df_all, df)
+        
+        # Ask for too many:
+        num_samples = len(df) + 1
+        with self.assertRaises(ValueError):
+            df_all = DataCalcs.conditional_samples(df, num_samples)
+
+# ------------------------- Utilities ---------
 
     #------------------------------------
     # create_test_files
@@ -696,7 +851,7 @@ class DataPrepTester(unittest.TestCase):
             #       TmInFil PredIntv ClsPSec  FID  ChirpIDX  
             new_row = [i*10, i*100,   i*1000, 10+i, i]
             self.tst_df_large.loc[i] = new_row 
-        
+
         # Ensure the index is 0-10:
         self.tst_df_large.reset_index(drop=True, inplace=True)        
         
@@ -708,7 +863,7 @@ class DataPrepTester(unittest.TestCase):
                                  'barn1_D20220205T205824m469-Tabr-Tabr-Tabr.wav,14\n'
                                  'barn1_D20220205T211937m700-HiF.wav,15\n'
                                  'barn1_D20220205T231442m354-Myca-Myca.wav,16\n'
-                                 'barn1_D20220205T235354m889-Tabr-Tabr-Tabr.wav,17\n'
+                                 'barn1_D20220205T235354m889-Tabr-Myca-Laci.wav,17\n'
                                  'barn1_D20220206T001144m425-Tabr-Tabr.wav,18\n'
                                  'barn1_D20220206T012049m898.wav,19')
         self.fname_to_id_file = os.path.join(self.tmpdir.name, 'split_filename_to_id.csv')
@@ -724,6 +879,14 @@ class DataPrepTester(unittest.TestCase):
                                    for fname, fid 
                                    in fname_id_pairs[1:] # Skip header 
                                    }
+        
+        # One more df that includes LowFreq and HiFreq:
+        # Add two cols: LowFreq and HiFreq:
+        self.tst_df_wide = self.tst_df_large.copy()
+        low_freq = pd.Series(np.arange(1,len(self.tst_df_large)+1), name='LowFreq')
+        hi_freq  = pd.Series(np.arange(1,len(self.tst_df_large)+1) + 10, name='HiFreq')
+        self.tst_df_wide = pd.concat([self.tst_df_wide, low_freq, hi_freq], axis='columns')
+        
             
         # ________________________ Example split file exerpts -------------------
         
@@ -749,6 +912,7 @@ class DataPrepTester(unittest.TestCase):
         self.split_df3 = pd.DataFrame([chirp9,chirp10], columns=cols)
         self.split_df3.file_id = pd.Series([15,19])
         
+        self.big_df = pd.concat([self.split_df1, self.split_df2, self.split_df3], axis='rows') 
         
 # ----------------------------- Main ------------------
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ import os
 import pandas as pd  # pip install pyarrow
 import re
 import sys
+import joblib
+from sklearn.preprocessing import StandardScaler
 
 class DataCleaner:
     '''
@@ -372,6 +374,73 @@ class DataCleaner:
         stats_df_sorted = stats_df.reindex(columns=variances.index)
 
         return stats_df_sorted
+
+    #------------------------------------
+    # recover_orig_from_scaled_data
+    #-------------------
+    
+    @staticmethod
+    def recover_orig_from_scaled_data(scaler_src, scaled_data):
+        '''
+        Recover original data from demeaned and scaled data.
+        To do that, the caller must provide the original sklearn.StandardScaler 
+        instance, and the scaled data.
+        
+        The scaler may be provided as a ready-to-go instance, or 
+        as the path to a .pkl file that was created using joblib.
+         
+        :param scaler_src: StandardScaler instance, or path to joblib
+            .pkl file.
+        :type scaler_src: union[str, sklearn.StandardScaler.
+        :param scaled_data: demeaned and scaled data to revert
+        :type scaled_data: pd.DataFrame
+        :return original data
+        :rtype pd.DataFrame
+        '''
+        
+        if type(scaler_src) == str:
+            scaler = joblib.load(scaler_src)
+        elif isinstance(scaler_src, StandardScaler):
+            scaler = scaler_src
+        else:
+            msg = f"The scaler_info must be StandardScaler instance, or the path to a saved joblib file, not {scaler_src}"
+            raise TypeError(msg)
+        scaler.set_output(transform = "pandas")
+        scaler_cols = list(scaler.get_feature_names_out())
+        orig_np = scaler.inverse_transform(pd.DataFrame(
+                scaled_data, columns = scaler_cols), copy = True)
+        orig_df = pd.DataFrame(orig_np, columns=scaler_cols)
+        try:
+            df_index = scaler.df_index 
+            orig_df.index=df_index
+        except AttributeError:
+            # No dataframe index was saved with the
+            # original scaler. Let the orig_df be without
+            # a special index:
+            pass
+        
+        # The given df may have extra columns that were not presence
+        # in the df being scaled at the time. Add those to the side
+        # of this unscaled df:
+        extra_cols = list(set(scaled_data.columns) - set(orig_df.columns))
+        if len(extra_cols) > 0:
+            # We want the extra cols in the same order as they
+            # appear in the scaled (input) df. The set op above
+            # got them out of order:
+            
+            # Make a lookup dict: col-name ---> position in scaled_data:
+            scaled_data_cols_order = {
+                col_name : pos 
+                for pos, col_name 
+                in enumerate(scaled_data.columns)}
+            
+            extra_cols_sorted = sorted(extra_cols, key=scaled_data_cols_order.get)
+            orig_df_complete = pd.concat([orig_df, scaled_data[extra_cols_sorted]], axis='columns')
+        else:
+            orig_df_complete = orig_df
+        
+        return orig_df_complete
+        
 
     #------------------------------------
     # cull_columns
