@@ -33,19 +33,22 @@ def add_cli(parser):
 '''
 Get all the files from a particular root directory
 '''
-def get_files(path, filter_ = (lambda x: True)):
+def get_files(path):
     files = []
-    for file in list(filter(filter_, glob.glob(path + '/**/*Parameters_*.txt', recursive=True))):
+    for file in glob.glob(path + '/**/*Parameters_*.txt', recursive=True):
         files.append(file)
     return files
 
 '''
 Get the dataframe from the files. Merge all of them into a single dataframe.
 '''
-def get_df(files):
+def get_df(files, filter = (lambda x: True)):
     df = pd.DataFrame()
     for file in files:
         df = pd.concat([df, (pd.read_csv(file, sep='\t'))], ignore_index = True)
+
+    #filter column "filename" of df using filter
+    df = df[df["Filename"].apply(filter)]
     return df
 
 
@@ -58,7 +61,7 @@ filter_ = (lambda x: True)
 if(args.daytime):
     filter_ = (lambda S: (lambda s: S.is_daytime_recording(s)))(DaytimeFileSelector())
 
-df = get_df(get_files(args.input_data_path, filter_ = filter_)).sort_values(["Filename", "TimeInFile"])
+df = get_df(get_files(args.input_data_path), filter = filter_).sort_values(["Filename", "TimeInFile"])
 print("Done.")
 
 
