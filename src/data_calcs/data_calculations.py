@@ -65,7 +65,7 @@ class Localization:
         'results/chirp_analysis/Classifications/PCA23Components_all_but_is_daytime/xformed2024-06-10T16_44_54_23components_297476samples.feather' 
         )
     
-    all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/scaled_chirps_2024-06-17T11_12_08.feather'
+    all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/scaled_chirps_2024-06-20T12_26_24.feather'
     all_measures_descaled = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/orig_chirps_2024-06-17T11_12_08.feather'
     scaler         = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Descaling/split_scaler_1.5.0.joblib'
     #measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
@@ -915,11 +915,11 @@ class DataCalcs:
             o Adds a new column called 'species' with entries like:
                 'Coto'
                 'Laci,Coto'
-                ''
+                'Unkn'
             o Replaces nuisance 'species' names like 'HiF', 'none',
-              with empty strings.
+              with 'Unkn'.
               
-            o Adds column freq_mean: the mean of chirp freqs: (HiF - LoF) / 2 
+            o Adds column freq_mean: the mean of chirp freqs: (HiFreq - LoFreq) / 2 
             
               
         These changes occur in place.  
@@ -943,7 +943,7 @@ class DataCalcs:
                   for fid 
                   in df[wav_file_col_nm]
                   ]
-    
+        self.log.info("Adding recording date and time...")
         rec_times = list(map(lambda fname: Utils.time_from_fname(fname), fnames))
         rec_times_series = pd.Series(rec_times, name='rec_datetime')
         # Turn them into Pandas date-time instances:
@@ -954,6 +954,7 @@ class DataCalcs:
         # Add a column 'daytime' with True or False, depending
         # on whether the recording was at daytime as seen at
         # Stanford's Jasper Ridge Preserve:
+        self.log.info("Adding is_daytime column...")
         was_day_rec = df['rec_datetime'].apply(lambda dt: Utils.is_daytime_recording(dt))
         df.loc[:, 'is_daytime'] = was_day_rec
         
@@ -963,6 +964,8 @@ class DataCalcs:
         #     barn1_D20220207T215546m654-Laci-Tabr.wav
         #     barn1_D20220207T214358m129-Coto.wav
         #     barn1_D20220720T020517m043.wav
+        
+        self.log.info("Finding species specs in .wav file names...")
         species_lists = list(map(lambda fname: Utils.extract_species_from_wav_filename(fname),
                                  fnames))
         # Remove duplicates from all the lists, and remove
@@ -974,12 +977,13 @@ class DataCalcs:
             uniq_list = [','.join(list(set(species_list)))]
             # Remove 'HiF' and other nuisance vals if present, replacing them
             # w/ an empty str, which is equivalent to 'unknown species'AXS
-            uniq_list = ['' if el in ['LoF', 'HiF', 'HiLo', 'null'] else el 
+            uniq_list = ['Unkn' if el in ['LoF', 'HiF', 'HiLo', 'null', '', 'none'] else el 
                          for el in 
                          uniq_list]
             strs_list = ','.join(uniq_list)
             return strs_list
-            
+        
+        self.log.info("Cleaning species entries, e.g. mark unidentifieds with 'Unkn'...")
         uniq_species_lists = [uniquifi(species_list) 
                               for species_list
                               in species_lists

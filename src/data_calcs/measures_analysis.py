@@ -932,7 +932,6 @@ class MeasuresAnalysis:
                       out_file_type=FileType.CSV, 
                       prefix=None,
                       augment=True,
-                      include_index=False
                       ):
         '''
         Given a list of sourcefiles that contain dataframes, create one df,
@@ -1052,6 +1051,7 @@ class MeasuresAnalysis:
             # column: 'is_daytime' will be added. This is done inplace,
             # so no back-assignment is needed:
             df_with_rectime = data_calc.add_recording_datetime_and_more(df_raw)
+            self.log.info("Adding time encoding via trig functions...")
             df = data_calc._add_trig_cols(df_with_rectime, 'rec_datetime')
             df.reset_index(drop=True, inplace=True)
         else:
@@ -1435,7 +1435,7 @@ class ResultInterpretations:
         # component's contribution to explaining variance. I.e.
         # multiple F's column in the loadings matrix by the column
         # vector that hold's the components' contribution.
-        # Then sum those scaled loadings to get on Series:
+        # Then sum those scaled loadings to get Series:
         #     TimeInFile         3.734815e-01
         #     PrecedingIntrvl    1.457879e-01
         #     CallsPerSec        6.105740e-02
@@ -2271,7 +2271,8 @@ if __name__ == '__main__':
                           dst_dir=os.path.dirname(Localization.all_measures), 
                           prefix='scaled',
                           idx_columns='level_0',
-                          out_file_type=FileType.FEATHER
+                          out_file_type=FileType.FEATHER,
+                          augment=True
                           )
     res_dict = ma.experiment_result
     df_out_file = res_dict['out_file']
