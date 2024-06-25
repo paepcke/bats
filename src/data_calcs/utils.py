@@ -8,7 +8,8 @@ from data_calcs.daytime_file_selection import (
     DaytimeFileSelector)
 from datetime import (
     timedelta,
-    datetime)
+    datetime,
+    timezone)
 from enum import (
     Enum,
     auto)
@@ -19,6 +20,7 @@ import numpy as np
 import os
 import pandas as pd
 import re
+import pytz
 
 # ----------------------------- Class TimeGranularity ---------    
 
@@ -163,17 +165,24 @@ class Utils:
     #-------------------
     
     @staticmethod
-    def file_timestamp(time=None):
+    def file_timestamp(time=None, tzone_name='America/Los_Angeles'):
         '''
         Returns date and time in a format safe for use 
         in filenames. See safe_time_from_fname() to get
         that timestamp from a file name whose timestamp
         was created by this method.
         
-        :param time: optinally, a datetime to turn into a 
+        Time is returned in the form '2024-05-19T10_16_42',
+        localized to timezone provided in tzone_name. If time
+        is explicitly provided, tzone_name is ignored.
+        
+        :param time: optionally, a datetime to turn into a 
             filename safe string. If None, current date and time
             are used.
         :type time: union[None | datetime.datetime]
+        :param tzone_name: name of desired timezone as defined
+            in Python module pytz. Ignored if time is not None.
+        :type tzone_name: optional(str)
         :return timestamp for use in file names
         :rtype str
         '''
@@ -183,7 +192,9 @@ class Utils:
                             
         if time is None:
             # Get like '2024-05-19T10:16:42.785678'
-            dt_str = datetime.now().isoformat()
+            now_utc = datetime.now(timezone.utc)
+            localized_datetime = now_utc.astimezone(pytz.timezone(tzone_name))
+            dt_str = localized_datetime.isoformat()
         else:
             dt_str = time.isoformat()
             
