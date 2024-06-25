@@ -7,9 +7,9 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
 from data_calcs.daytime_file_selection import DaytimeFileSelector
+from data_calcs.utils import Utils # for filename-friendly timestamp
 import os
 import gc
-
 
 '''
 Add the command line interface arguments to specify the input data path, 
@@ -54,6 +54,12 @@ def get_df(files, filter = (lambda x: True)):
 
 args = add_cli(argparse.ArgumentParser()).parse_args()
 minimum_length = args.minimum_length
+
+# Ensure that the output directory exists:
+out_dir = os.path.dirname(args.output_data_path)
+if not os.path.exists(out_dir):
+    print(f"Creating output dir {out_dir}...")
+    os.makedirs(out_dir)
 
 print("Reading files... ", end="", flush=True)
 filter_ = (lambda x: True)
@@ -100,8 +106,17 @@ file_id_to_chirps = df.groupby("file_id")["chirp_idx"].max().reset_index().sort_
 file_id_to_chirps["n_samples"] = file_id_to_chirps["chirp_idx"] - minimum_length + 2 
 file_id_to_chirps["cum_samples"] = file_id_to_chirps["n_samples"].cumsum()
 
+# Write a timestamp of the format used in
+# analysis downstream to outdir/timestamp.txt:
+
+timestamp      = Utils.file_timestamp()
+out_dir        = os.path.dirname(args.output_data_path)
+timestamp_path = os.path.join(out_dir, 'timestamp.txt')
+with open(timestamp_path, 'w') as fd:
+    fd.write(timestamp)
+        
 if(args.splits == 1):
-    print("Writing to file... ", end="", flush=True)
+    print("Writing CSV file to file... ", end="", flush=True)
     df.to_csv(args.output_data_path)
     #write out truth values to a file
     truth_values = df
@@ -112,12 +127,13 @@ if(args.splits == 1):
 else:
     print("Writing to files... ", end="\n", flush=True)
 
-    #takes a LOOOOONG time
-    df.drop(
-        columns=["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 
-                 'Preemphasis', 'MaxSegLnght', "ParentDir"], 
-        inplace = True
-    )
+    final_cols = list(df.columns)
+    to_drop   = ['Filename', 'NextDirUp', 'Path', 'Version', 'Filter', 
+                 'Preemphasis', 'MaxSegLnght', 'ParentDir']
+    for col_to_drop in to_drop:
+        final_cols.remove(col_to_drop)
+    df_new = df[final_cols]
+    df = df_new
 
     columns_to_not_scale = ["file_id", "chirp_idx"]
     columns_to_scale = [col for col in df.columns if col not in columns_to_not_scale]
@@ -141,7 +157,7 @@ else:
 
     #writing to splits
     print("Writing to splits= ", args.splits, " files...")
-    print("Reseting index...")
+    print("Resetting index...")
     df = df.reset_index(drop = True)
     print("Done.")
 
