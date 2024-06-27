@@ -45,8 +45,6 @@ import os
 import pandas as pd
 import random
 import re
-from torch.jit import isinstance
-from tifffile.tifffile import FILETYPE
 
 class Localization:
     # There is also a .csv version of the following .feather file:
@@ -55,7 +53,8 @@ class Localization:
     # Results and visualizations:
     proj_records   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/' 
     #analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/PCA_AllData')
-    analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/Classifications')
+    #analysis_dst   = os.path.join(proj_dir, 'results/chirp_analysis/Classifications')
+    analysis_dst   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/'
     sampling_dst   = os.path.join(proj_dir, 'results/chirp_samples')
     srch_res_dst   = os.path.join(proj_dir, 'results/hyperparm_searches')
 
@@ -65,11 +64,11 @@ class Localization:
         'results/chirp_analysis/Classifications/PCA23Components_all_but_is_daytime/xformed2024-06-10T16_44_54_23components_297476samples.feather' 
         )
     
-    all_measures   = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/scaled_chirps_2024-06-20T12_26_24.feather'
-    all_measures_descaled = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/orig_chirps_2024-06-17T11_12_08.feather'
-    scaler         = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Descaling/split_scaler_1.5.0.joblib'
+    all_measures          = os.path.join(analysis_dst, 'scaled_chirps_2024-06-25T12_55_03-07_00.feather')
+    all_measures_descaled = os.path.join(analysis_dst, 'orig_chirps_2024-06-25T12_55_03-07_00.feather')
+    scaler                = os.path.join(analysis_dst, 'split_scaler_1.5.0.joblib')
     #measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
-    measures_root  = '/Users/paepcke/quatro/home/vdesai/data/training_data/all/splits'
+    measures_root  = '/Users/paepcke/quintus/home/paepcke/EclipseWorkspaces/bats/data/all/splits'
     inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
 
 
@@ -1861,7 +1860,7 @@ class DataCalcs:
     # pca_computation
     #-------------------
     
-    def pca_computation(self, df, n_components=None, columns=None, dst_dir=None):
+    def pca_computation(self, df, n_components=None, columns=None, dst_dir=None, timestamp=None):
         '''
         Given a dataframe, return an sklearn.PCA object that is fitted
         to df, but df has not been transformed into the PCA component space.
@@ -1885,10 +1884,21 @@ class DataCalcs:
                       of the PCA's explained_variance_ratio_ list of variance
                       explained by each component.
                       
-        Returns a dict with keys 'pcs', 'weight_matrix', 'xformed_data'. The 
-        first is the sklearn.PCA object. The second is a dataframe whose columns a
-        names, and the row index is 'component1', 'component2', ... The rows 
-        re the measure are the weights assigned to each original feature.
+        Returns a dict with keys 'pcs', 'weight_matrix', 'loading_matrix', xformed_data'. 
+        The first is the sklearn.PCA object. The second is a dataframe whose columns are
+        names, and the row index is 'component1', 'component2', ... Each row 
+        is the weight that is assigned to column measures. Each column corresponds to
+        one original feature:
+        
+                            feat0       feat1      feat2    ... featn
+           component_num
+             comp0        weight_00   weight_01  weight_02  ... weight_0n
+             comp1        weight_10   weight_11  weight_12  ... weight_1n
+             comp2                           ...
+               ...
+               
+        The loading_matrix looks just like the weight matrix, but the values
+        are squared.
         
         The PCA instance will have an additional attribute: create_date with
         the datetime object of the object's creation time.
@@ -1896,6 +1906,10 @@ class DataCalcs:
         If dst_dir is not None, the PCA object will be saved in 
             
             pca_<cur-time>.joblib
+            
+        The optional timestamp is used in creating file names for new
+        files created here. If it is None, the current time is used.
+        If a string, it must be of the form produced by Utils.file_timestamp().
         
         :param df: dataframe from which to construct principal components 
         :type df: pd.DataFrame
@@ -1908,6 +1922,8 @@ class DataCalcs:
             to where the result PCA is to be stored. The format will be joblib,
             and the extension will be .joblib.
         :type dst_dir: optional[str]
+        :param timestamp: timestamp to use for names of new files
+        :type timestamp: optional[str]
         :return a PCA model, weight matrix, and transformed data
         :rtype dict[str : union[sklearn.PCA, pd.DataFrame]xs
         
@@ -1927,7 +1943,10 @@ class DataCalcs:
         
         # Add attribute create_date with the current
         # date and time as a datetime object:
-        pca.create_date = datetime.now() 
+        if timestamp is None:
+            pca.create_date = datetime.now()
+        else:
+            pca.create_date = Utils.datetime_from_timestamp(timestamp)
 
         # Transform the data into the component space:
         self.log.info(f"Transforming original data into {n_components} components")
@@ -1940,9 +1959,13 @@ class DataCalcs:
         xformed_df = pd.DataFrame(xformed_np, columns=col_names)
         
         # Matrix components x features with each feature's weight in 
-        # each of the components (rows0;
+        # each of the components (rows);
         weight_df = pd.DataFrame(pca.components_, columns=df_pca.columns)
         weight_df.index.name = 'component_num'
+        
+        # Second df with loadings, instead of weights. Loadings are
+        # simply weights squared:
+        loading_df = weight_df.pow(2)
         
         if dst_dir is not None:
             dt_str = Utils.timestamp_from_datetime(pca.create_date)
@@ -1953,6 +1976,7 @@ class DataCalcs:
         
         return {'pca' : pca, 
                 'weight_matrix' : weight_df,
+                'loading_matrix': loading_df,
                 'xformed_data'  : xformed_df,
                 'pca_save_file' : dst_fname
                 }
@@ -1963,7 +1987,7 @@ class DataCalcs:
     
     def pca_needed_dims(self, df, variance_threshold, columns=None):
         '''
-        Given a fitted PCA object, return the number 
+        Given a fitted PCA object, return the number of
         components needed to explain variance_threshold
         percent of the total variance of the dataframe
         provided to the pca_computation().
@@ -1978,7 +2002,8 @@ class DataCalcs:
         In either case, the number is used as a percentage, transforming
         to 0...1.0 as needed.
                 
-        The algorithm is to find 
+        The algorithm is to accumulate explained_variance_ratios until
+        the threshold is reached.
         
         An alternative is to pass n_components='mle' to the pca_computation()
         method to have an optimal dimensionality chosen.
@@ -1999,7 +2024,8 @@ class DataCalcs:
             variance_threshold = variance_threshold / 100.
             
         pca_all = self.pca_computation(df, n_components=None, columns=columns)
-        for component_idx, var_explained in enumerate(accumulate(pca_all.explained_variance_ratio_)):
+        pca = pca_all['pca']
+        for component_idx, var_explained in enumerate(accumulate(pca.explained_variance_ratio_)):
             if var_explained >= variance_threshold:
                 return component_idx
         return component_idx

@@ -192,7 +192,13 @@ class DataViz:
     #-------------------
     
     @staticmethod
-    def heatmap(df, xlabel_rot=None, title=None, width_height=None, save_file=None):
+    def heatmap(df, 
+                xlabel_rot=None, 
+                title=None, 
+                width_height=None,
+                color_legend=True,
+                axis_label_fontsize=None, 
+                save_file=None):
         '''
         Create a heatmap of a dataframe. Optionally add a title
         and/or save the figure.
@@ -214,13 +220,17 @@ class DataViz:
         :param width_height: a 2-tuple specifying the figure size
             in inches: (width, height)
         :type width_height: optional[tuple[number, number]]
+        :param color_legend: whether or not to draw a color legend
+        :type color_legend: bool
+        :param axis_label_fontsize: fontsize for both axis labels
+        :type axis_label_fontsize: optional[int]
         :param save_file: optional path where to save the figure as png
         :type save_file: optional[str]
         :return the Figure object
         :rtype Figure
         '''
         
-        heatmap = sb.heatmap(df, cmap='Blues')
+        heatmap = sb.heatmap(df, cmap='Blues', cbar=color_legend)
         fig = heatmap.get_figure()
         ax  = fig.gca()
         
@@ -233,6 +243,9 @@ class DataViz:
             if type(xlabel_rot) not in (int, float):
                 raise TypeError(f"X label rotation must be numeric degrees, not {xlabel_rot}")
             ax.tick_params(axis='x', labelrotation=xlabel_rot)
+        
+        if axis_label_fontsize is not None:
+            ax.tick_params(axis='both', which='major', labelsize=axis_label_fontsize)
         
         if width_height is not None:
             if type(width_height) != tuple or\

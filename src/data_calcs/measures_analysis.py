@@ -207,6 +207,7 @@ class MeasuresAnalysis:
                 
         if action == Action.PCA:
             self.log.info("Computing PCA")
+            kwargs['to_exclude'] = ['species', 'rec_datetime', 'split', 'chirp_idx', 'file_id']
             res = self.pca_action(**kwargs)
             
         elif action == Action.PCA_ANALYSIS:
@@ -277,6 +278,14 @@ class MeasuresAnalysis:
             except KeyError:
                 dst_dir = self.chirps_dst
                 kwargs['dst_dir'] = dst_dir
+            
+            # Was a timestamp provided that is to be used in
+            # generated files? (If not, now-time is used):
+            try:
+                timestamp = kwargs['timestamp']
+            except KeyError:
+                timestamp = None 
+                kwargs[timestamp] = None
             
             res = self._concat_files(**kwargs)
             
@@ -354,12 +363,20 @@ class MeasuresAnalysis:
         if to_include is not None and to_exclude is not None:
             raise ValueError('Only one of to_include and to_exclude may be non_None.')
 
+        # Load source data.
+        # If data source has a timestamp embedded in 
+        # its filename, then use that timestamp in files
+        # created further on. If data_src has no timestamp,
+        # it ends up as None, and a current timestamp is
+        # created further on:
         if data_src is None:        
             with UniversalFd(Localization.all_measures, 'r') as fd:
                 all_data = fd.asdf()
+                timestamp = Utils.extract_file_timestamp(Localization.all_measures)
         else:
             with UniversalFd(data_src, 'r') as fd:
                 all_data = fd.asdf()
+                timestamp = Utils.extract_file_timestamp(data_src)
         
         # Drop the measures to exclude (other than the
         # measure to be predicted):
@@ -372,15 +389,16 @@ class MeasuresAnalysis:
             all_data.drop(axis='columns', columns=cols_to_drop, inplace=True)
         
         if n_components is None:
-            n_components = len(self.all_measures.columns)
+            n_components = len(all_data.columns)
             
         # PCA returns a dict with keys 'pca', 'weight_matrix',
         # and 'xformed_data'. Also saves the PCA, returning the
         # file path to the saved pca in a dict:
-        pca, weight_matrix, xformed_data, pca_save_file = self.data_calcs.pca_computation(
+        pca, weight_matrix, loading_matrix, xformed_data, pca_save_file = self.data_calcs.pca_computation(
             df=all_data,
             n_components=n_components,
-            dst_dir=self.analysis_dst
+            dst_dir=self.analysis_dst,
+            timestamp=timestamp
             ).values()
 
         # Path where PCA was save is of the form:
@@ -393,33 +411,53 @@ class MeasuresAnalysis:
         # timestamp as when the PCA object was saved:
         weights_fname = Utils.mk_fpath_from_other(pca_save_file,
                                                   prefix='pca_weights_', 
-                                                  suffix='.feather',
+                                                  suffix='.csv',
                                                   features=num_in_features,
                                                   samples=num_samples)
 
         self.log.info(f"Saving weights matrix to {weights_fname}")
-        weight_matrix.to_feather(weights_fname)
+        weight_matrix.to_csv(weights_fname)
         
+        # Save loadings matrix:
+        loadings_fname = Utils.mk_fpath_from_other(pca_save_file,
+                                                  prefix='pca_loadings_', 
+                                                  suffix='.csv',
+                                                  features=num_in_features,
+                                                  samples=num_samples)
+        self.log.info(f"Saving loadings matrix to {loadings_fname}")
+        loading_matrix.to_csv(loadings_fname)
+        
+        # Save explained variance ratios:
+        expl_vars_fname = Utils.mk_fpath_from_other(pca_save_file, prefix='pca_explained_var_', suffix='.csv')
+        expl_vars_path = os.path.join(Localization.analysis_dst, expl_vars_fname)
+        explained_var_np = pca.explained_variance_ratio_
+        explained_var_df = pd.DataFrame(explained_var_np, columns=['explained_var_ratio'])
+        explained_var_df.index.name = 'component_num'
+        self.log.info(f"Saving explained variance matrix to {expl_vars_path}")
+        explained_var_df.to_csv(expl_vars_path)
+                
         # Save the transformed data:
         xformed_data_fname = Utils.mk_fpath_from_other(pca_save_file,
-                                                       prefix='xformed', 
+                                                       prefix='pca_xformed', 
                                                        suffix='.feather',
                                                        components=n_components,
                                                        samples=num_samples)
         self.log.info(f"Saving transformed data to {xformed_data_fname}")
         xformed_data.to_feather(xformed_data_fname)
 
-        comment_fname = Utils.mk_fpath_from_other(pca_save_file,
-                                                  prefix='comment', 
-                                                  suffix='.txt',
-                                                  components=n_components,
-                                                  samples=num_samples)
-        self.log.info(f"Saving comment to {comment_fname}")
-        with open(comment_fname, 'w') as fd:
-            fd.write(comment)
+        if comment is not None:
+            comment_fname = Utils.mk_fpath_from_other(pca_save_file,
+                                                      prefix='comment', 
+                                                      suffix='.txt',
+                                                      components=n_components,
+                                                      samples=num_samples)
+            self.log.info(f"Saving comment to {comment_fname}")
+            with open(comment_fname, 'w') as fd:
+                fd.write(comment)
         
         return {'pca' : pca, 
-                'weight_matrix'      : weight_matrix, 
+                'weight_matrix'      : weight_matrix,
+                'loading_matrix'     : loading_matrix, 
                 'xformed_data'       : xformed_data,
                 'pca_file'           : pca_save_file,
                 'weights_file'       : weights_fname,
@@ -932,6 +970,7 @@ class MeasuresAnalysis:
                       out_file_type=FileType.CSV, 
                       prefix=None,
                       augment=True,
+                      timestamp=None
                       ):
         '''
         Given a list of sourcefiles that contain dataframes, create one df,
@@ -975,6 +1014,8 @@ class MeasuresAnalysis:
         :param augment: if True, add columns for recording time, and
             sin/cos of recording time for granularities HOURS, DAYS, MONTHS, and YEARS 
         :type augment: bool
+        :param timestamp: timestamp to integrate into the names of the generated files
+        :type timestamp: union[datetime, str]
         :return: a dict with fields 'df', and 'out_file'
         :rtype dict[str : union[None | str]
         '''
@@ -984,6 +1025,11 @@ class MeasuresAnalysis:
             
         if prefix is None:
             prefix = ''
+            
+        # If timestamp is given, convert it to a string
+        # of appropriate format:
+        if isinstance(timestamp, datetime):
+            timestamp = Utils.timestamp_from_datetime(timestamp)
         
         supported_file_extensions = [file_type.value for file_type  in FileType]
         
@@ -1023,7 +1069,10 @@ class MeasuresAnalysis:
             os.makedirs(dst_dir, exist_ok=True)
             
             # Compose file to which to save the result:
-            filename_safe_dt = Utils.file_timestamp()
+            if timestamp is None:
+                filename_safe_dt = Utils.file_timestamp()
+            else:
+                filename_safe_dt = timestamp
             fname = os.path.join(dst_dir, f"{prefix}_chirps_{filename_safe_dt}{out_file_type.value}")
         else:
             fname = None
@@ -1057,7 +1106,6 @@ class MeasuresAnalysis:
         else:
             df = df_raw
  
-        df.set_index('level_0', inplace=True)
         df.index.name = 'row_num'
         if fname is not None:
             with UniversalFd(fname, 'w') as fd:
@@ -2247,48 +2295,66 @@ if __name__ == '__main__':
     #                          columns that were not included (and therefore
     #                          scaled) in the split files.
     
-    split_file_pat = re.compile(f"^split[\\d]*.feather")
-    split_files = []
-    for maybe_split_fname in os.listdir(Localization.measures_root):
-        match = split_file_pat.search(maybe_split_fname)
-        if match is None:
-            continue
-        else:
-            split_files.append(os.path.join(Localization.measures_root, maybe_split_fname))
-    
-    # Sort the split files by split number (which is taken
-    # from the split file name):
-    split_files.sort(key=lambda fname: int(re.search(r"\d+", fname)[0]))
-    
-    #df_sources = ['/Users/paepcke/quatro/home/vdesai/data/training_data/all/splits/split20.feather',
-    #              '/Users/paepcke/quatro/home/vdesai/data/training_data/all/splits/split21.feather'
-    #              ]
-    # The split files have a col called 'level_0', which contains
-    # row number that runs across all split files. Make that
-    # column the pandas index. That column 
-    ma = MeasuresAnalysis(action=Action.CONCAT, 
-                          df_sources=split_files, 
-                          dst_dir=os.path.dirname(Localization.all_measures), 
-                          prefix='scaled',
-                          idx_columns='level_0',
-                          out_file_type=FileType.FEATHER,
-                          augment=True
-                          )
-    res_dict = ma.experiment_result
-    df_out_file = res_dict['out_file']
-    df = res_dict['df']
-    df_orig = DataCleaner.recover_orig_from_scaled_data(Localization.scaler, df)
-    # Save this unscaled version as well:
-    all_measures_path = Path(df_out_file)
-    # Use the same time stamp for the original (descaled)
-    # df as was used for the scaled on
-    timestamp = Utils.extract_file_timestamp(all_measures_path)
-    df_orig_path = all_measures_path.parent / Path(f'orig_chirps_{timestamp}.feather')
-    df_orig.to_feather(df_orig_path)
-    res_dict['df_orig'] = df_orig
-    #print(res_dict)
-    print('Done')
-    sys.exit()
+    # split_file_pat = re.compile(f"^split[\\d]+.feather")
+    # split_files = []
+    # for maybe_split_fname in os.listdir(Localization.measures_root):
+    #     match = split_file_pat.search(maybe_split_fname)
+    #     if match is None:
+    #         continue
+    #     else:
+    #         split_files.append(os.path.join(Localization.measures_root, maybe_split_fname))
+    #
+    # # Sort the split files by split number (which is taken
+    # # from the split file name):
+    # split_files.sort(key=lambda fname: int(re.search(r"\d+", fname)[0]))
+    #
+    # # Is there a file called timestamp.txt at the source dir?
+    # # If so, it contains a timestamp string of when the split
+    # # files were created, and we use it in filenames that we
+    # # create as we concat the splits:
+    #
+    # timestamp_path = f"{Localization.measures_root}/timestamp.txt"
+    # if os.path.exists(timestamp_path):
+    #     with open(timestamp_path, 'r') as fd:
+    #         timestamp = fd.read()
+    # else:
+    #     timestamp = None
+    #
+    # #df_sources = ['/Users/paepcke/quatro/home/vdesai/data/training_data/all/splits/split20.feather',
+    # #              '/Users/paepcke/quatro/home/vdesai/data/training_data/all/splits/split21.feather'
+    # #              ]
+    # # The split files have a col called 'level_0', which contains
+    # # row number that runs across all split files. Make that
+    # # column the pandas index. That column 
+    # ma = MeasuresAnalysis(action=Action.CONCAT, 
+    #                       df_sources=split_files, 
+    #                       dst_dir=os.path.dirname(Localization.all_measures), 
+    #                       prefix='scaled',
+    #                       idx_columns='level_0',
+    #                       out_file_type=FileType.FEATHER,
+    #                       augment=True,
+    #                       timestamp=timestamp
+    #                       )
+    # res_dict = ma.experiment_result
+    # df_out_file = res_dict['out_file']
+    # df = res_dict['df']
+    # df_orig = DataCleaner.recover_orig_from_scaled_data(Localization.scaler, df)
+    # # Save this unscaled version as well:
+    # all_measures_path = Path(df_out_file)
+    # # Use the same time stamp for the original (descaled)
+    # # df as was used for the scaled on
+    # timestamp = Utils.extract_file_timestamp(all_measures_path)
+    # df_orig_path = all_measures_path.parent / Path(f'orig_chirps_{timestamp}.feather')
+    # df_orig.to_feather(df_orig_path)
+    # # Save as .csv as well, b/c Tableau can't read .feather:
+    # df_orig_path_csv = Path(df_orig_path).with_suffix('.csv')
+    # df.orig.to_csv(df_orig_path_csv)
+    #
+    #
+    # res_dict['df_orig'] = df_orig
+    # #print(res_dict)
+    # print('Done')
+    # sys.exit()
 
     # -------------------------------------------------------------------
     # Explore how different chirps are within one 10sec recording:
@@ -2302,30 +2368,30 @@ if __name__ == '__main__':
         
     # -------------------------------------------------------------------
     # Descaling and re-meaning a StandardScaler treated df:
-    src_file = Localization.all_measures
-    with UniversalFd(src_file, 'r') as fd:
-        df_scaled = fd.asdf()
-    df_orig = DataCleaner.recover_orig_from_scaled_data(Localization.scaler, df_scaled)
-    
-    additional_cols = ['file_id','chirp_idx','split',
-                       'rec_datetime','is_daytime','sin_hr',
-                       'cos_hr','sin_day',
-                       'cos_day','sin_month',
-                       'cos_month','sin_year','cos_year']
-    additionals_df = pd.DataFrame(df_scaled[additional_cols])
-    df_orig = pd.concat([df_orig, additionals_df], axis='columns')
-    
-    dst_fpath   = Path(Localization.all_measures_descaled)
-    dst_feather = dst_fpath.with_suffix('.feather')
-    dst_csv     = dst_fpath.with_suffix('.csv')
-    
-    log.info(f"Saving reconstituted data as .feather to {dst_feather}...")
-    df_orig.to_feather(dst_feather)
-    log.info(f"Saving reconstituted data as .csv to {dst_csv}...")    
-    df_orig.to_csv(dst_csv)
-    
-    print('Done')
-    sys.exit()
+    # src_file = Localization.all_measures
+    # with UniversalFd(src_file, 'r') as fd:
+    #     df_scaled = fd.asdf()
+    # df_orig = DataCleaner.recover_orig_from_scaled_data(Localization.scaler, df_scaled)
+    #
+    # additional_cols = ['file_id','chirp_idx','split',
+    #                    'rec_datetime','is_daytime','sin_hr',
+    #                    'cos_hr','sin_day',
+    #                    'cos_day','sin_month',
+    #                    'cos_month','sin_year','cos_year']
+    # additionals_df = pd.DataFrame(df_scaled[additional_cols])
+    # df_orig = pd.concat([df_orig, additionals_df], axis='columns')
+    #
+    # dst_fpath   = Path(Localization.all_measures_descaled)
+    # dst_feather = dst_fpath.with_suffix('.feather')
+    # dst_csv     = dst_fpath.with_suffix('.csv')
+    #
+    # log.info(f"Saving reconstituted data as .feather to {dst_feather}...")
+    # df_orig.to_feather(dst_feather)
+    # log.info(f"Saving reconstituted data as .csv to {dst_csv}...")    
+    # df_orig.to_csv(dst_csv)
+    #
+    # print('Done')
+    # sys.exit()
     
     # -------------------------------------------------------------------   
     # Stats of data: a df like:
@@ -2469,15 +2535,32 @@ if __name__ == '__main__':
     
     # with UniversalFd(Localization.all_measures, 'r') as fd:
     #     df = fd.asdf()
-    #     df.drop('rec_datetime', axis='columns', inplace=True)
+    #     df.drop(['rec_datetime', 'species', 'is_daytime', 
+    #              'freq_mean', 'file_id', 'chirp_idx', 'split',  
+    #              'sin_hr', 'cos_hr', 'sin_day', 
+    #              'cos_day', 'sin_month', 'cos_month', 'sin_year', 
+    #              'cos_year'], axis='columns', inplace=True)
     # corr = df.corr()
-    # save_file = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisResults/cross_corr_heatmap.png'
     # fig = DataViz.heatmap(corr, 
-    #                       title='Measures Correlations',
-    #                       width_height=(13,9),
-    #                       xlabel_rot=45, 
-    #                       save_file=save_file)
-
+    #                       #title='Measures Correlations',
+    #                       width_height=(10,10),
+    #                       #xlabel_rot=45,
+    #                       color_legend=False,
+    #                       axis_label_fontsize=24, 
+    #                       #save_file=save_file
+    #                       )
+    # ax = fig.gca()
+    # ax.set_xticklabels([])
+    # ax.set_yticklabels([])
+    # ax.set_xlabel('Chirp Measures[$\\it{1..n}$]', fontsize=24)
+    # ax.set_ylabel('Chirp Measures[$\\it{1..n}$]', fontsize=24)
+    # save_file = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisResults/ResearchWriteups/Figures/cross_corr_heatmap.png'
+    # fig.savefig(save_file)    
+    #
+    #
+    # print('Done')
+    # sys.exit()
+    
     # -------------------------------------------------------------------   
     # Create a barchart of importance of features:
     # with UniversalFd('/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisResults/PCA/feature_importance_2024-06-02T13_29_54.csv', 'r') as fd:
@@ -2490,12 +2573,23 @@ if __name__ == '__main__':
     
 
     # -------------------------------------------------------------------   
+    # Run PCA: Three option: (1) unconditionally run a 
+    # brand new PCA with all float-typed measures. 
+    # (2) Run an existing PCA again, but with the 23 more
+    # influential features only. (3) Make a new PCA, if
+    # one does not already exist, else use the existing one.
+    # [Don't remember which dir it looks in, but likely
+    #  the default dst_dir]
+    #
+    # You can pass a string as a 'comment' str. It will be
+    # saved in a file sibling of the PCA instance.
+     
     # Force a new PCA to be made:
     #
     # Include all non-administrative measures, and 
     # as many components as there are measures:
-    # analysis = MeasuresAnalysis(Action.PCA)
-    # sys.exit()
+    analysis = MeasuresAnalysis(Action.PCA)
+    sys.exit()
 
     # comment = ('PCA analysis to create 23 components, which was previously '
     #            'determined to cover 90% of the variance. Excluded is '
@@ -2641,44 +2735,44 @@ if __name__ == '__main__':
 
     #----------------------------------------------
     # Find best cluster k for top 23, and make chart:
-    inclusions = [ 
-                    #'TimeInFile', 
-                    'PrecedingIntrvl', 'CallsPerSec',
-                    'CallDuration', 'Fc', 'HiFreq', 'LowFreq',
-                    'Bndwdth', 'FreqMaxPwr', 'PrcntMaxAmpDur',
-                    'TimeFromMaxToFc', 'FreqKnee', 'PrcntKneeDur',
-                    'StartF', 'EndF', 'DominantSlope', 'SlopeAtFc',
-                    'StartSlope', 'EndSlope', 'SteepestSlope',
-                    'LowestSlope', 'TotalSlope', 'HiFtoKnSlope',
-                    #'sin_hr', 'cos_hr'
-                    ]
-    ma = MeasuresAnalysis(action=None)
-    
-    X_df = ma.all_measures[inclusions].sample(10000)
-    k_silhouttes_df = DataCalcs.find_optimal_k(X_df, range(2,6))
-    sil_scores = k_silhouttes_df['silhouette_score']
-    best_row   = sil_scores.idxmax()
-    best_k     = k_silhouttes_df.loc[best_row, 'k']
-    kmeans    = k_silhouttes_df.loc[best_row, 'kmeans']
-    
-    # Get cluster labels
-    cluster_labels = kmeans.labels_
-    
-    #*****
-    from sklearn.manifold import TSNE
-    #*****
-    # Define desired lower dimension (e.g., 2 for visualization)
-    tsne_obj = TSNE(n_components=2, 
-                    init='pca', 
-                    #perplexity=30,
-                    perplexity=100,
-                    metric='cosine',
-                    n_jobs=8,
-                    random_state=3
-                    )
-    
-    # Apply t-SNE to the data
-    embedded_data = tsne_obj.fit_transform(X_df)
-    tsne_df = pd.DataFrame(embedded_data, columns=['tsne_x', 'tsne_y'])
-    DataViz.plot_tsne(tsne_df, cluster_labels, title='Cluster Top Features', show_plot=True)
-    print('Done')
+    # inclusions = [ 
+    #                 #'TimeInFile', 
+    #                 'PrecedingIntrvl', 'CallsPerSec',
+    #                 'CallDuration', 'Fc', 'HiFreq', 'LowFreq',
+    #                 'Bndwdth', 'FreqMaxPwr', 'PrcntMaxAmpDur',
+    #                 'TimeFromMaxToFc', 'FreqKnee', 'PrcntKneeDur',
+    #                 'StartF', 'EndF', 'DominantSlope', 'SlopeAtFc',
+    #                 'StartSlope', 'EndSlope', 'SteepestSlope',
+    #                 'LowestSlope', 'TotalSlope', 'HiFtoKnSlope',
+    #                 #'sin_hr', 'cos_hr'
+    #                 ]
+    # ma = MeasuresAnalysis(action=None)
+    #
+    # X_df = ma.all_measures[inclusions].sample(10000)
+    # k_silhouttes_df = DataCalcs.find_optimal_k(X_df, range(2,6))
+    # sil_scores = k_silhouttes_df['silhouette_score']
+    # best_row   = sil_scores.idxmax()
+    # best_k     = k_silhouttes_df.loc[best_row, 'k']
+    # kmeans    = k_silhouttes_df.loc[best_row, 'kmeans']
+    #
+    # # Get cluster labels
+    # cluster_labels = kmeans.labels_
+    #
+    # #*****
+    # from sklearn.manifold import TSNE
+    # #*****
+    # # Define desired lower dimension (e.g., 2 for visualization)
+    # tsne_obj = TSNE(n_components=2, 
+    #                 init='pca', 
+    #                 #perplexity=30,
+    #                 perplexity=100,
+    #                 metric='cosine',
+    #                 n_jobs=8,
+    #                 random_state=3
+    #                 )
+    #
+    # # Apply t-SNE to the data
+    # embedded_data = tsne_obj.fit_transform(X_df)
+    # tsne_df = pd.DataFrame(embedded_data, columns=['tsne_x', 'tsne_y'])
+    # DataViz.plot_tsne(tsne_df, cluster_labels, title='Cluster Top Features', show_plot=True)
+    # print('Done')
