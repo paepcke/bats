@@ -394,57 +394,14 @@ class MeasuresAnalysis:
         # PCA returns a dict with keys 'pca', 'weight_matrix',
         # and 'xformed_data'. Also saves the PCA, returning the
         # file path to the saved pca in a dict:
-        pca, weight_matrix, loading_matrix, xformed_data, pca_save_file = self.data_calcs.pca_computation(
+        pca_result = self.data_calcs.pca_computation(
             df=all_data,
             n_components=n_components,
             dst_dir=self.analysis_dst,
             timestamp=timestamp
             ).values()
 
-        # Path where PCA was save is of the form:
-        # <dir>/pca_20240528T161317.259849.joblib.
-        # Get the timestamp:
-        num_in_features  = pca.n_features_in_
-        num_samples      = pca.n_samples_
         
-        # Save the weights matrix with the same 
-        # timestamp as when the PCA object was saved:
-        weights_fname = Utils.mk_fpath_from_other(pca_save_file,
-                                                  prefix='pca_weights_', 
-                                                  suffix='.csv',
-                                                  features=num_in_features,
-                                                  samples=num_samples)
-
-        self.log.info(f"Saving weights matrix to {weights_fname}")
-        weight_matrix.to_csv(weights_fname)
-        
-        # Save loadings matrix:
-        loadings_fname = Utils.mk_fpath_from_other(pca_save_file,
-                                                  prefix='pca_loadings_', 
-                                                  suffix='.csv',
-                                                  features=num_in_features,
-                                                  samples=num_samples)
-        self.log.info(f"Saving loadings matrix to {loadings_fname}")
-        loading_matrix.to_csv(loadings_fname)
-        
-        # Save explained variance ratios:
-        expl_vars_fname = Utils.mk_fpath_from_other(pca_save_file, prefix='pca_explained_var_', suffix='.csv')
-        expl_vars_path = os.path.join(Localization.analysis_dst, expl_vars_fname)
-        explained_var_np = pca.explained_variance_ratio_
-        explained_var_df = pd.DataFrame(explained_var_np, columns=['explained_var_ratio'])
-        explained_var_df.index.name = 'component_num'
-        self.log.info(f"Saving explained variance matrix to {expl_vars_path}")
-        explained_var_df.to_csv(expl_vars_path)
-                
-        # Save the transformed data:
-        xformed_data_fname = Utils.mk_fpath_from_other(pca_save_file,
-                                                       prefix='pca_xformed', 
-                                                       suffix='.feather',
-                                                       components=n_components,
-                                                       samples=num_samples)
-        self.log.info(f"Saving transformed data to {xformed_data_fname}")
-        xformed_data.to_feather(xformed_data_fname)
-
         if comment is not None:
             comment_fname = Utils.mk_fpath_from_other(pca_save_file,
                                                       prefix='comment', 

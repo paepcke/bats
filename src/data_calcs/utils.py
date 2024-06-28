@@ -382,7 +382,7 @@ class Utils:
         :type search_dir: union[str, Path]
         :param timestamp: timestamp in filename, with the format produced by
             Utils.file_timestamp().
-        :type timestamp: optional(str)
+        :type timestamp: optional[str, datetime]
         :param prefix: text before the timestamp in the filename
         :type prefix: optional[str]
         :param suffix: file extension, including the period
@@ -392,6 +392,11 @@ class Utils:
             if no files qualify.
         :rtype union[list[str]]
         '''
+        
+        # Tolerate a datetime object:
+        if isinstance(timestamp, datetime):
+            timestamp = Utils.timestamp_from_datetime(timestamp)
+        
         fnames = os.listdir(search_dir)
         if len(fnames) == 0:
             return []
@@ -440,6 +445,9 @@ class Utils:
         :rtype datetime.datetime
         '''
     
+        # Already a dt?:
+        if isinstance(str_timestamp, datetime):
+            return str_timestamp
         dt = datetime.fromisoformat(str_timestamp.replace('_', ':'))
         return dt
                 

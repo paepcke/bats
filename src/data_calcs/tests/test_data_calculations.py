@@ -6,7 +6,8 @@ Created on Apr 27, 2024
 
 from data_calcs.data_calculations import (
     DataCalcs,
-    PerplexitySearchResult)
+    PerplexitySearchResult,
+    PCAResult)
 from data_calcs.daytime_file_selection import (
     DaytimeFileSelector)
 from data_calcs.utils import (
@@ -190,7 +191,7 @@ class DataPrepTester(unittest.TestCase):
         # The species: The name triplet in expected, coming from a
         # set, may be in different order. So, check all before and
         # after separately
-        expected = pd.Series(['', 'Myca', '', 'Tabr', '', 'Myca', 'Myca,Laci,Tabr', 'Tabr', ''],
+        expected = pd.Series(['Unkn', 'Myca', 'Unkn', 'Tabr', 'Unkn', 'Myca', 'Myca,Laci,Tabr', 'Tabr', 'Unkn'],
                              name='species')
         first_part_exp = expected.iloc[:4]
         first_part_exp = first_part_exp.astype("string")
@@ -774,6 +775,94 @@ class DataPrepTester(unittest.TestCase):
         num_samples = len(df) + 1
         with self.assertRaises(ValueError):
             df_all = DataCalcs.conditional_samples(df, num_samples)
+
+    #------------------------------------
+    # test_pca_computation
+    #-------------------
+    
+    #******8@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_pca_computation(self):
+        
+        df = self.tst_df4
+        dc = DataCalcs(self.tmpdir.name, self.tmpdir.name)
+        dt = datetime(2024, 1, 1, 1, 1, 1)
+        
+        comment = "This is a comment"
+        pca_res = dc.pca_computation(df, timestamp=dt, comment=comment)
+     
+        expected_weights = pd.DataFrame({
+            'TimeInFile' : [ 0.009950,
+        				    -0.000005,
+        				     0.998630],
+            
+            'PrecedingIntrvl' : [ 0.099499,
+                				 -0.000050,
+                				  0.050119],
+            
+            'CallsPerSec' : [0.994987,
+                     	     -0.000495,
+            				 -0.014999],
+            
+            'file_id'     : [ 9.949873e-04,
+            				 -4.950010e-07,
+            				  5.107442e-04],
+            
+            'chirp_idx'   : [4.974947e-04,
+            				 9.999999e-01,
+                 		     5.915850e-14]
+            })
+        expected_weights.index.name = 'component_num'
+        
+        expected_loadings = expected_weights.pow(2)
+        
+        expected_xformed_df = pd.DataFrame(
+                              {'comp0' : [-1005.038349,
+            							      0.000829,
+            							   1005.037520],
+            
+                               'comp1' : [-0.833332,
+            							   1.666666,
+            							  -0.833334],
+            
+                               'comp2' : [-2.075840e-13,
+                						   1.002471e-13,
+                						   1.122852e-13]
+                               })
+        #expected_xformed_df.index.name = 'component'
+        
+        expected_expl_ratio = pd.Series([9.99997938e-01, 2.06249475e-06, 1.44217467e-32],
+                                        index=['comp0','comp1','comp2']
+                                        )
+        expected_expl_ratio.index.name = 'component'
+        
+        self.assertEqual(pca_res.timestamp, dt)
+        self.assertEqual(pca_res.comment, comment)
+
+        pd.testing.assert_series_equal(pca_res.explained_variance_ratio, 
+                                       expected_expl_ratio, 
+                                       rtol=1e-2, atol=1e-2)        
+
+        pd.testing.assert_frame_equal (pca_res.weights, expected_weights, rtol=1e-2, atol=1e-2)
+        pd.testing.assert_frame_equal (pca_res.loadings, expected_loadings, rtol=1e-2, atol=1e-2)
+        pd.testing.assert_frame_equal (pca_res.xformed_df, expected_xformed_df, rtol=1e-2, atol=1e-2)
+        
+        # Save the result in our temp dir, pull it back,
+        # and compare again:
+        tmp_dir = self.tmpdir.name
+        pca_res.save(tmp_dir)
+        
+        recovered_res = PCAResult.load(tmp_dir)
+
+        self.assertEqual(recovered_res.timestamp, dt)
+        self.assertEqual(recovered_res.comment, comment)
+
+        pd.testing.assert_series_equal(recovered_res.explained_variance_ratio, 
+                                       expected_expl_ratio, 
+                                       rtol=1e-2, atol=1e-2)        
+
+        pd.testing.assert_frame_equal (recovered_res.weights, expected_weights, rtol=1e-2, atol=1e-2)
+        pd.testing.assert_frame_equal (recovered_res.loadings, expected_loadings, rtol=1e-2, atol=1e-2)
+        pd.testing.assert_frame_equal (recovered_res.xformed_df, expected_xformed_df, rtol=1e-2, atol=1e-2)
 
 # ------------------------- Utilities ---------
 

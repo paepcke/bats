@@ -539,6 +539,217 @@ class ClusteringResult:
     def __str__(self):
         return self.__repr__()
 
+# ---------------------------------- Class PCAResult ---------------
+
+class PCAResult:
+    
+    #------------------------------------
+    # Constructor
+    #-------------------
+    
+    def __init__(self, pca_obj, xformed_df=None, timestamp=None, comment=None):
+        '''
+        Prepares attributes:
+        
+            - pca
+            - weights
+            - loadings
+            - xformed_df
+            - timestamp
+            - explained_variance_ratio
+            - comment
+            
+        :param pca_obj: a fitted sklearn.preprocessing.PCA object
+        :type pca_obj: sklearn.preprocessing.PCA
+        :param xformed_df: optionally, an original dataframe transformed
+            with the given PCA instance
+        :type xformed_df: optional(pd.DataFrame)
+        :param timestamp: optional timestamp to use when generating
+            output file names
+        :type timestamp: optional[str]
+        :param comment: optional comment that explains the circumstances
+            of this PCA
+        :type comment: optional[str]
+        '''
+        
+        self.log = LoggingService()
+         
+        self.pca_obj = pca_obj
+        self.xformed_df = xformed_df
+        # If timestamp is already a datetime, the
+        # following is a noop:
+        if timestamp is None:
+            self.timestamp = datetime.now()
+        else:
+            self.timestamp = Utils.datetime_from_timestamp(timestamp)
+        self.comment = comment
+        
+        explained_variance_ratio_ = pca_obj.explained_variance_ratio_
+        # Make a series from the explained_variance_ratio_:
+        # Index will be 'comp<i>': 
+        idx_names = [f"comp{i}" for i in range(pca_obj.n_components_)]
+
+        self.explained_variance_ratio = pd.Series(explained_variance_ratio_, 
+                                                   index=idx_names)
+        self.explained_variance_ratio.index.name = 'component'
+        
+        # Matrix components x features with each feature's weight in 
+        # each of the components (rows);
+        self.weights = pd.DataFrame(pca_obj.components_, columns=pca_obj.feature_names_in_)
+        self.weights.index.name = 'component_num'
+                
+        # Second df with loadings, instead of weights. Loadings are
+        # simply weights squared:
+        self.loadings = self.weights.pow(2)
+        
+    #------------------------------------
+    # save
+    #-------------------
+    
+    def save(self, dst_dir=Localization.analysis_dst):
+        '''
+        Save all information in the destination directory.
+        The following files will be deposited there:
+
+            pca__<timestamp>.joblib
+            pca_weights_<timestamp>.csv
+            pca_loadings_<timestamp>.csv
+            pca_explained_var_<timestamp>.csv
+            pca_xformed_<timestamp>.feather
+            pca_comment_<timestamp>.txt            # if comment was other than None
+        
+        :param dst_dir: directory for output files
+        :type dst_dir: src
+        '''
+
+        timestamp_str = Utils.timestamp_from_datetime(self.timestamp)
+        # All dumped files will start with pca_<timestamp>:
+        dst_fname_root = os.path.join(dst_dir, f"pca")
+                         
+        # PCA obj saved like: pca_2024-06-25T12_55_03.joblib
+        pca_fname = f"{dst_fname_root}_{timestamp_str}.joblib"
+        pca_path = os.path.join(dst_dir, pca_fname)
+        self.log.info(f"Saving PCA obj to {pca_path}")
+        DataCalcs.dump_pca(self.pca_obj, pca_path)
+        
+        # PCA explained variance:
+        # Columns of explained variance will be 'comp<i>': 
+        idx_names = [f"comp{i}" for i in range(self.pca_obj.n_components_)]
+        expl_var_df = pd.DataFrame(self.pca_obj.explained_variance_ratio_,
+                                   columns=['explained_variance_perc'],
+                                   index=idx_names)
+        expl_var_df.index.name = 'component_num'
+        expl_var_fname = f"{dst_fname_root}_explained_var_{timestamp_str}.csv"
+        expl_var_path  = os.path.join(dst_dir, expl_var_fname)
+        self.log.info(f"Saving PCA explained variance to {expl_var_path}")
+        expl_var_df.to_csv(expl_var_path)
+        
+        # Separately: save the weights in file like:
+        #   pca_weights_2024-06-25T12_55_03_116features_468399samples.csv
+        weights_fname = f"{dst_fname_root}_weights_{timestamp_str}.csv"
+        weights_path  = os.path.join(dst_dir, weights_fname)
+        weight_df = pd.DataFrame(self.pca_obj.components_, columns=self.pca_obj.feature_names_in_)
+        weight_df.index.name = 'component_num'
+        self.log.info(f"Saving PCA weights to {weights_path}")
+        weight_df.to_csv(weights_path)
+        
+        # Now the loadings (squares of weights):
+        loading_df = weight_df.pow(2)
+        loadings_fname = f"{dst_fname_root}_loadings_{timestamp_str}.csv"
+        loadings_path  = os.path.join(dst_dir, loadings_fname)
+        self.log.info(f"Saving PCA loadings to {loadings_path}")
+        loading_df.to_csv(loadings_path)
+        
+        # Transformed data:
+
+        xformed_fname = f"{dst_fname_root}_xformed_{timestamp_str}.feather"
+        xformed_path  = os.path.join(dst_dir, xformed_fname)
+        self.log.info(f"Saving PCA transformed data to {xformed_path}")
+        self.xformed_df.to_feather(xformed_path)
+        
+        # If a comment goes with this PCA, save it:
+        if self.comment is not None:
+            comment_fname = f"{dst_fname_root}_comment_{timestamp_str}.txt"
+            comment_path  = os.path.join(dst_dir, comment_fname)
+            self.log.info(f"Saving PCA comment to {comment_path}")
+            with open(comment_path, 'w') as fd:
+                fd.write(self.comment)
+                
+    #------------------------------------
+    # load
+    #-------------------
+
+    @classmethod    
+    def load(cls, src_dir, timestamp=None):
+        '''
+        Creates a PCAResult object from the previously 
+        saved set of files. Which are:
+        
+            pca__<timestamp>.joblib
+            pca_weights_<timestamp>.csv
+            pca_loadings_<timestamp>.csv
+            pca_explained_var_<timestamp>.csv
+            pca_xformed_<timestamp>.feather
+            pca_comment_<timestamp>.txt            # if comment was other than None
+    
+        If timestamp is provided, searches in src_dir 
+        for those files with the given timestamp. Else,
+        it looks for the file set with the most recent 
+        files as per the timestamps in their file names. 
+        
+        :param src_dir: directory where file set resides
+        :type src_dir: src
+        :param timestamp: optional timestamp to look for
+            in the file names
+        :type timestamp: optional[union[str, datetime]]
+        '''
+        log = LoggingService()
+        
+        # Get time stamp string rep for use in error msgs:
+        if isinstance(timestamp, datetime):
+            tm = Utils.timestamp_from_datetime(timestamp)
+        elif type(timestamp) == str:
+            tm = timestamp
+        elif timestamp is None:
+            tm = '<latest>'
+         
+        pca_fnames = Utils.find_file_by_timestamp(src_dir, timestamp, 'pca_', '.joblib')
+        if len(pca_fnames) == 0:
+            raise FileNotFoundError(f"File pca_{tm}.joblib not found")
+        pca_path  = os.path.join(src_dir, pca_fnames[0])
+        pca_obj = joblib.load(pca_path)
+        
+        # If timestamp was None, the above find_file_by_timestamp() will
+        # have fround the most recent PCA object file. Get that timestamp
+        # from the found file, and use it going forward:
+        if timestamp is None:
+            timestamp = Utils.extract_file_timestamp(pca_path)
+            # Update the timestamp string for error msgs below:
+            tm = timestamp 
+            
+        xformed_df_fnames = Utils.find_file_by_timestamp(src_dir, timestamp, 'pca_xformed_', '.feather')
+        if len(xformed_df_fnames) == 0:
+            log.info(f"Did not find pca_xformed_{tm}.feather, so attribute xformed_df will be None")
+            xformed_df = None
+        else:
+            xformed_df_path  = os.path.join(src_dir, xformed_df_fnames[0])
+            log.info("Loading xformed data...")
+            xformed_df  = pd.read_feather(xformed_df_path)
+        
+        comment_fnames = Utils.find_file_by_timestamp(src_dir, timestamp, 'pca_comment_', '.txt')
+        if len(comment_fnames) == 0:
+            log.info(f"Did not find pca_comment_{tm}.txt, so comment attribute will be None")
+            comment = None
+        else:
+            comment_path  = os.path.join(src_dir, comment_fnames[0])
+            log.info("Loading comment...")
+            with open(comment_path, 'r') as fd:
+                comment = fd.read()
+
+        log.info("Creating new PCAResult instance...")            
+        obj = PCAResult(pca_obj, xformed_df=xformed_df, timestamp=timestamp, comment=comment)
+
+        return obj
     
 # ---------------------------------- Class DataCalcs ---------------
 
@@ -1860,12 +2071,15 @@ class DataCalcs:
     # pca_computation
     #-------------------
     
-    def pca_computation(self, df, n_components=None, columns=None, dst_dir=None, timestamp=None):
+    def pca_computation(self, 
+                        df, 
+                        n_components=None, 
+                        columns=None, 
+                        timestamp=None,
+                        comment=None):
         '''
-        Given a dataframe, return an sklearn.PCA object that is fitted
-        to df, but df has not been transformed into the PCA component space.
-        The call must issue pca.transform() on the returned df to map df
-        into the PCA component space.
+        Given a dataframe, return an PCAResult object that contains all output
+        of a PCA over df.
                     
         If columns is provided it must be a list of column names in the df. Only
         those columns are included as input to the PCA. If columns is
@@ -1903,13 +2117,12 @@ class DataCalcs:
         The PCA instance will have an additional attribute: create_date with
         the datetime object of the object's creation time.
         
-        If dst_dir is not None, the PCA object will be saved in 
-            
-            pca_<cur-time>.joblib
-            
         The optional timestamp is used in creating file names for new
         files created here. If it is None, the current time is used.
         If a string, it must be of the form produced by Utils.file_timestamp().
+        
+        An instance of PCAResult is returned. Calling save() on that
+        result will deposit various results to disk.
         
         :param df: dataframe from which to construct principal components 
         :type df: pd.DataFrame
@@ -1918,24 +2131,26 @@ class DataCalcs:
         :type n_components: union[None | int)
         :param columns: columns to include from the df. If None: all columns
         :type columns: union[None, list[str]]
-        :param dst_dir: if dst_dir is not None, it must be a full path
-            to where the result PCA is to be stored. The format will be joblib,
-            and the extension will be .joblib.
-        :type dst_dir: optional[str]
         :param timestamp: timestamp to use for names of new files
         :type timestamp: optional[str]
-        :return a PCA model, weight matrix, and transformed data
-        :rtype dict[str : union[sklearn.PCA, pd.DataFrame]xs
+        :return a PCAResult instance with the pca object, weights, loadings,
+            transformed data
+        :rtype PCAResult
         
         '''
-        self.log.info(f"Running PCA with target of {n_components} components")
-        pca = PCA(n_components=n_components)
-        
+
+        # Cull columns if requested:
         if columns is None:
             df_pca = df 
         else:
             df_pca = df[columns]
             
+        if n_components is None:
+            n_components = len(df_pca)
+        
+        self.log.info(f"Running PCA with target of {n_components} components")
+        pca = PCA(n_components=n_components)
+        
         # fit() returns the pca instance itself:
         pca = pca.fit(df_pca)
 
@@ -1944,53 +2159,36 @@ class DataCalcs:
         # Add attribute create_date with the current
         # date and time as a datetime object:
         if timestamp is None:
-            pca.create_date = datetime.now()
+            timestamp = datetime.now()
         else:
-            pca.create_date = Utils.datetime_from_timestamp(timestamp)
+            timestamp = Utils.datetime_from_timestamp(timestamp)
 
         # Transform the data into the component space:
         self.log.info(f"Transforming original data into {n_components} components")
-        xformed_np = pca.fit_transform(df_pca)
+        xformed_np = pca.transform(df_pca)
         self.log.info("Done.")
 
         # Columns of transformed data will be 'comp<i>': 
         col_names = [f"comp{i}" for i in range(pca.n_components_)]
         # Transform the original data into the component space:
         xformed_df = pd.DataFrame(xformed_np, columns=col_names)
-        
-        # Matrix components x features with each feature's weight in 
-        # each of the components (rows);
-        weight_df = pd.DataFrame(pca.components_, columns=df_pca.columns)
-        weight_df.index.name = 'component_num'
-        
-        # Second df with loadings, instead of weights. Loadings are
-        # simply weights squared:
-        loading_df = weight_df.pow(2)
-        
-        if dst_dir is not None:
-            dt_str = Utils.timestamp_from_datetime(pca.create_date)
-            # The dump() method will append an appropriate file suffix
-            dst_fname_root = os.path.join(dst_dir, f"pca_{dt_str}")
-            # Dump returns the final save file name:
-            dst_fname = self.dump_pca(pca, dst_fname_root)
-        
-        return {'pca' : pca, 
-                'weight_matrix' : weight_df,
-                'loading_matrix': loading_df,
-                'xformed_data'  : xformed_df,
-                'pca_save_file' : dst_fname
-                }
+
+        pca_res = PCAResult(pca, xformed_df, timestamp, comment)
+        return pca_res
         
     #------------------------------------
     # pca_needed_dims
     #-------------------
     
-    def pca_needed_dims(self, df, variance_threshold, columns=None):
+    def pca_needed_dims(self, pca_res, variance_threshold):
         '''
-        Given a fitted PCA object, return the number of
+        Given a PCAResult object, return the number of
         components needed to explain variance_threshold
         percent of the total variance of the dataframe
-        provided to the pca_computation().
+        originally provided to the pca_computation().
+        
+        Also returned is the list of features that together
+        explain variance_threshold percent of the variance.
         
         The variance_threshold may either be:
          
@@ -2002,33 +2200,76 @@ class DataCalcs:
         In either case, the number is used as a percentage, transforming
         to 0...1.0 as needed.
                 
-        The algorithm is to accumulate explained_variance_ratios until
-        the threshold is reached.
+        For the number of needed components, the algorithm is to accumulate 
+        explained_variance_ratios until the threshold is reached.
         
+        For feature power:
+        
+           o Foreach component c in the needed components sorted by importance:
+                 o select feature f with the highest loading
+                 o multiply f's loading with c's explained variance ratio
+                 o next_component
+                 o until sum of accumulated products >= variance-threshold 
+        
+        Returns dict:
+	            {'num_comps' : <num of components needed>,
+	             'features'  : <list of feature names sorted by strength}
+	        
+              
         An alternative is to pass n_components='mle' to the pca_computation()
-        method to have an optimal dimensionality chosen.
+        method to have an optimal dimensionality chosen, and then not use
+        this method.
         
-        :param df: data for which PCA is to be performed.
-        :type df: pd.DataFrame
+        :param pca_res: result from a previous call to pca_computation()
+        :type pca_res: PCAResult
         :param variance_threshold: least amount of variance that
             the combined components need to explain in percent.
         :type variance_threshold: union[int, float]
-        :param columns: columns to use from the df
-        :type columns: union[None, list[str]
         :return the number of dimensions required to reach 
             variance_threshold percent explanation of variance
         :rtype int
         '''
         
+        pca      = pca_res.pca_obj
+        #            feat0          feat1     ...
+        #   comp0   loading_01   loading_02   ...
+        #   comp1   loading_11   loading_12   ...
+        #                ...
+        loadings = pca_res.loading_df
+        #        explained_variance_perc
+        # comp0         percentage
+        # comp1         percentage
+        #         ...
+        expl_var = pca.explained_variance_ratio_
+        
         if variance_threshold > 1.0:
             variance_threshold = variance_threshold / 100.
             
-        pca_all = self.pca_computation(df, n_components=None, columns=columns)
-        pca = pca_all['pca']
         for component_idx, var_explained in enumerate(accumulate(pca.explained_variance_ratio_)):
             if var_explained >= variance_threshold:
-                return component_idx
-        return component_idx
+                break
+        # Now component_idx is the number of components
+        # that together explain the variance_threshold percent
+        # of data variance.
+        
+        # Next: find a set of features that reach the variance
+        # threshold: go through each component's loadings,
+        # i.e. row by row: 
+        
+        total_var_explained = 0
+        features = []
+        for comp_loading_row in loadings.iterrows():
+            comp_nm = comp_loading_row.name
+            strongest_feature = comp_loading_row.idxmax()
+            
+            feature_strength     = expl_var.loc[comp_nm] * loadings.loc[comp_nm, strongest_feature]
+            total_var_explained += feature_strength
+            features.append(strongest_feature)
+            if total_var_explained >= variance_threshold:
+                break
+        
+        return {'num_comps' : component_idx, 
+                'features'  : features}
 
     #------------------------------------
     # dump_pca
