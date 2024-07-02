@@ -21,6 +21,9 @@ from pandas.testing import (
     assert_frame_equal)
 from sklearn.cluster._kmeans import (
     KMeans)
+from sklearn.decomposition import (
+    PCA
+    )
 from sklearn.datasets import (
     make_blobs)
 from tempfile import (
@@ -34,6 +37,14 @@ import unittest
 
 TEST_ALL = True
 #TEST_ALL = False
+
+class PCAFake:
+    def __init__(self, explained_variance, loadings):
+        self.explained_variance_ratio = explained_variance
+        self.explained_variance_ratio_ = explained_variance
+        self.loadings = loadings
+        self.pca_obj = self
+        
 
 class DataPrepTester(unittest.TestCase):
 
@@ -780,7 +791,7 @@ class DataPrepTester(unittest.TestCase):
     # test_pca_computation
     #-------------------
     
-    #******8@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    @unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
     def test_pca_computation(self):
         
         df = self.tst_df4
@@ -830,10 +841,8 @@ class DataPrepTester(unittest.TestCase):
                                })
         #expected_xformed_df.index.name = 'component'
         
-        expected_expl_ratio = pd.Series([9.99997938e-01, 2.06249475e-06, 1.44217467e-32],
-                                        index=['comp0','comp1','comp2']
-                                        )
-        expected_expl_ratio.index.name = 'component'
+        expected_expl_ratio = pd.Series([9.99997938e-01, 2.06249475e-06, 1.44217467e-32])
+        expected_expl_ratio.index.name = 'component_num'
         
         self.assertEqual(pca_res.timestamp, dt)
         self.assertEqual(pca_res.comment, comment)
@@ -863,6 +872,60 @@ class DataPrepTester(unittest.TestCase):
         pd.testing.assert_frame_equal (recovered_res.weights, expected_weights, rtol=1e-2, atol=1e-2)
         pd.testing.assert_frame_equal (recovered_res.loadings, expected_loadings, rtol=1e-2, atol=1e-2)
         pd.testing.assert_frame_equal (recovered_res.xformed_df, expected_xformed_df, rtol=1e-2, atol=1e-2)
+
+    #------------------------------------
+    # test_pca_needed_dims
+    #-------------------
+    
+    #******@unittest.skipIf(TEST_ALL != True, 'skipping temporarily')
+    def test_pca_needed_dims(self):
+        
+        data = self.big_df
+        # Find the last of the original features:
+        last_feat_idx  = list(data.columns).index('Max#CallsConsidered')
+        orig_feat_cols = list(data.columns)[1:last_feat_idx + 1]
+        df             = data[orig_feat_cols]
+        
+        
+        pca = PCA(n_components=min(len(df), len(df.columns)))
+        pca.fit_transform(df)
+        dc = DataCalcs(self.tmpdir.name, self.tmpdir.name)
+
+        variance_threshold = 0.9
+        num_comps, \
+        sufficient_features, \
+        feature_powers, \
+        feature_explained_variance_ratios = dc.pca_needed_dims(
+            pca, variance_threshold).values()
+        
+        expected_num_comps = 6
+        expected_n_sufficient_feats = 67
+
+        self.assertEqual(num_comps, expected_num_comps)
+        self.assertEqual(len(sufficient_features), expected_n_sufficient_feats)
+        
+        total_variance = pca.explained_variance_.sum()
+        feature_explained_var_ratio = feature_powers.sum().sum()/total_variance
+        self.assertAlmostEqual(feature_explained_var_ratio, 1.0)
+        
+        self.assertAlmostEqual(feature_explained_variance_ratios.sum(), 1.0)
+        # OLD
+        # # Get to threshold on first feature:
+        # loadings.iloc[0, 0] = .9
+        # expl_var.iloc[0] = 0.9
+        #
+        # num_comps, sufficient_features, feature_powers, var_explained = dc.pca_needed_dims(
+        #     pca_res, 0.9).values()
+        #
+        # expected_num_comps = 1
+        # expected_sufficient_features = ['col0', 'col1']
+        # expected_var_explained = 0.945
+        # expected_feature_power = loadings.multiply(expl_var.to_numpy(), axis=0) 
+        #
+        # self.assertEqual(num_comps, expected_num_comps)
+        # self.assertListEqual(sufficient_features, expected_sufficient_features)
+        # pd.testing.assert_frame_equal(feature_powers, expected_feature_power)
+        # self.assertAlmostEqual(var_explained, expected_var_explained)
 
 # ------------------------- Utilities ---------
 

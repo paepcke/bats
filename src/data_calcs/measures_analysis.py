@@ -54,7 +54,6 @@ import numpy as np
 import os
 import pandas as pd
 import random
-import re
 import shutil
 import sys
 import time
@@ -326,15 +325,7 @@ class MeasuresAnalysis:
         (columns in the measurements data) to exclude from the PCA.
         At most one of these may be used. 
          
-        Returns dict:
-        
-               {'pca' : pca, 
-                'weight_matrix'      : weight_matrix, 
-                'xformed_data'       : xformed_data,
-                'pca_file'           : pca_dst_fname,
-                'weights_file'       : weight_fname,
-                'xformed_data_fname' : xformed_data_fname                
-                }
+        Returns PCAResult instance.
                 
         The PCA object will have an attribute create_date. It
         can be used to timestamp both the PCA object itself, and
@@ -355,9 +346,8 @@ class MeasuresAnalysis:
             load the to main data. Default is None, which 
             means the already loaded self.all_measures is used.
         :type data_src: optional[str]
-        :return: dict with pc, weight matrix, and transformed data, 
-            as well as the file names where they were saved.
-        :rtype dict[str : any]
+        :return: a PCAResult instance with all sorts of nice results
+        :rtype PCAResult
         '''
 
         if to_include is not None and to_exclude is not None:
@@ -397,30 +387,10 @@ class MeasuresAnalysis:
         pca_result = self.data_calcs.pca_computation(
             df=all_data,
             n_components=n_components,
-            dst_dir=self.analysis_dst,
             timestamp=timestamp
-            ).values()
+            )
 
-        
-        if comment is not None:
-            comment_fname = Utils.mk_fpath_from_other(pca_save_file,
-                                                      prefix='comment', 
-                                                      suffix='.txt',
-                                                      components=n_components,
-                                                      samples=num_samples)
-            self.log.info(f"Saving comment to {comment_fname}")
-            with open(comment_fname, 'w') as fd:
-                fd.write(comment)
-        
-        return {'pca' : pca, 
-                'weight_matrix'      : weight_matrix,
-                'loading_matrix'     : loading_matrix, 
-                'xformed_data'       : xformed_data,
-                'pca_file'           : pca_save_file,
-                'weights_file'       : weights_fname,
-                'xformed_data_fname' : xformed_data_fname,
-                'comment'            : comment
-                }
+        return pca_result
     
     #------------------------------------
     # pca_analysis_action
@@ -2545,7 +2515,27 @@ if __name__ == '__main__':
     #
     # Include all non-administrative measures, and 
     # as many components as there are measures:
-    analysis = MeasuresAnalysis(Action.PCA)
+    ma = MeasuresAnalysis(Action.PCA)
+    pca_result = ma.experiment_result
+    # Write result file set to Localization.analysis_dst:
+    pca_result.save()
+    res_dict = ma.data_calcs.pca_needed_dims(pca_result, variance_threshold=0.9)
+    num_comps,\
+    sufficient_features,\
+    feature_powers,\
+    explained_var = res_dict.values()
+    # Save the features_powers for vizualizing how 
+    # feature power adds up: 
+    timestamp = Utils.timestamp_from_datetime(pca_result.timestamp)
+
+    feat_pwr_fname = f"pca_feature_powers_{timestamp}.csv"
+    feat_pwr_path  = os.path.join(Localization.analysis_dst, feat_pwr_fname)
+    feature_powers.to_csv(feat_pwr_path)
+    
+    suff_feats_fname = f"pca_sufficient_features_{timestamp}.csv"
+    suff_feats_path  = os.path.join(Localization.analysis_dst, feat_pwr_fname)
+    sufficient_features.to_csv(suff_feats_path)
+    
     sys.exit()
 
     # comment = ('PCA analysis to create 23 components, which was previously '

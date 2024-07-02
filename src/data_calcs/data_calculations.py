@@ -586,12 +586,8 @@ class PCAResult:
         
         explained_variance_ratio_ = pca_obj.explained_variance_ratio_
         # Make a series from the explained_variance_ratio_:
-        # Index will be 'comp<i>': 
-        idx_names = [f"comp{i}" for i in range(pca_obj.n_components_)]
-
-        self.explained_variance_ratio = pd.Series(explained_variance_ratio_, 
-                                                   index=idx_names)
-        self.explained_variance_ratio.index.name = 'component'
+        self.explained_variance_ratio = pd.Series(explained_variance_ratio_) 
+        self.explained_variance_ratio.index.name = 'component_num'
         
         # Matrix components x features with each feature's weight in 
         # each of the components (rows);
@@ -925,8 +921,12 @@ class DataCalcs:
         # the measurements file_id column. The header
         # is ['Filename', 'file_id']
         map_file = os.path.join(measures_root, self.fid_map_file)
-        with open(map_file, 'r') as fd:
-            fname_id_pairs = list(csv.reader(fd))
+        try:
+            with open(map_file, 'r') as fd:
+                fname_id_pairs = list(csv.reader(fd))
+        except OSError as e:
+            msg = f"File access error; *could* be unmounted data source. Or just missing file. {e}"
+            raise FileNotFoundError(msg)
         # We now have:
         #   [[fname1, id1],
         #    [fname2, id2],
@@ -2146,7 +2146,7 @@ class DataCalcs:
             df_pca = df[columns]
             
         if n_components is None:
-            n_components = len(df_pca)
+            n_components = min(len(df_pca), len(df_pca.columns))
         
         self.log.info(f"Running PCA with target of {n_components} components")
         pca = PCA(n_components=n_components)
@@ -2180,15 +2180,24 @@ class DataCalcs:
     # pca_needed_dims
     #-------------------
     
-    def pca_needed_dims(self, pca_res, variance_threshold):
+    def pca_needed_dims(self, pca_info, variance_threshold):
         '''
-        Given a PCAResult object, return the number of
-        components needed to explain variance_threshold
-        percent of the total variance of the dataframe
-        originally provided to the pca_computation().
+        Given a PCAResult object, or a PCA instance, return:
         
-        Also returned is the list of features that together
-        explain variance_threshold percent of the variance.
+           o the number of components needed to explain 
+             variance_threshold percent of the total variance
+             in the data given to the PCA (integer)
+        
+            o list of feature names whose contributions to explaining
+              variance is >= variance_threshold (list[str])
+
+            o a dataframe (n_components, n_features). Each cell is
+              the product of the feature's squared weight (its loading),
+              and the respective component's explained_variance_. (floats)
+
+            o For each feature, its percent contribution towards explaining 
+              the total variance in the data. A Series; adds to 1
+
         
         The variance_threshold may either be:
          
@@ -2199,52 +2208,80 @@ class DataCalcs:
                     
         In either case, the number is used as a percentage, transforming
         to 0...1.0 as needed.
-                
-        For the number of needed components, the algorithm is to accumulate 
-        explained_variance_ratios until the threshold is reached.
         
-        For feature power:
-        
-           o Foreach component c in the needed components sorted by importance:
-                 o select feature f with the highest loading
-                 o multiply f's loading with c's explained variance ratio
-                 o next_component
-                 o until sum of accumulated products >= variance-threshold 
+        NOTE:        
+          total_variance = pca.explained_variance_.sum()
+          feature_powers.sum().sum()/total_variance == 1.0 (or close to it)
         
         Returns dict:
-	            {'num_comps' : <num of components needed>,
-	             'features'  : <list of feature names sorted by strength}
-	        
-              
-        An alternative is to pass n_components='mle' to the pca_computation()
-        method to have an optimal dimensionality chosen, and then not use
-        this method.
         
-        :param pca_res: result from a previous call to pca_computation()
-        :type pca_res: PCAResult
+               {'num_comps'           : Number of components needed to reach threshold
+                'sufficient_features' : Series of just the features that are needed, and their power
+                'feature_powers'      : Dataframe of all features' power,
+                'feature_explained_variance_ratios' : Analogous to PCA.explained_variance_ratio_
+                }
+              
+        An alternative to some of what this method does is to pass n_components='mle' 
+        to the pca_computation() method to have an optimal dimensionality chosen, and 
+        then not use this method.
+        
+        :param pca_info: either a fit_transform()ed PCA, or 
+            the result from a previous call to pca_computation()
+        :type pca_info: union[PCAResult, sklearn.decomposition.PCA]
         :param variance_threshold: least amount of variance that
             the combined components need to explain in percent.
         :type variance_threshold: union[int, float]
-        :return the number of dimensions required to reach 
-            variance_threshold percent explanation of variance
+        :return the number of components required to reach 
+            variance_threshold percent explanation of variance,
+            the power of each feature in each component, and the
+            list of feature names needed to reach the desired variance,
+            or run out of explained variance in the PCA. 
         :rtype int
         '''
         
-        pca      = pca_res.pca_obj
+        if isinstance(pca_info, PCAResult):
+            pca = pca_info.pca
+        else:
+            pca = pca_info
+        
+        # Get the loadings matrix
+        weights    = pca.components_
+        weights_df = pd.DataFrame(weights, columns=pca.feature_names_in_)
+        
+        # Square the weights to get loadings:
         #            feat0          feat1     ...
         #   comp0   loading_01   loading_02   ...
         #   comp1   loading_11   loading_12   ...
         #                ...
-        loadings = pca_res.loading_df
-        #        explained_variance_perc
-        # comp0         percentage
-        # comp1         percentage
-        #         ...
-        expl_var = pca.explained_variance_ratio_
+        loadings = weights_df ** 2
         
-        if variance_threshold > 1.0:
-            variance_threshold = variance_threshold / 100.
-            
+        # Multiply by the explained variance of each PC.
+        # I.e. scale the importance of each feature by
+        # the importance of the components:
+        feature_powers = loadings.multiply(pca.explained_variance_, axis=0)
+                
+        # Sum across all PCs for each feature
+        var_expl_per_feat = feature_powers.sum(axis=0)
+        
+        # Normalize to get the proportion of variance explained
+        # by each feature:
+        total_variance = var_expl_per_feat.sum()
+        proportion_feat_variance_explained = var_expl_per_feat / total_variance
+        
+        # Sort descending:
+        feature_var_explained_ratio = proportion_feat_variance_explained.sort_values(ascending=False)
+        
+        # Get the number of features needed to explain variance_threshold
+        # of the total variance:
+        for feature_idx, var_explained in enumerate(feature_var_explained_ratio.cumsum()):
+            if var_explained >= variance_threshold:
+                break
+        
+        # List of features that make up variance_threshold explanation:
+        top_features = pca.feature_names_in_[:feature_idx + 1]
+        
+        # Number of components needed to reach variance_threshold 
+        # explained var:
         for component_idx, var_explained in enumerate(accumulate(pca.explained_variance_ratio_)):
             if var_explained >= variance_threshold:
                 break
@@ -2252,24 +2289,11 @@ class DataCalcs:
         # that together explain the variance_threshold percent
         # of data variance.
         
-        # Next: find a set of features that reach the variance
-        # threshold: go through each component's loadings,
-        # i.e. row by row: 
-        
-        total_var_explained = 0
-        features = []
-        for comp_loading_row in loadings.iterrows():
-            comp_nm = comp_loading_row.name
-            strongest_feature = comp_loading_row.idxmax()
-            
-            feature_strength     = expl_var.loc[comp_nm] * loadings.loc[comp_nm, strongest_feature]
-            total_var_explained += feature_strength
-            features.append(strongest_feature)
-            if total_var_explained >= variance_threshold:
-                break
-        
-        return {'num_comps' : component_idx, 
-                'features'  : features}
+        return {'num_comps'            : component_idx + 1,
+                'sufficient_features'  : top_features,
+                'feature_powers'       : feature_powers,
+                'feature_explained_variance_ratios' : feature_var_explained_ratio
+                }
 
     #------------------------------------
     # dump_pca
