@@ -2240,13 +2240,14 @@ class DataCalcs:
         '''
         
         if isinstance(pca_info, PCAResult):
-            pca = pca_info.pca
+            pca = pca_info.pca_obj
         else:
             pca = pca_info
         
         # Get the loadings matrix
         weights    = pca.components_
         weights_df = pd.DataFrame(weights, columns=pca.feature_names_in_)
+        weights_df.index.name = 'component_num'
         
         # Square the weights to get loadings:
         #            feat0          feat1     ...
@@ -2270,6 +2271,8 @@ class DataCalcs:
         
         # Sort descending:
         feature_var_explained_ratio = proportion_feat_variance_explained.sort_values(ascending=False)
+        feature_var_explained_ratio.index.name = 'feature'
+        feature_var_explained_ratio.name = 'explained_variance_ratio'
         
         # Get the number of features needed to explain variance_threshold
         # of the total variance:
@@ -2278,7 +2281,9 @@ class DataCalcs:
                 break
         
         # List of features that make up variance_threshold explanation:
-        top_features = pca.feature_names_in_[:feature_idx + 1]
+        top_features = feature_var_explained_ratio[:feature_idx + 1]
+        top_features.index.name = 'feature'
+        top_features.name = 'explained_variance_ratio'
         
         # Number of components needed to reach variance_threshold 
         # explained var:
@@ -2292,6 +2297,7 @@ class DataCalcs:
         return {'num_comps'            : component_idx + 1,
                 'sufficient_features'  : top_features,
                 'feature_powers'       : feature_powers,
+                # *All* feature explained variance ratios:
                 'feature_explained_variance_ratios' : feature_var_explained_ratio
                 }
 

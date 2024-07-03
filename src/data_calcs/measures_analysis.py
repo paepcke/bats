@@ -2517,24 +2517,45 @@ if __name__ == '__main__':
     # as many components as there are measures:
     ma = MeasuresAnalysis(Action.PCA)
     pca_result = ma.experiment_result
-    # Write result file set to Localization.analysis_dst:
-    pca_result.save()
-    res_dict = ma.data_calcs.pca_needed_dims(pca_result, variance_threshold=0.9)
+    variance_threshold = 0.9
+    res_dict = ma.data_calcs.pca_needed_dims(pca_result, variance_threshold=variance_threshold)
     num_comps,\
     sufficient_features,\
     feature_powers,\
-    explained_var = res_dict.values()
+    feature_explained_variance_ratios \
+     = res_dict.values()
+     
+    # Add the number of required principal components
+    # to the pca_result comment (or add it there if one
+    # already exists:
+    cur_pca_comment = pca_result.comment 
+    additional_comment = f"Number of principal components needed to explain {variance_threshold * 100}% of variance is {num_comps}"
+    if cur_pca_comment is None:
+        new_comment = additional_comment
+    else:
+        new_comment = f"{cur_pca_comment} {additional_comment}"
+    pca_result.comment = new_comment
+    # Write result file set to Localization.analysis_dst:
+    pca_result.save()
+    
     # Save the features_powers for vizualizing how 
     # feature power adds up: 
     timestamp = Utils.timestamp_from_datetime(pca_result.timestamp)
 
     feat_pwr_fname = f"pca_feature_powers_{timestamp}.csv"
     feat_pwr_path  = os.path.join(Localization.analysis_dst, feat_pwr_fname)
+    log.info(f"Saving feature powers to {feat_pwr_path}...")
     feature_powers.to_csv(feat_pwr_path)
     
     suff_feats_fname = f"pca_sufficient_features_{timestamp}.csv"
-    suff_feats_path  = os.path.join(Localization.analysis_dst, feat_pwr_fname)
+    suff_feats_path  = os.path.join(Localization.analysis_dst, suff_feats_fname)
+    log.info(f"Saving feature names for 90% variance explanation...")
     sufficient_features.to_csv(suff_feats_path)
+
+    feat_expl_ratio_fname = f"pca_feature_expl_var_ratios_{timestamp}.csv"
+    feat_expl_ratio_path  = os.path.join(Localization.analysis_dst, feat_expl_ratio_fname)
+    log.info(f"Saving explained variance ratio for each feature in {feat_expl_ratio_path}")
+    feature_explained_variance_ratios.to_csv(feat_expl_ratio_path)
     
     sys.exit()
 
