@@ -499,6 +499,60 @@ class Utils:
         return res
 
     #------------------------------------
+    # file_iterator
+    #-------------------
+    
+    @staticmethod
+    def filename_iterator(dir_path, prefix, num_range, suffix, num_digs=None):
+        '''
+        Returns an iterator of a sequence of file names
+        that are made up of a pattern with a range of 
+        numbers. Like:
+        
+            /foo/bar/my_file_0_good.csv
+            /foo/bar/my_file_1_good.csv
+            /foo/bar/my_file_2_good.csv
+
+        The arguments to generate an iterator over these
+        numbers would be:
+        
+           Utils.filename_iterator('/foo/bar', 'my_file_', range(3), '_good.csv')
+           
+        If the numbers have filler zeroes, such as:
+        
+            /foo/bar/my_file_09_good.csv
+            /foo/bar/my_file_19_good.csv
+            
+        then set num_lengths to the number of digits.
+        In this this 2.
+            
+        :param dir_path: directory to prepend to each fname
+        :type dir_path: str
+        :param prefix: text for before the number
+        :type prefix: str
+        :param num_range: a range that generates numbers
+        :type num_range: range
+        :param suffix: text to follow the number, including
+            file extension
+        :type suffix: str
+        :param num_digs: optional width of the integers
+        :type num_digs: optional[int]
+        :return an iterator over the resulting paths
+        :rtype iter[str]
+        '''
+        if num_digs is not None and type(num_digs) != int:
+            raise TypeError(f"Number of digits must be None or an int, not {num_digs}")
+            
+        file_list = []
+        for num in num_range:
+            if num_digs is None:
+                fname = f"{prefix}{num}{suffix}"
+            else:
+                fname = f"{prefix}{str(num).zfill(num_digs)}{suffix}"
+            file_list.append(os.path.join(dir_path, fname))
+        return iter(file_list)
+
+    #------------------------------------
     # cycle_time
     #-------------------
     
