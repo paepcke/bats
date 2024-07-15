@@ -64,9 +64,25 @@ class Localization:
         'results/chirp_analysis/Classifications/PCA23Components_all_but_is_daytime/xformed2024-06-10T16_44_54_23components_297476samples.feather' 
         )
     
-    all_measures          = os.path.join(analysis_dst, 'scaled_chirps_2024-06-25T12_55_03-07_00.feather')
-    all_measures_descaled = os.path.join(analysis_dst, 'orig_chirps_2024-06-25T12_55_03-07_00.feather')
-    scaler                = os.path.join(analysis_dst, 'split_scaler_1.5.0.joblib')
+    all_measures           = os.path.join(analysis_dst, 'scaled_chirps_2024-06-25T12_55_03.feather')
+    all_measures_descaled  = os.path.join(analysis_dst, 'orig_chirps_2024-06-25T12_55_03.feather')
+    scaler                 = os.path.join(analysis_dst, 'split_scaler_1.5.0.joblib')
+    
+    
+    predictions_descaled_dir  = os.path.join(analysis_dst, 'Predictions')
+    predictions_scaled_dir = os.path.join(predictions_descaled_dir, 'PredictionsScaled')
+    # Start string for the descaled predictions. The
+    # full name is derived by: ..._nn.feather, where nn is 
+    # a model id number:
+    predictions_descaled_root = 'prediction_chirps_descaled_2024-06-25T12_55_03'
+    prediction_scaler         = os.path.join(analysis_dst, 'prediction_scaler.joblib')
+    
+    prediction_truth_scaled  = os.path.join(predictions_descaled_dir, 'prediction_truth_values.feather')
+    prediction_truth_descaled = os.path.join(predictions_descaled_dir, 'prediction_truth_descaled_2024-06-25T12_55_03.feather')
+
+    # The scaled measures used to train the transformers:
+    prediction_measures_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/measures/'
+    #prediction_truth      = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/measures/split_truth_values.feather'
     #measures_root  = '/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/Clustering'
     measures_root  = '/Users/paepcke/quintus/home/paepcke/EclipseWorkspaces/bats/data/all/splits'
     inference_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/model_outputs'
@@ -758,6 +774,10 @@ class DataCalcs:
     output variance analysis
     '''
 
+    # Original SonoBat measure names:
+    # These names here do not include the columns added 
+    # via computations. See 'added_names' below
+    # for those additional columns.    
     sorted_mnames = [
         'LdgToFcAmp','HiFtoUpprKnAmp','HiFtoKnAmp','HiFtoFcAmp','UpprKnToKnAmp','KnToFcAmp',
         'Amp4thQrtl','Amp2ndQrtl','Amp3rdQrtl','PrecedingIntrvl','PrcntKneeDur','Amp1stQrtl',
@@ -775,7 +795,46 @@ class DataCalcs:
         'Kn-FcCurviness','Quality','Amp2ndMean','HiFtoFcExp','LnExpAEndAmp','RelPwr2ndTo1st','LnExpAStartAmp',
         'HiFminusStartF','Amp3rdMean','PreFc500Residue','Kn-FcCurvinessTrndSlp','PreFc250Residue',
         'AmpVariance','AmpMoment','meanKn-FcCurviness','Preemphasis','MinAccpQuality','Max#CallsConsidered',
-        'MaxSegLnght','AmpStartLn60ExpC','AmpEndLn60ExpC'        
+        'MaxSegLngth','AmpStartLn60ExpC','AmpEndLn60ExpC'        
+        ]
+
+    # SonoBat measure names with the handful of (unfortunately)
+    # modified column names in our dataset. See 'name_deviations'
+    # below for the differences. These names here do not include
+    # the columns added via computations. See 'added_names' below
+    # for those additional columns.
+    dataset_names = [
+        'LdgToFcAmp','HiFtoUpprKnAmp','HiFtoKnAmp','HiFtoFcAmp','UpprKnToKnAmp','KnToFcAmp',
+        'Amp4thQrtl','Amp2ndQrtl','Amp3rdQrtl','PrecedingIntrvl','PrcntKneeDur','Amp1stQrtl',
+        'PrcntMaxAmpDur','AmpK@start','FFwd32dB','Bndw32dB','StartF','HiFreq','UpprKnFreq',
+        'FFwd20dB','FreqKnee','FFwd15dB','Bndwdth','FFwd5dB','FreqMaxPwr','FreqCtr','FBak5dB',
+        'FreqLedge','AmpK@end','Fc','FBak15dB','FBak32dB','EndF','FBak20dB','LowFreq',
+        'Bndw20dB','CallsPerSec','EndSlope','SteepestSlope','StartSlope','Bndw15dB',
+        'HiFtoUpprKnSlp','HiFtoKnSlope','DominantSlope','Bndw5dB','PreFc500','PreFc1000',
+        'PreFc3000','KneeToFcSlope','TotalSlope','PreFc250','CallDuration','CummNmlzdSlp',
+        'DurOf32dB','SlopeAtFc','LdgToFcSlp','DurOf20dB','DurOf15dB','TimeFromMaxToFc','KnToFcDur',
+        'HiFtoFcExpAmp','AmpKurtosis','LowestSlope','KnToFcDmp','HiFtoKnExpAmp','DurOf5dB','KnToFcExpAmp',
+        'RelPwr3rdTo1st','LnExpB_StartAmp','HiFtoKnDmp','LnExpB_EndAmp','HiFtoFcDmp','AmpSkew',
+        'LedgeDuration','KneeToFcResidue','PreFc3000Residue','AmpGausR2','PreFc1000Residue','Amp1stMean',
+        'LdgToFcExp','FcMinusEndF','Amp4thMean','HiFtoUpprKnExp','HiFtoKnExp','KnToFcExp','UpprKnToKnExp',
+        'Kn-FcCurviness','Quality','Amp2ndMean','HiFtoFcExp','LnExpA_EndAmp','RelPwr2ndTo1st','LnExpA_StartAmp',
+        'HiFminusStartF','Amp3rdMean','PreFc500Residue','Kn-FcCurvinessTrndSlp','PreFc250Residue',
+        'AmpVariance','AmpMoment','meanKn-FcCurviness','MinAccpQuality','Max#CallsConsidered',
+        'AmpStartLn60ExpC','AmpEndLn60ExpC'        
+        ]
+
+    # (Unfortunate) deviations of dataset col names from SonoBat col names:
+    name_deviations = ['LnExpA_StartAmp', 'LnExpB_EndAmp',  'LnExpA_EndAmp',  'TimeInFile', 'LnExpB_StartAmp']
+
+    # Cols not in continuous data; they are removed:
+    dropped_names = ['Filter', 'Preemphasis', 'MaxSegLnght']
+    
+
+    # Names added to dataset via computations:
+    added_names = [
+        'species', 'sin_hr', 'sin_year', 'freq_mean', 'sin_day', 'sin_month',
+        'cos_hr', 'split', 'is_daytime', 'rec_datetime', 'cos_month', 'cos_day', 
+        'row_num', 'cos_year', 'file_id', 'chirp_idx'
         ]
 
     #------------------------------------
@@ -2184,9 +2243,11 @@ class DataCalcs:
         '''
         Given a PCAResult object, or a PCA instance, return:
         
-           o the number of components needed to explain 
-             variance_threshold percent of the total variance
-             in the data given to the PCA (integer)
+            o the number of components needed to explain 
+              variance_threshold percent of the total variance
+              in the data given to the PCA (integer)
+            
+            o the total variance of the data (can be greater than 1)
         
             o list of feature names whose contributions to explaining
               variance is >= variance_threshold (list[str])
@@ -2215,12 +2276,18 @@ class DataCalcs:
         
         Returns dict:
         
-               {'num_comps'           : Number of components needed to reach threshold
+               {'misc_nums'           : Number of components needed to reach threshold,
+                                        and total variance (a Series)
                 'sufficient_features' : Series of just the features that are needed, and their power
                 'feature_powers'      : Dataframe of all features' power,
                 'feature_explained_variance_ratios' : Analogous to PCA.explained_variance_ratio_
                 }
               
+        The misc_nums is of the form:
+        
+            pd.Series:     'num_components' : xx,
+                           'total_variance' : yy
+             
         An alternative to some of what this method does is to pass n_components='mle' 
         to the pca_computation() method to have an optimal dimensionality chosen, and 
         then not use this method.
@@ -2233,6 +2300,7 @@ class DataCalcs:
         :type variance_threshold: union[int, float]
         :return the number of components required to reach 
             variance_threshold percent explanation of variance,
+            the total variance of the data, 
             the power of each feature in each component, and the
             list of feature names needed to reach the desired variance,
             or run out of explained variance in the PCA. 
@@ -2294,7 +2362,12 @@ class DataCalcs:
         # that together explain the variance_threshold percent
         # of data variance.
         
-        return {'num_comps'            : component_idx + 1,
+        misc_nums = pd.Series({'num_components' : int(component_idx + 1),
+                               'total_variance' : total_variance
+                              }, name='misc_constants')
+        misc_nums.index.name = 'Items'
+        
+        return {'misc_nums'            : misc_nums,
                 'sufficient_features'  : top_features,
                 'feature_powers'       : feature_powers,
                 # *All* feature explained variance ratios:

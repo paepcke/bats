@@ -15,6 +15,8 @@ from data_calcs.data_cleaning import (
     DataCleaner)
 from data_calcs.data_viz import (
     DataViz)
+from data_calcs.tableau_data_prep import (
+    TableauPrepper)
 from data_calcs.universal_fd import (
     UniversalFd)
 from data_calcs.utils import (
@@ -33,6 +35,10 @@ from matplotlib.pyplot import (
     clf)
 from pathlib import (
     Path)
+from scipy.stats import (
+    f_oneway,
+    tukey_hsd,
+    ttest_ind)
 from sklearn.decomposition import (
     PCA)
 from sklearn.ensemble import (
@@ -53,6 +59,7 @@ import itertools
 import numpy as np
 import os
 import pandas as pd
+import pantab
 import random
 import shutil
 import sys
@@ -289,7 +296,7 @@ class MeasuresAnalysis:
             res = self._concat_files(**kwargs)
             
         elif action == Action.CLEAR_RESULTS:
-            self.log.info("Cleanung up TSNE hyper parameter search debris")
+            self.log.info("Cleaning up TSNE hyper parameter search debris")
             res = self.remove_search_res_files()
             
         elif action == Action.PRINT_CLF_RESULTS:
@@ -2515,49 +2522,55 @@ if __name__ == '__main__':
     #
     # Include all non-administrative measures, and 
     # as many components as there are measures:
-    ma = MeasuresAnalysis(Action.PCA)
-    pca_result = ma.experiment_result
-    variance_threshold = 0.9
-    res_dict = ma.data_calcs.pca_needed_dims(pca_result, variance_threshold=variance_threshold)
-    num_comps,\
-    sufficient_features,\
-    feature_powers,\
-    feature_explained_variance_ratios \
-     = res_dict.values()
-     
-    # Add the number of required principal components
-    # to the pca_result comment (or add it there if one
-    # already exists:
-    cur_pca_comment = pca_result.comment 
-    additional_comment = f"Number of principal components needed to explain {variance_threshold * 100}% of variance is {num_comps}"
-    if cur_pca_comment is None:
-        new_comment = additional_comment
-    else:
-        new_comment = f"{cur_pca_comment} {additional_comment}"
-    pca_result.comment = new_comment
-    # Write result file set to Localization.analysis_dst:
-    pca_result.save()
-    
-    # Save the features_powers for vizualizing how 
-    # feature power adds up: 
-    timestamp = Utils.timestamp_from_datetime(pca_result.timestamp)
-
-    feat_pwr_fname = f"pca_feature_powers_{timestamp}.csv"
-    feat_pwr_path  = os.path.join(Localization.analysis_dst, feat_pwr_fname)
-    log.info(f"Saving feature powers to {feat_pwr_path}...")
-    feature_powers.to_csv(feat_pwr_path)
-    
-    suff_feats_fname = f"pca_sufficient_features_{timestamp}.csv"
-    suff_feats_path  = os.path.join(Localization.analysis_dst, suff_feats_fname)
-    log.info(f"Saving feature names for 90% variance explanation...")
-    sufficient_features.to_csv(suff_feats_path)
-
-    feat_expl_ratio_fname = f"pca_feature_expl_var_ratios_{timestamp}.csv"
-    feat_expl_ratio_path  = os.path.join(Localization.analysis_dst, feat_expl_ratio_fname)
-    log.info(f"Saving explained variance ratio for each feature in {feat_expl_ratio_path}")
-    feature_explained_variance_ratios.to_csv(feat_expl_ratio_path)
-    
-    sys.exit()
+    # ma = MeasuresAnalysis(Action.PCA)
+    # pca_result = ma.experiment_result
+    # variance_threshold = 0.9
+    # res_dict = ma.data_calcs.pca_needed_dims(pca_result, variance_threshold=variance_threshold)
+    # misc_nums,\
+    # sufficient_features,\
+    # feature_powers,\
+    # feature_explained_variance_ratios \
+    #  = res_dict.values()
+    #
+    # num_comps = misc_nums['num_components']
+    # # Add the number of required principal components
+    # # to the pca_result comment (or add it there if one
+    # # already exists:
+    # cur_pca_comment = pca_result.comment 
+    # additional_comment = f"Number of principal components needed to explain {variance_threshold * 100}% of variance is {num_comps}"
+    # if cur_pca_comment is None:
+    #     new_comment = additional_comment
+    # else:
+    #     new_comment = f"{cur_pca_comment} {additional_comment}"
+    # pca_result.comment = new_comment
+    # # Write result file set to Localization.analysis_dst:
+    # pca_result.save()
+    #
+    # # Save the features_powers for vizualizing how 
+    # # feature power adds up: 
+    # timestamp = Utils.timestamp_from_datetime(pca_result.timestamp)
+    #
+    # misc_nums_fname = f"pca_num_comps_and_total_var_{timestamp}.csv"
+    # misc_nums_path  = os.path.join(Localization.analysis_dst, misc_nums_fname)
+    # log.info(f"Saving number of components and total variance {misc_nums_path}...")
+    # misc_nums.to_csv(misc_nums_path)
+    #
+    # feat_pwr_fname = f"pca_feature_powers_{timestamp}.csv"
+    # feat_pwr_path  = os.path.join(Localization.analysis_dst, feat_pwr_fname)
+    # log.info(f"Saving feature powers to {feat_pwr_path}...")
+    # feature_powers.to_csv(feat_pwr_path)
+    #
+    # suff_feats_fname = f"pca_sufficient_features_{timestamp}.csv"
+    # suff_feats_path  = os.path.join(Localization.analysis_dst, suff_feats_fname)
+    # log.info(f"Saving feature names for 90% variance explanation...")
+    # sufficient_features.to_csv(suff_feats_path)
+    #
+    # feat_expl_ratio_fname = f"pca_feature_expl_var_ratios_{timestamp}.csv"
+    # feat_expl_ratio_path  = os.path.join(Localization.analysis_dst, feat_expl_ratio_fname)
+    # log.info(f"Saving explained variance ratio for each feature in {feat_expl_ratio_path}")
+    # feature_explained_variance_ratios.to_csv(feat_expl_ratio_path)
+    #
+    # sys.exit()
 
     # comment = ('PCA analysis to create 23 components, which was previously '
     #            'determined to cover 90% of the variance. Excluded is '
@@ -2744,3 +2757,117 @@ if __name__ == '__main__':
     # tsne_df = pd.DataFrame(embedded_data, columns=['tsne_x', 'tsne_y'])
     # DataViz.plot_tsne(tsne_df, cluster_labels, title='Cluster Top Features', show_plot=True)
     # print('Done')
+
+    #----------------------------------------------
+    
+    # Anova between Fc means Feb, Mar, Jul 2022.
+    
+    # df = pd.read_feather('/Users/paepcke/Project/Wildlife/Bats/VarunExperimentsData/AnalysisReady/orig_chirps_2024-06-25T12_55_03.feather')
+    # df.drop(['index'], axis=1, inplace=True)
+    # # Find species that were present in each of Feb, Mar, and Jul:
+    # feb_species = df.loc[df.rec_datetime.dt.month == 2].species.unique()
+    # mar_species = df.loc[df.rec_datetime.dt.month == 3].species.unique()
+    # jul_species = df.loc[df.rec_datetime.dt.month == 7].species.unique()
+    # species_all_months = set(jul_species) &\
+    #                      set(mar_species) &\
+    #                      set(feb_species)
+    # # Remove the 'Unkn' species:
+    # species_all_months.remove('Unkn')
+    # log.info(f"Months-straddling species: {species_all_months}")
+    # # Get all Fc and rec_datetime of chirps by 
+    # # the species that are present during all three months:
+    # df_relevant_species_fc = df[df.species.isin(species_all_months)][['Fc', 'rec_datetime']]
+    # feb_fcs = df_relevant_species_fc[df_relevant_species_fc.rec_datetime.dt.month == 2].Fc
+    # mar_fcs = df_relevant_species_fc[df_relevant_species_fc.rec_datetime.dt.month == 3].Fc
+    # jul_fcs = df_relevant_species_fc[df_relevant_species_fc.rec_datetime.dt.month == 7].Fc
+    # # Strong group size imbalance
+    # jul_fcs_fewer = jul_fcs.sample(int((len(mar_fcs) + len(feb_fcs)) / 2))
+    #
+    # # Anova:
+    #
+    # anova_res = f_oneway(feb_fcs, mar_fcs, jul_fcs_fewer)
+    # f_stat = round(float(anova_res.statistic), 2),
+    # p_val  = float(anova_res.pvalue)
+    # log.info(f"Anova: f={f_stat}, p-value={p_val}")
+    #
+    # # Tukey-HSD:
+    #
+    # tukey_obj = tukey_hsd(feb_fcs, mar_fcs, jul_fcs_fewer)
+    # log.info(f"Tukey-HSD: \nF-statistic\n{tukey_obj.statistic }\nP-values\n{tukey_obj.pvalue}")
+    #
+    # # July LACI vs. COTO Fc means T-test:
+    # jul_cotos_fcs  = df[(df.species == 'Coto') & (df.rec_datetime.dt.month == 7)].Fc
+    # jul_lacies_fcs = df[(df.species == 'Laci') & (df.rec_datetime.dt.month == 7)].Fc
+    # t_test_obj = ttest_ind(jul_cotos_fcs, jul_lacies_fcs)
+    #
+    # print('foo')
+    # sys.exit()
+
+    # ------------------------------
+    # Find amount of variations of var values within sequences.
+    # Start with df_orig (i.e. unscaled values), and end up with 
+    # a df of z-scores. The z-scores are computed separately within
+    # each chirp sequence: (measure - measure.mean()) / measure.std(),
+    # computed within each chirp seq. 
+    # Visualize with 
+    # /Users/paepcke/Project/Wildlife/Bats/SonoBatDataAndViz/z_scores_by_chirp_seq_2024-06-25T12_55_03.hyper
+    
+    # Scaled data:
+    df_orig = pd.read_feather(Localization.all_measures_descaled)
+    continuous_vars = DataCalcs.dataset_names
+    
+    # Build a dict { <var-name> : <number of measurements > 3SDs away from their within-chirp means}
+    # Group data into chirp sequences:
+    file_id_grp = df_orig[continuous_vars + ['file_id']].groupby(by='file_id')
+
+    # For each measure, get its z-score within its chirp sequence. That
+    # will be a dataframe 
+    
+    #             LdgToFcAmp  HiFtoUpprKnAmp  ...  AmpStartLn60ExpC  AmpEndLn60ExpC
+    #     0         1.679145       -0.529864  ...          0.960769        0.960769
+    #     1         0.977329        3.148301  ...          0.960769        0.960769
+    #     2        -0.233915        0.335435  ...          0.960769        0.960769
+    #     3        -0.614135       -0.360372  ...          0.960769        0.960769
+    #     4        -0.044194       -0.203296  ...          0.960769        0.960769
+    #     ...            ...             ...  ...               ...             ...
+    #     468394   -1.455827       -2.317517  ...               NaN             NaN
+    #     468395   -1.272784       -0.086127  ...               NaN             NaN
+    #     468396   -0.101159       -0.801087  ...               NaN             NaN
+    #     468397   -2.369645       -3.410520  ...               NaN             NaN
+    #     468398   -0.603067       -0.857185  ...               NaN             NaN
+    #
+    #     [468399 rows x 105 columns]
+
+    log.info(f"Computing z-scores for all measures...")
+    z_scores = file_id_grp.transform(lambda chirp_ser_df: (chirp_ser_df - chirp_ser_df.mean()) / chirp_ser_df.std())
+    
+    # Now transform the z-scores dataframe such that
+    # Tableau will recognize hierarchies: amplitudes, frequencies, ...
+    # The fillna() is to patch the NaNs generated when chirp_ser_df.std()
+    # is 0:
+    tableau_z_scores = TableauPrepper(z_scores.fillna(0)).df
+    
+    # In prep of joining in some useful cols from 
+    # df_orig:
+    df_orig.index.name = 'chirp_num'
+    # Only get a few of df_orig's cols:
+    df_orig_excerpt = df_orig[['TimeInFile', 'species', 'rec_datetime', 'file_id', 'chirp_idx', 'is_daytime']]
+    
+    log.info(f"Joining tableau-ready z_scores with additional columns from df_orig...")
+    tableau_z_scores_plus = tableau_z_scores.join(df_orig_excerpt)
+    
+    # Outputting to Tableau's .hyper format loses the index:
+    tableau_z_scores_plus['chirp_num'] = tableau_z_scores_plus.index
+        
+    timestamp = Utils.extract_file_timestamp(Localization.all_measures)
+    z_scores_fname = f"z_scores_by_chirp_seq_{timestamp}.hyper"
+    z_scores_path  = os.path.join(Localization.analysis_dst, z_scores_fname)
+    log.info(f"Saving z_scores within chirp sequences as Tableau .hyper in {z_scores_path}...")
+    pantab.frame_to_hyper(tableau_z_scores_plus, z_scores_path, table='z_scores')
+    
+    z_scores_fname = f"z_scores_by_chirp_seq_{timestamp}.feather"
+    z_scores_path  = os.path.join(Localization.analysis_dst, z_scores_fname)
+    log.info(f"Saving z_scores within chirp sequences as .feather in {z_scores_path}...")
+    tableau_z_scores_plus.to_feather(z_scores_path)
+    
+    sys.exit() 
