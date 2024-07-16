@@ -2,11 +2,14 @@
 Created on Jul 11, 2024
 
 @author: paepcke
+
+NOTE: 'transformer' and 'model' are used interchangeably
 '''
 
 from data_calcs.data_calculations import (
     Localization,
-    FileType, DataCalcs)
+    FileType,
+    DataCalcs)
 from data_calcs.data_cleaning import (
     DataCleaner)
 from data_calcs.measures_analysis import (
@@ -16,71 +19,128 @@ from data_calcs.universal_fd import (
     UniversalFd)
 from data_calcs.utils import (
     Utils)
-import pandas as pd
+from logging_service.logging_service import (
+    LoggingService)
 from pathlib import (
     Path)
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import (
+    mean_squared_error)
+from sklearn.preprocessing._data import (
+    StandardScaler)
+import joblib
 import os
+import pandas as pd
 import re
-from logging_service.logging_service import LoggingService
 
 # -------------------------- ModelPerformance ------------
 
 class ModelPerformance:
     '''
     Contains performance measures for one transformer.
-    An instance holds the RMSE for every continuous variable.
+    An instance holds for each variable:
+        RMSE, 
+        mean_abs_diff, 
+        min_abs_diff, 
+        max_abs_diff, 
+        mean_perc_abs_diff
+    
     '''
     
     #------------------------------------
     # Constructor
     #-------------------
     
-    def __init__(self, model_id, df_truth, df_pred, var_names):
+    def __init__(self, model_id, df_truth, df_pred):
         
         self.df_truth  = df_truth
         self.df_pred   = df_pred
-        self.var_names = var_names
         self.model_id  = model_id
         self.mean_RMSE = None
+        self.var_names = DataCalcs.predicted_col_names
         
-        # Dict whose keys are SonoBat variable names.
-        # The values are that variable's RMSE value 
-        self.rmse_dict = {}
+        relevant_cols = self.var_names + ['file_id', 'cntxt_sz']
+        df_matched = pd.merge(df_truth[relevant_cols], 
+                              df_pred, 
+                              on=['file_id', 'cntxt_sz'], 
+                              suffixes=['_truth', '_pred'])
+        cols_matcher = {col_nm : col_nm.replace('_truth', '_pred')
+                        for col_nm
+                        in df_matched.columns 
+                        if col_nm.endswith('_truth')
+                        } 
+        
+        # Create a dataframe:
+        #            RMSE, min_abs_diff, max_abs_diff
+        #     var1   
+        #     var2        ...
+        #     ...
+        self.performance = pd.DataFrame([
+            self.compute_RMSE(df_matched, cols_matcher),
+            self.compute_min_abs_diff(),
+            self.compute_max_abs_diff()
+            ], index=self.var_names)
+        self.performance.index.name = 'variable'
+
+    #------------------------------------
+    # RMSE
+    #-------------------
+    
+    @property 
+    def RMSE(self):
+        return self.performance['RMSE']
+
+    #------------------------------------
+    # min_abs_diff
+    #-------------------
+    
+    @property 
+    def min_abs_diff(self):
+        return self.performance['min_abs_diff']
+
+    #------------------------------------
+    # max_abs_diff
+    #-------------------
+    
+    @property 
+    def max_abs_diff(self):
+        return self.performance['max_abs_diff']
         
     #------------------------------------
     # compute_RMSE
     #-------------------
     
-    def compute_RMSE(self):
+    def compute_RMSE(self, df_matched, cols_matcher):
 
-        for var_name in self.var_names:
+        res = []
+        for truth_col_nm in cols_matcher.keys():
             # The 'squared=False' causes the result 
             # be RMSE, instead of MSE:
-            self.rmse_dict[var_name] = mean_squared_error(self.df_truth[var_name], 
-                                                          self.df_pred[var_name], 
-                                                          squared=False)
+            res.append(mean_squared_error(df_matched[truth_col_nm], 
+                                          df_matched[cols_matcher[truth_col_nm]], 
+                                          squared=False))
+        return pd.Series(res, index=cols_matcher.keys(), name='RMSE')
 
     #------------------------------------
-    # mean_RMSE
+    # compute_min_abs_diff
     #-------------------
     
-    def mean_RMSE(self):
+    def compute_min_abs_diff(self):
 
-        # Have it cached?
-        if self.mean_RMSE is not None:
-            return self.mean_RMSE
-            
-        # Have we computed the RMSEs yet?
-        if len(self.rmse_dict) == 0:
-            # Nope, do it now:
-            self.compute_RMSE()
-            
-        # Compute the mean...
-        self.mean_RMSE = pd.Series(self.rmse_dict.values()).mean()
-        # ...cache it
-        return self.mean_RMSE
+        res = []
+        for var_name in self.var_names:
+            res.append((self.df_pred[var_name] - self.df_truth[var_name]).abs().min())
+        return pd.Series(res, index=self.var_names, name='min_abs_diff')
 
+    #------------------------------------
+    # compute_max_abs_diff
+    #-------------------
+    
+    def compute_max_abs_diff(self):
+
+        res = []
+        for var_name in self.var_names:
+            res.append((self.df_pred[var_name] - self.df_truth[var_name]).abs().max())
+        return pd.Series(res, index=self.var_names, name='min_abs_diff')
 
 # -------------------------- PredictionAnalyzer ------------
 class PredictionAnalyzer:
@@ -99,62 +159,87 @@ class PredictionAnalyzer:
         Constructor
         '''
         self.log = LoggingService()
-        self.df_pred            	= None
-        self.df_pred_descaled   	= None
-        self.df_pred_truth      	= None
-        self.df_pred_truth_descaled = None
+        
+        self.pred_truth_descaled_df = None
+        self.preds_descaled_dfs     = None
+        self.scaled_fnames          = None
+        self.descaled_fnames        = None
 
     #------------------------------------
     # analyze_transformer_outputs
     #-------------------
     
     def analyze_transformer_outputs(self):
-        
-        performances = []
-        sb_vars = DataCalcs.dataset_names
-        
-        # Partition the predictions into separate
-        # dataframes for each model output:
-        preds_grp = self.df_pred_descaled.groupby(by='model_id')
-        
-        # For each continuous var, compute
-        # the Root Mean Square Error between
-        # predicted and the true values:
-        for model_pred_df in preds_grp:
-            performances.append(ModelPerformance('foo', 
-                                                 self.df_pred_truth_descaled, 
-                                                 model_pred_df,
-                                                 sb_vars
-                                                 ))
+        '''
+        Computes RMSE, min_abs_diff, and max_abs_diff
+        for each transformer's output, for each of their
+        variables. Creates
          
+                   self.performances,
+                    
+        which is a list of of ModelPerformance instances, 
+        one for each model.
+        
+        Also creates the aggregate:
+        
+                   self.mean_performance,
+        
+        which is a Series, whose index are the SonoBat variables,
+        and whose colums are MeanRMSE, MeanMinAbsDiff, and MeanMaxAbsDiff.
+        Those values are means across all transformers.
+        '''
+        
+        self.performances = []
+        for pred_descaled_df in self.preds_descaled_dfs:
+            # The model id col in the descaled prediction
+            # dfs is constant within one df:
+            model_id = pred_descaled_df.model_id.iloc[0]
+            self.performances.append(ModelPerformance(model_id, self.pred_truth_descaled_df, pred_descaled_df))
+            
         print('foo')
         
     #------------------------------------
     # import_predictions
     #-------------------
     
-    def import_predictions(self):
+    def import_predictions(self, timestamp=None):
         '''
-        Create one DF from all (scaled) transformer prediction files.
-        They are expected to be of the form bats_transformer_seed_42.ckpt.feather, 
+        Two main tasks:
+           1. Create descaled versions of each scaled predition file,
+              unless those versions already exist.
+           2. Create one descaled file from the prediction
+              toolchain's prediction_truth_values.feather file.
+           3. Initialize the following instance vars: 
+
+                    self.pred_truth_descaled_df   # One df truth from all models
+                    self.scaled_fnames            # list of full paths to scaled fnames
+                    self.descaled_fnames          # list of full paths to descaled fnames
+                    self.preds_descaled_dfs # list of descaled prediction dfs
+                    
+        Scaled transformer prediction files are expected to 
+        be of the form bats_transformer_seed_42.ckpt.feather, 
         with nn being the transformer number.
+
+        The generated files will all include a timestamp.
+        For descaled predictions:
+            predictions_descaled_{model_num}_{timestamp}.feather")
+        and for the truth:
+            prediction_truth_descaled_{timestamp}.feather
+            
+        like:
         
-        Two cases: (1) the transformer output files have been gathered into
-                       one df before, and were saved.
-                   (2) the output files were never gathered into one df before.
-                   
-        In case one, the location of the df is expected in Localization.predictions.
-        We load it, and stick it into self.df_pred.
+            predictions_descaled_62_2024-06-25T12_55_03.feather
+        and
+            prediction_truth_descaled_2024-06-25T12_55_03.feather
         
-        In case two, we load all the constituent .feather files, do some cleanup,
-        and save into Localization.predictions.
+             
+        in Localization.measures_root}/timestamp.txt
         
         NOTE: the transformer toolchain output files that are csv formatted inside,
               but have extension '.log'. The bash script <proj-root>/bash/rename_prediction_files.bash
               is used to rename them all to have .csv extension.
               The script  <proj-root>/bash/prediction_files_to_feather.bash is then used
               to create .feather files.
-              
         
         The files look like:
         
@@ -172,54 +257,187 @@ class PredictionAnalyzer:
             21.0,bats_transformer_seed_21.ckpt.log
                     ...
         
-        Sets instance vars 
-                    self.df_pred_descaled 
-                    self.df_pred_truth_descaled
-                    self.model_ids
         '''
-        # Do we have a descaled version of the predictions in a file?
-        if os.path.exists(Localization.predictions_descaled):
-            self.log.info(f"Loading descaled prediction df from {Localization.predictions_descaled}")
-            with UniversalFd(Localization.predictions_descaled, 'r') as fd:
-                self.df_pred_descaled = fd.asdf()
-        elif os.path.exists(Localization.predictions):
-            # We at least have one consolidated file of all the 
-            # (scaled) predictions:
-            with UniversalFd(Localization.predictions, 'r') as fd:
-                df_pred = fd.asdf()
-            self.df_pred_descaled = self._descale_and_save(df_pred, Localization.predictions_descaled)
-        else:
-            # No, we do not have a descaled version, nor do we
-            # have a consolidated file of all predictions:        
-            # Have to collect the files from their staging dir:        
-            df_pred = self._consolidate_predictions()                        
-            self.df_pred_descaled = self._descale_and_save(df_pred, Localization.predictions_descaled)
+        # Is there a file called timestamp.txt at the truth dir?
+        # If so, it contains a timestamp string of when the split
+        # (truth) files were created, and we use it in filenames that we
+        # create as we concat the prediction files:
+    
+        if timestamp is None:
+            # Find or make a timestamp:    
+            timestamp_path = f"{Localization.measures_root}/timestamp.txt"
+            if os.path.exists(timestamp_path):
+                with open(timestamp_path, 'r') as fd:
+                    timestamp = fd.read().strip()   
+            else:
+                timestamp = Utils.file_timestamp()
 
-        # Now we have self.pred_descaled. Next, get 
-        # the descaled truth values:
-
+        # Get Truth:
         # Do we have the descaled prediction truth cached?
         if os.path.exists(Localization.prediction_truth_descaled):
-            self.log.info(f"Loading prediction truth descaled from {Localization.prediction_truth}")
+            self.log.info(f"Loading prediction truth descaled from {Localization.prediction_truth_descaled}")
             with UniversalFd(Localization.prediction_truth_descaled, 'r') as fd:
-                self.df_pred_truth_descaled = fd.asdf() 
+                self.pred_truth_descaled_df = fd.asdf() 
         else:
             # Load the truth values:
-            self.log.info(f"Loading prediction truth from {Localization.prediction_truth}")
-            with UniversalFd(Localization.prediction_truth, 'r') as fd:
+            self.log.info(f"Loading prediction truth from {Localization.prediction_truth_scaled}")
+            with UniversalFd(Localization.prediction_truth_scaled, 'r') as fd:
                 df_pred_truth = fd.asdf()
+            self.log.info(f"Done saving.")
                 
-            self.df_pred_truth_descaled = self._descale_and_save(df_pred_truth, Localization.prediction_truth_descaled)
+            self.pred_truth_descaled_df = self._descale_and_save(df_pred_truth,
+                                                                 Localization.prediction_truth_scaler, 
+                                                                 Localization.prediction_truth_descaled)
 
-        # List of model ids, i.e. transformers:
-        self.log.info(f"Finding all model ids")
-        self.model_ids = self.df_pred.model_id.unique()
+        # Get Predictions:
+        
+        # Find all scaled prediction files to know how many
+        # there are, and how many descaled ones should therefore
+        # be available:
+        self.scaled_fnames   = [os.path.join(Localization.predictions_scaled_dir, scaled_fname)
+                                for scaled_fname in os.listdir(Localization.predictions_scaled_dir)
+                                if scaled_fname.startswith('bats_transformer_seed_') and \
+                                   scaled_fname.endswith('.feather')]
+        # Descaled prediction files are of the form:
+        #    bats_transformer_seed_descaled_63_2024-06-25T12_55_03.feather
+        # only the model number (63 in this case) changes:
+        self.descaled_fnames = [os.path.join(Localization.predictions_descaled_dir, descaled_fname)
+                                for descaled_fname in os.listdir(Localization.predictions_descaled_dir)
+                                if descaled_fname.startswith('predictions_descaled_') and \
+                                   descaled_fname.endswith(f"_{timestamp}.feather")]
+        
+        # Descale scaled predictions if needed:
+        if len(self.scaled_fnames) != len(self.descaled_fnames):
+            # We need the scaler that handles just the actually
+            # predicted columns of the truth data:
+            if os.path.exists(Localization.prediction_output_scaler):
+                output_scaler = joblib.load(Localization.prediction_output_scaler)
+            else:
+                # Create a scaler from the truth, but for
+                # only the actually predicted columns:
+                output_scaler = self._create_output_scaler(self.pred_truth_descaled_df)
+                # Save it for future fast retrieval:
+                self.log.info(f"Saving output scaler to {Localization.prediction_output_scaler}")
+                joblib.dump(output_scaler, Localization.prediction_output_scaler)
+            self.preds_descaled_dfs = self._descale_predictions(output_scaler, 
+                                                                self.scaled_fnames, 
+                                                                timestamp)
+        else:
+            # Load the predictions, which are nicely saved in files:
+            self.preds_descaled_dfs = []
+            #***********
+            #for fpath in self.descaled_fnames:
+            for fpath in self.descaled_fnames[:3]:
+            #***********
+                self.log.info(f"Loading descaled prediction {Path(fpath).name} ({fpath})")
+                with UniversalFd(fpath, 'r') as fd:
+                    self.preds_descaled_dfs.append(fd.asdf())
+
+    #------------------------------------
+    # _create_output_scaler
+    #-------------------
+    
+    def _create_output_scaler(self, truth_df_descaled):  # @DontTrace
+        '''
+        Extracts just the columns that are predicted
+        by transformers from the given truth df, and 
+        creates a new scaler fitted for just those cols.
+        
+        Returns the fitted scaler. 
+        
+        :param truth_df_descaled: descaled truth values for all columns
+        :type truth_df_descaled:  pd.DataFrame
+        :return a fitted scaler
+        :rtype sklearn.preprocessing.StandardScaler
+        '''
+        
+        df = truth_df_descaled[DataCalcs.predicted_col_names]
+        scaler = StandardScaler()
+        scaler.set_output(transform = "pandas")
+        scaler.fit(df)
+        return scaler
+        
+    #------------------------------------
+    # _descale_predictions
+    #-------------------
+
+    def _descale_predictions(self, scaler, scaled_fnames, timestamp):
+        '''
+        Given a list of absolute paths to scaled 
+        prediction files, load each file into a df, 
+        descale that df, and append that descaled 
+        prediction df to
+        
+             self.preds_descaled_dfs.  
+        
+        also write the df to predictions_descaled_{model_num}_descaled.feather
+        in directory Localization.predictions_descaled_dir.
+    
+        :param scaler: scaler to use for descaling predictions
+        :type scaler: sklearn.preprocessing.StandardScaler
+        :param scaled_fnames: list of full paths to scaled
+            predictions
+        :type scaled_fnames: list[str]
+        :param timestamp: timestamp to include in names 
+            of generated files
+        :type timestamp: str
+        :return the list of descaled prediction dfs
+        :rtype list[pd.DataFrame] 
+        '''
+
+        self.preds_descaled_dfs = []
+        # Regex to get number from like bats_transformer_seed_52.ckpt.feather:
+        predict_file_pat = re.compile(f"[^0-9]*([0-9]+)\\.ckpt\\.feather")
+
+        for scaled_file in scaled_fnames:
+            
+            model_num = predict_file_pat.match(scaled_file).group(1)
+            
+            descaled_path = os.path.join(Localization.predictions_descaled_dir,
+                                         f"predictions_descaled_{model_num}_{timestamp}.feather")
+            
+            self.log.info(f"Loading {scaled_file}... ")
+            with UniversalFd(scaled_file, 'r') as fd:
+                df_scaled = fd.asdf()
+            
+            # Clarify some datatypes:
+            df_scaled.file_id  = df_scaled.file_id.astype(int)
+            df_scaled.cntxt_sz = df_scaled.cntxt_sz.astype(int)
+            #df_scaled.model_id = df_scaled.model_id.astype(str)
+            
+            # Get just the scaled cols that are floating pt nums.
+            # The df.dtypes returns a Series whose index
+            # are col names, and the values are data types:
+            float_cols = df_scaled.dtypes.loc[df_scaled.dtypes == float].index
+              
+            # Descale this df:
+            self.log.info(f"Descaling {len(float_cols)} scaled cols to {scaled_file}... ")
+            df_descaled_raw = DataCleaner.recover_orig_from_scaled_data(
+                scaler, 
+                df_scaled[float_cols])
+            
+            # Add file_id, cntxt_sz, and model_id columns into the descaled data:
+            df_descaled_raw['file_id'] = df_scaled.file_id
+            df_descaled_raw['cntxt_sz'] = df_scaled.cntxt_sz
+            df_descaled_raw['model_id'] = df_scaled.model_id
+            
+            # Clean the df, adding column chirp_idx, removing
+            # other cols:
+            df_descaled = self._clean_prediction_df(df_descaled_raw)
+            self.preds_descaled_dfs.append(df_descaled)
+            
+            # Save this descaled output:
+            self.log.info(f"Saving descaled df at {descaled_path}")
+            df_descaled.to_feather(descaled_path)
+            self.log.info(f"Done saving.")
+        
+        return self.preds_descaled_dfs
 
     #------------------------------------
     # _descale_and_save
     #-------------------
     
-    def _descale_and_save(self, df, dst_path):
+    def _descale_and_save(self, df, scaler, dst_path):
         '''
         The provided df is asssumed to be a dataframe of
         all scaled predictions, or of all scaled truth
@@ -229,6 +447,8 @@ class PredictionAnalyzer:
         
         :param df: dataframe to descale
         :type df: pd.DataFrame
+        :param scaler: scaler to use for descaling
+        :type scaler: sklearn.proprocessing.StandardScaler
         :param dst_path: destination of descaled result. Must
             be full path, including extension of .csv, .feather,
             or .csv.gz
@@ -239,8 +459,7 @@ class PredictionAnalyzer:
         
         # Now descale the predictions, and save them:
         self.log.info(f"Descaling... ")
-        df_descaled = DataCleaner.recover_orig_from_scaled_data(
-            Localization.prediction_scaler, df)
+        df_descaled = DataCleaner.recover_orig_from_scaled_data(scaler, df)
         self.log.info(f"Saving descaled df at {dst_path}")
         with UniversalFd(dst_path, 'w') as fd:
             fd.write(df_descaled)
@@ -311,25 +530,10 @@ class PredictionAnalyzer:
         # Make col 'row_num', which mirrors the index
         # be the index, removing it as a col:
         
-#***********                
-#         ***** Bombs here:
-#   File "/Users/paepcke/EclipseWorkspacesNew1/bats/src/transformer_prediction_calcs/prediction_analysis.py", line 295, in <module>
-#     pred_analyzer.import_predictions()
-#   File "/Users/paepcke/EclipseWorkspacesNew1/bats/src/transformer_prediction_calcs/prediction_analysis.py", line 225, in import_predictions
-#     df_pred = self._clean_prediction_df(df_pred)
-#               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-#   File "/Users/paepcke/EclipseWorkspacesNew1/bats/src/transformer_prediction_calcs/prediction_analysis.py", line 266, in _clean_prediction_df
-#     df_pred.set_index('row_num', drop=True, inplace=True)
-#   File "/Users/paepcke/anaconda3/envs/bats/lib/python3.12/site-packages/pandas/core/frame.py", line 6122, in set_index
-#     raise KeyError(f"None of {missing} are in the columns")
-# KeyError: "None of ['row_num'] are in the columns"
-#***********        
-        df_pred.set_index('row_num', drop=True, inplace=True)
+        df_pred.index.name = 'chirp_num'
         # There are two cols: "Unnamed: 0" and "Unnamed: 0.1",
         # which are a mystery. Delete one, and rename the other:
-        df_pred.drop(['Unnamed: 0.1'], axis=1, inplace=True)
-        df_pred.rename(columns={'Unnamed: 0' : 'MysteryCol'}, inplace=True)
-        
+
         # Add the chirp index within its sequence to ease
         # matching against ground truth data: The context size
         # is the number of chirps in the same sequence that are
@@ -353,6 +557,8 @@ class PredictionAnalyzer:
 if __name__ == '__main__':
     
     pred_analyzer = PredictionAnalyzer()
-    pred_analyzer.import_predictions()
+    pred_analyzer.import_predictions(timestamp='2024-06-25T12_55_03')
     pred_analyzer.analyze_transformer_outputs()
+    
+    print('Done')
     

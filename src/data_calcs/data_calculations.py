@@ -74,8 +74,9 @@ class Localization:
     # Start string for the descaled predictions. The
     # full name is derived by: ..._nn.feather, where nn is 
     # a model id number:
-    predictions_descaled_root = 'prediction_chirps_descaled_2024-06-25T12_55_03'
-    prediction_scaler         = os.path.join(analysis_dst, 'prediction_scaler.joblib')
+    predictions_descaled_root  = 'prediction_chirps_descaled_2024-06-25T12_55_03'
+    prediction_truth_scaler    = os.path.join(predictions_descaled_dir, 'prediction_truth_scaler.joblib')
+    prediction_output_scaler   = os.path.join(predictions_descaled_dir, 'prediction_output_scaler.joblib')
     
     prediction_truth_scaled  = os.path.join(predictions_descaled_dir, 'prediction_truth_values.feather')
     prediction_truth_descaled = os.path.join(predictions_descaled_dir, 'prediction_truth_descaled_2024-06-25T12_55_03.feather')
@@ -836,6 +837,21 @@ class DataCalcs:
         'cos_hr', 'split', 'is_daytime', 'rec_datetime', 'cos_month', 'cos_day', 
         'row_num', 'cos_year', 'file_id', 'chirp_idx'
         ]
+    
+    # The floating point chirp measures included in the
+    # predictions:
+    predicted_col_names = [
+        'TimeInFile','PrecedingIntrvl','HiFreq','Bndwdth',
+        'FreqMaxPwr','PrcntMaxAmpDur','FreqKnee','PrcntKneeDur','StartF',
+        'FreqCtr','FFwd32dB','FFwd20dB','FFwd15dB','FBak5dB','FFwd5dB',
+        'Bndw32dB','Amp1stQrtl','Amp2ndQrtl','Amp3rdQrtl','Amp4thQrtl',
+        'AmpK@start','UpprKnFreq','HiFtoUpprKnAmp','HiFtoKnAmp','HiFtoFcAmp',
+        'UpprKnToKnAmp','KnToFcAmp','LdgToFcAmp'
+        ]
+
+    # Cols included in the prediction outputs that are
+    # not SonoBat measures:
+    predictions_addtl = ['file_id','cntxt_sz','model_id', 'chirp_idx']
 
     #------------------------------------
     # Constructor

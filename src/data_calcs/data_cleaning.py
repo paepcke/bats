@@ -406,7 +406,7 @@ class DataCleaner:
             msg = f"The scaler_info must be StandardScaler instance, or the path to a saved joblib file, not {scaler_src}"
             raise TypeError(msg)
         scaler.set_output(transform = "pandas")
-        scaler_cols = list(scaler.get_feature_names_out())
+        scaler_cols = list(scaled_data.columns)
         orig_np = scaler.inverse_transform(pd.DataFrame(
                 scaled_data, columns = scaler_cols), copy = True)
         orig_df = pd.DataFrame(orig_np, columns=scaler_cols)
