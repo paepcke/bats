@@ -78,9 +78,10 @@ class Localization:
     prediction_truth_scaler    = os.path.join(predictions_descaled_dir, 'prediction_truth_scaler.joblib')
     prediction_output_scaler   = os.path.join(predictions_descaled_dir, 'prediction_output_scaler.joblib')
     
-    prediction_truth_scaled  = os.path.join(predictions_descaled_dir, 'prediction_truth_values.feather')
+    prediction_truth_scaled   = os.path.join(predictions_descaled_dir, 'prediction_truth_values.feather')
     prediction_truth_descaled = os.path.join(predictions_descaled_dir, 'prediction_truth_descaled_2024-06-25T12_55_03.feather')
 
+    prediction_performance_dir = os.path.join(predictions_descaled_dir, 'PredictionPerformance') 
     # The scaled measures used to train the transformers:
     prediction_measures_root = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/measures/'
     #prediction_truth      = '/Users/paepcke/quintus/home/vdesai/bats_data/inference_files/measures/split_truth_values.feather'
