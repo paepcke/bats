@@ -33,7 +33,9 @@ class BatsCSVDataset(torch.utils.data.Dataset):
                  test_split = 0.1, 
                  context_points = 57,
                  target_points = 1,
-                 split = "train"
+                 split = "train",
+                 shuffle = False,
+                 random_seed = 42
     ):
         assert root_path is not None
         assert prefix is not None
@@ -102,10 +104,27 @@ class BatsCSVDataset(torch.utils.data.Dataset):
         self.split = split
         self.file_id_to_samples = {}
 
+        self.total_chirps = self.mapping_df["n_samples"].sum()
+        
+        if shuffle:
+            # Create shuffled indices
+            rng = np.random.RandomState(random_seed)
+            all_indices = rng.permutation(self.total_chirps)
+            
+            # Split indices into train/val/test
+            self.train_indices = all_indices[:self.train_chirps]
+            self.val_indices = all_indices[self.train_chirps:self.train_chirps + self.val_chirps]
+            self.test_indices = all_indices[self.train_chirps + self.val_chirps:]
+            
+            self.split_indices = {
+                "train": self.train_indices,
+                "val": self.val_indices,
+                "test": self.test_indices
+            }
     
     def run_sanity_check(self):
         #reading a single df to make sure the time column is in there.
-        df = pd.read_feather(os.path.join(self.root_path, self.mapping_df.iloc[0]["Filename"].split("/")[-1]))
+        #df = pd.read_feather(os.path.join(self.root_path, self.mapping_df.iloc[0]["Filename"].split("/")[-1]))
         #assert self.time_col_name in df.columns
 
         #check that every file in the mapping df actually exists
@@ -156,14 +175,21 @@ class BatsCSVDataset(torch.utils.data.Dataset):
             return file_id_to_samples
         
     def __getitem__(self, idx):
-        if self.split == "val":
-            idx += self.train_chirps
-        elif self.split == "test":
-            idx += self.train_chirps + self.val_chirps
+        if hasattr(self, 'split_indices'):
+            # Use shuffled indices if available
+            actual_idx = self.split_indices[self.split][idx]
+        else:
+            # Original sequential splitting logic
+            if self.split == "val":
+                actual_idx = idx + self.train_chirps
+            elif self.split == "test":
+                actual_idx = idx + self.train_chirps + self.val_chirps
+            else:
+                actual_idx = idx
 
-        split_to_use = self.mapping_df[self.mapping_df["cumulative_count"] <= idx].iloc[-1]
+        split_to_use = self.mapping_df[self.mapping_df["cumulative_count"] <= actual_idx].iloc[-1]
         filename = split_to_use["Filename"]
-        sample_idx = idx - split_to_use["cumulative_count"]
+        sample_idx = actual_idx - split_to_use["cumulative_count"]
         df = pd.read_feather(os.path.join(self.root_path, filename.split("/")[-1]))
         file_id_to_samples = self.get_file_id_to_samples(df, filename)
         file_id_to_use_ = file_id_to_samples[file_id_to_samples["cum_samples"] <= sample_idx].iloc[-1]
@@ -176,7 +202,7 @@ class BatsCSVDataset(torch.utils.data.Dataset):
 
         series_slice = self.make_len(df_slice.iloc[:-chirps_to_use] if chirps_to_use > 0 else df_slice, self.seq_length)
 
-        return series
+        # return series_slice
         ctxt_slice, trgt_slice = (
             series_slice.iloc[: self.context_points],
             series_slice.iloc[self.context_points :]
@@ -214,20 +240,29 @@ class BatsCSVDatasetWithMetadata(BatsCSVDataset):
                  test_split = 0.1, 
                  context_points = 57,
                  target_points = 1,
-                 split = "train"
+                 split = "train",
+                 shuffle = False,
+                 random_seed = 42
     ):
-        super().__init__(root_path, prefix, ignore_cols, target_cols, time_col_name, val_split, test_split, context_points, target_points, split)
+        super().__init__(root_path, prefix, ignore_cols, target_cols, time_col_name, val_split, test_split, context_points, target_points, split, shuffle, random_seed)
         self.metadata_cols = metadata_cols
     
     def __getitem__(self, idx):
-        if self.split == "val":
-            idx += self.train_chirps
-        elif self.split == "test":
-            idx += self.train_chirps + self.val_chirps
+        if hasattr(self, 'split_indices'):
+            # Use shuffled indices if available
+            actual_idx = self.split_indices[self.split][idx]
+        else:
+            # Original sequential splitting logic
+            if self.split == "val":
+                actual_idx = idx + self.train_chirps
+            elif self.split == "test":
+                actual_idx = idx + self.train_chirps + self.val_chirps
+            else:
+                actual_idx = idx
 
-        split_to_use = self.mapping_df[self.mapping_df["cumulative_count"] <= idx].iloc[-1]
+        split_to_use = self.mapping_df[self.mapping_df["cumulative_count"] <= actual_idx].iloc[-1]
         filename = split_to_use["Filename"]
-        sample_idx = idx - split_to_use["cumulative_count"]
+        sample_idx = actual_idx - split_to_use["cumulative_count"]
         df = pd.read_feather(os.path.join(self.root_path, filename.split("/")[-1]))
         file_id_to_samples = self.get_file_id_to_samples(df, filename)
         file_id_to_use_ = file_id_to_samples[file_id_to_samples["cum_samples"] <= sample_idx].iloc[-1]

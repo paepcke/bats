@@ -11,11 +11,11 @@ from data import preprocess
 import time
 import tqdm
 from itertools import chain
-from data.bats_dataset_better import BatsCSVDataset
+from data.bats_dataset import BatsCSVDataset
 from pytorch_lightning.callbacks import LearningRateMonitor
 
 from utils import *
-from telegram_utils import *
+# from telegram_utils import *
 
 parser = ArgumentParser()
 stf.spacetimeformer_model.Spacetimeformer_Forecaster.add_cli(parser)
@@ -36,14 +36,15 @@ parser.add_argument("--no_earlystopping", action="store_true")
 parser.add_argument("--patience", type=int, default=5)
 parser.add_argument("--trials", type=int, default=1, help="How many consecutive trials to run")
 parser.add_argument("--random_seed", type=int, default=42)
+parser.add_argument("--shuffle", action="store_true")
 parser.add_argument("--max_epochs", type=int, default=20)
 parser.add_argument("--log_file", type=str, default="/home/vdesai/bats_data/logs/log.txt")
 parser.add_argument("--predictions_path", type=str, default="/home/vdesai/bats_data/predictions.csv")
 parser.add_argument("--originals_path", type=str, default="/home/vdesai/bats_data/originals.csv")
 parser.add_argument("--mse_log_path", type=str, default="/home/vdesai/bats_data/mse_log.csv")
 parser.add_argument("--pca_components", type=int, default=0)
-parser.add_argument("--construct_full_output", action ="store_true");
-parser.add_argument("--checkpoint_val_loss", action = 'store_true');
+parser.add_argument("--construct_full_output", action ="store_true")
+parser.add_argument("--checkpoint_val_loss", action = 'store_true')
 parser.add_argument("--telegram_updates", action="store_true")
 parser.add_argument("--model_path", required=False)
 
@@ -53,6 +54,7 @@ parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 
 
 config = parser.parse_args()
+config.batch_size = 4
 print(f"Batch size: {config.batch_size}")
 args = config
 ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir", "file_id", "chirp_idx", "split"] + config.ignore_cols
@@ -72,6 +74,8 @@ data_module = stf.data.DataModule(
         "test_split": 0.05,
         "context_points": None,
         "target_points": 1,
+        "shuffle": args.shuffle,
+        "random_seed": args.random_seed
     },
     #get output of subprocess in a variable
     batch_size = config.batch_size,
@@ -172,7 +176,7 @@ model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
         )
 print("Done.[Time taken: {}]".format(time.time() - t))
 
-model.set_null_value(config.null_value);
+model.set_null_value(config.null_value)
 print("Initializing trainer.. ", flush = True)
 t = time.time()
 
@@ -200,11 +204,12 @@ trainer = pl.Trainer(
         sync_batchnorm=True,
         limit_val_batches=args.limit_val_batches,
         max_epochs=max_epochs,
-        callbacks = callbacks
+        callbacks = callbacks,
 )
 
 print("Done. [Time taken: {}]".format(time.time() - t))
 
+print("Starting training...", flush = True)
 start = time.time()
 trainer.fit(model, datamodule=data_module)
 end = time.time()

@@ -1,6 +1,8 @@
 from utils import run_train_py
 import argparse
 
+# sample usage: python scripts/train_bats_transformer.py --random_seeds {31..31} --data_path ./data/filter_test/splits --model_path models --shuffle_data
+
 ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "FBak20dB", "LowFreq", "Bndw20dB", 
                "CallsPerSec", "EndSlope", "SteepestSlope", "StartSlope", "Bndw15dB", "HiFtoUpprKnSlp", "HiFtoKnSlope", 
                "DominantSlope", "Bndw5dB", "PreFc500", "PreFc1000", "PreFc3000", "KneeToFcSlope", "TotalSlope", 
@@ -19,6 +21,7 @@ parser.add_argument('--gpu', type=int, help='GPU to use for training')
 parser.add_argument('--data_path', type=str, 
                     default='/home/vdesai/data/training_data/daytime/splits', 
                     help='Path to the data')
+parser.add_argument('--shuffle_data', action='store_true', help='Whether to shuffle the data during training')
 parser.add_argument('--model_path', required = False)
 parser.add_argument('--ignore_cols', nargs='+', type=str, default = ignore_cols)
 
@@ -26,7 +29,7 @@ args = parser.parse_args()
 
 model_path = args.model_path if args.model_path is not None else f"bats_tranformer_seed_nodup_data"
     
-d_model = 100;
+d_model = 100
 
 
 
@@ -34,6 +37,7 @@ for random_seed in args.random_seeds:
     print("Running for random seed ", random_seed)
     run_train_py(run_name = f"{model_path.split('/')[-1]}_{random_seed}", 
                 random_seed = random_seed, Dmodel = d_model, 
+                shuffle_data = args.shuffle_data,
                 ignore_cols = ignore_cols, 
                 additional_flags = ["--telegram_updates"], 
                 gpus = args.gpu, data_path = args.data_path, 

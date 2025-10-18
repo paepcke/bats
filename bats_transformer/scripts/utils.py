@@ -6,6 +6,7 @@ def run_train_py(run_name,
                  layers = 2, heads = 1,
                  ignore_cols = [],
                  data_path = None,
+                 shuffle_data = False,
                  gpus = None,
                  predictions_path = None,
                  originals_path = None,
@@ -70,11 +71,15 @@ def run_train_py(run_name,
     if(model_path):
         command.append("--model_path")
         command.append(model_path)
+
+    if(shuffle_data):
+        command.append("--shuffle")
     #get output of subprocess on console
     subprocess.run(command)
 
 def run_test_py(model_path, 
                 data_path = None,
+                shuffle_data = False,
                 ignore_cols = [],
                 log_file = "./log.txt",
                 gpus = None, 
@@ -88,9 +93,12 @@ def run_test_py(model_path,
     if not log_file:
         log_file = f"/home/vdesai/bats_data/transformer/logs/{model_path}.log"
 
+    random_seed = model_path.split("_")[-1]
+
     command = [
         "python3", "test.py",
         "--input_data_path", data_path,
+        "--random_seed", str(random_seed),
         "--gpus", str(gpus),
         "--log_file", log_file,
         "--model_path", model_path
@@ -100,6 +108,9 @@ def run_test_py(model_path,
         command.append("--ignore_cols")
         command += ignore_cols
     
+    if(shuffle_data):
+        command.append("--shuffle")
+
     if(additional_flags):
         command += additional_flags
     #get output of subprocess on console

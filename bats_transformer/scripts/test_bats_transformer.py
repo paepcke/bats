@@ -2,6 +2,8 @@ from utils import run_test_py
 import os
 import argparse
 
+# sample usage: python scripts/test_bats_transformer.py --model_paths models/daytime_files_new_10_11/models_{31..31} --out_dir outputs/test/ --input_data_path data/daytime_files_new/splits --gpus 0 --shuffle_data
+
 ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "FBak20dB", "LowFreq", "Bndw20dB", 
                "CallsPerSec", "EndSlope", "SteepestSlope", "StartSlope", "Bndw15dB", "HiFtoUpprKnSlp", "HiFtoKnSlope", 
                "DominantSlope", "Bndw5dB", "PreFc500", "PreFc1000", "PreFc3000", "KneeToFcSlope", "TotalSlope", 
@@ -19,9 +21,13 @@ parser.add_argument("--model_paths", nargs='+', type=str, default = [])
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = ignore_cols)
 parser.add_argument("--out_dir", type=str, default = "/home/vdesai/data/model_outputs/daytime")
 parser.add_argument("--input_data_path", type=str, default='/home/vdesai/data/training_data/daytime/splits')
+parser.add_argument("--shuffle_data", action='store_true', help='Whether to shuffle the data during testing (should match training)')
 parser.add_argument("--gpus", type=str, default = '0')
 
 args = parser.parse_args()
+
+if not os.path.exists(args.out_dir):
+    os.mkdir(args.out_dir)
 
 for model_path in args.model_paths:
     run_test_py(model_path = model_path,

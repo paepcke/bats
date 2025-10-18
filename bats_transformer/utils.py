@@ -53,6 +53,7 @@ def spacetimeformer_predict_calculate_loss(
         x_t = x_t.to(model.device).float()
         # move y_c to cpu if it isn't already there, scale, and then move back to the model device
         y_c = y_c.to(model.device).float()
+        y_t = y_t.to(model.device).float()
         # create dummy y_t of zeros
         yhat_t = (
             torch.zeros((x_t.shape[0], x_t.shape[1], model.d_yt)).to(model.device).float()

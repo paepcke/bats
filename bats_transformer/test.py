@@ -16,7 +16,7 @@ from pytorch_lightning.callbacks import LearningRateMonitor
 
 from itertools import chain
 from utils import *
-from telegram_utils import *
+# from telegram_utils import *
 
 parser = ArgumentParser()
 stf.spacetimeformer_model.Spacetimeformer_Forecaster.add_cli(parser)
@@ -28,6 +28,8 @@ parser.add_argument("--model_path", type=str, default = None)
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 parser.add_argument("--log_file", type=str, required=True)
 parser.add_argument("--telegram_updates", action="store_true")
+parser.add_argument("--shuffle", action="store_true", help='Whether to shuffle the data during testing (should match training)')
+parser.add_argument("--random_seed", type=int, default=42)
 
 config = parser.parse_args()
 print(f"Batch size: {config.batch_size}")
@@ -47,6 +49,8 @@ data_module = stf.data.DataModule(
         "test_split": 0.05,
         "context_points": None,
         "target_points": 1,
+        "shuffle": args.shuffle,
+        "random_seed": args.random_seed
     },
     batch_size = config.batch_size,
     workers = config.workers,
@@ -65,7 +69,7 @@ config.null_value = None
 config.pad_value = None
 
 model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(max_seq_len = 54).load_from_checkpoint(checkpoint_path=args.model_path)
-model.set_null_value(config.null_value);
+model.set_null_value(config.null_value)
 
 #how to move model to gpu?
 if(len(args.gpus)):
@@ -76,27 +80,54 @@ time_cols = [dummy_dataset.time_col_name]
 target_cols = dummy_dataset.target_cols
 metadata_cols = dummy_dataset.metadata_cols
 
+print("time_cols", time_cols)
+print("target_cols", target_cols)
+print("metadata_cols", metadata_cols)
 
+ground_truths_list = []
 predictions_list = []
-for batch in tqdm.tqdm(chain(
-                data_module.train_dataloader(),
-                data_module.val_dataloader(), 
-                data_module.test_dataloader()
-            )):
+losses_list = []
+# for batch in tqdm.tqdm(chain(
+#                 data_module.train_dataloader(),
+#                 data_module.val_dataloader(), 
+#                 data_module.test_dataloader()
+#             )):
+for batch in tqdm.tqdm(data_module.test_dataloader()):
     
     x_c_batch, y_c_batch, x_t_batch, y_t_batch, metadata = batch
     y_hat_t = spacetimeformer_predict(model, x_c_batch, y_c_batch, x_t_batch)
+    loss = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
 
+    ground_truths_list += [np.squeeze(np.concatenate((x_t_batch.numpy(), y_t_batch.numpy(), metadata.numpy()), axis=2))]
     predictions_list += [np.squeeze(np.concatenate((x_t_batch.numpy(), y_hat_t.numpy(), metadata.numpy()), axis=2))]
+    losses_list += [np.squeeze(np.concatenate((x_t_batch.numpy(), loss.numpy(), metadata.numpy()), axis=2))]
 
+ground_truths = pd.concat(
+    [pd.DataFrame(d, columns = time_cols + target_cols + metadata_cols) for d in ground_truths_list], 
+    ignore_index = True
+)
 
 predictions = pd.concat(
     [pd.DataFrame(d, columns = time_cols + target_cols + metadata_cols) for d in predictions_list], 
     ignore_index = True
 )
 
-predictions["model_id"] = args.model_path    
-predictions.to_csv(args.log_file)
+losses = pd.concat(
+    [pd.DataFrame(d, columns = time_cols + target_cols + metadata_cols) for d in losses_list], 
+    ignore_index = True
+)
+
+ground_truths["model_id"] = args.model_path
+predictions["model_id"] = args.model_path
+losses["model_id"] = args.model_path
+
+ground_truth_path = args.log_file.replace(".log", "_ground_truths.log")
+predictions_path = args.log_file.replace(".log", "_predictions.log")
+losses_path = args.log_file.replace(".log", "_losses.log")
+
+ground_truths.to_csv(ground_truth_path)
+predictions.to_csv(predictions_path)
+losses.to_csv(losses_path)
 
 #ping on telegram after inference is done
 if(args.telegram_updates):
