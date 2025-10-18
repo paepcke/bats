@@ -28,6 +28,7 @@ def add_cli(parser):
                         help='use feather format')
     parser.add_argument('-m', '--minimum_length', type = int, default = 5)
     parser.add_argument('-d', '--daytime', action='store_true')
+    parser.add_argument('--species', type=str)
     return parser
 
 '''
@@ -51,6 +52,10 @@ def get_df(files, filter = (lambda x: True)):
     df = df[df["Filename"].apply(filter)]
     return df
 
+def filter_by_species(df, species):
+    if species is not None:
+        df = df[df["Filename"].apply(lambda x: (("-" + species + "-") in x) or (x.endswith("-" + species + ".wav")))]
+    return df
 
 args = add_cli(argparse.ArgumentParser()).parse_args()
 minimum_length = args.minimum_length
@@ -68,6 +73,11 @@ if(args.daytime):
     filter_ = (lambda S: (lambda s: S.is_daytime_recording(s)))(DaytimeFileSelector())
 
 df = get_df(get_files(args.input_data_path), filter = filter_).sort_values(["Filename", "TimeInFile"])
+
+if args.species is not None:
+    print(f"Filtering by species {args.species}... ", end="", flush=True)
+    df = filter_by_species(df, args.species)
+
 print("Done.")
 
 
