@@ -10,7 +10,7 @@ readme = {file = "README.md", content-type = "text/markdown"}
 authors = [
     {name = "Andreas Paepcke", email = "paepcke@cs.stanford.edu"}
 ]
-requires-python = ">=3.12"
+requires-python = "=3.12"
 dependencies = [
     "astral>=3.2",
     "click>=8.1.7",
@@ -35,7 +35,7 @@ dependencies = [
     "torchaudio>=2.2.2",
     "tqdm==4.66.2",
     "typing_extensions>=4.12.2",
-    "pantab>=5.2.2",
+    #"pantab>=5.2.2",
 ]
 
 [project.optional-dependencies]
