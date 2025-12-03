@@ -49,7 +49,7 @@ class BatsCSVDataset(torch.utils.data.Dataset):
         self.max_length = self.config_df[self.config_df.parameter == "max_length"]["value"].values[0]
         self.min_length = self.config_df[self.config_df.parameter == "min_length"]["value"].values[0]
 
-        assert context_points is None or target_points is None
+        # assert context_points is None or target_points is None
 
         if context_points is None and target_points is None:
             context_points = self.max_length - 1
@@ -58,7 +58,7 @@ class BatsCSVDataset(torch.utils.data.Dataset):
         elif context_points is None:
             context_points = self.max_length - target_points
 
-        else:
+        elif target_points is None:
             target_points = self.max_length - context_points
                     
         self.seq_length = context_points + target_points
@@ -158,11 +158,13 @@ class BatsCSVDataset(torch.utils.data.Dataset):
     
     def make_len(self, df, seq_len):
         #pad with rows containing zeros to make df of length seq_len
-        if len(df) < seq_len:
-            df = pd.concat([pd.DataFrame(np.zeros((seq_len - len(df), len(df.columns))), columns = df.columns), df], axis = 0)
-
-        df[self.time_col_name] = StandardScaler().fit_transform(np.arange(seq_len).reshape(-1,1))
-        return df
+        with pd.option_context('mode.chained_assignment', None):
+            df.loc[:,self.time_col_name] = np.arange(1, len(df) + 1)
+            if len(df) < seq_len:
+                df = pd.concat([pd.DataFrame(np.zeros((seq_len - len(df), len(df.columns))), columns = df.columns), df], axis = 0)
+                
+            # df[self.time_col_name] = StandardScaler().fit_transform(df[self.time_col_name].to_numpy().reshape(-1,1))
+            return df
     
     def get_file_id_to_samples(self, df, filename):
         if filename in self.file_id_to_samples:
@@ -204,8 +206,8 @@ class BatsCSVDataset(torch.utils.data.Dataset):
 
         # return series_slice
         ctxt_slice, trgt_slice = (
-            series_slice.iloc[: self.context_points],
-            series_slice.iloc[self.context_points :]
+            series_slice.iloc[-(self.seq_length): -(self.target_points)],
+            series_slice.iloc[-(self.target_points) :]
         )
 
         ctxt_x = ctxt_slice[self.time_col_name]
@@ -276,8 +278,8 @@ class BatsCSVDatasetWithMetadata(BatsCSVDataset):
         series_slice = self.make_len(df_slice.iloc[:-chirps_to_use] if chirps_to_use > 0 else df_slice, self.seq_length)
 
         ctxt_slice, trgt_slice = (
-            series_slice.iloc[: self.context_points],
-            series_slice.iloc[self.context_points :]
+            series_slice.iloc[-(self.seq_length): -(self.target_points)],
+            series_slice.iloc[-(self.target_points) :]
         )
 
         ctxt_x = ctxt_slice[self.time_col_name]

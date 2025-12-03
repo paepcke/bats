@@ -1,3 +1,6 @@
+import sys
+sys.path.append('../src')
+
 import argparse
 import pandas as pd
 import numpy as np
@@ -5,11 +8,15 @@ import glob
 import joblib
 from joblib import Parallel, delayed
 from tqdm import tqdm
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler, QuantileTransformer
 from data_calcs.daytime_file_selection import DaytimeFileSelector
 from data_calcs.utils import Utils # for filename-friendly timestamp
 import os
 import gc
+
+# Sample use:
+# python data/prepare_data.py -i ../audio/audio_07_22/original -o data/july_daytime_2022/splits/split -s 10 -f -m 5 -d
+# python data/prepare_data.py -i ../audio/audio_07_22/chopped -o data/july_daytime_chunked_quantile/splits/split -s 10 -f -m 5 --scaler quantile
 
 '''
 Add the command line interface arguments to specify the input data path, 
@@ -29,6 +36,7 @@ def add_cli(parser):
     parser.add_argument('-m', '--minimum_length', type = int, default = 5)
     parser.add_argument('-d', '--daytime', action='store_true')
     parser.add_argument('--species', type=str)
+    parser.add_argument('--scaler', type=str, default='standard')
     return parser
 
 '''
@@ -36,7 +44,7 @@ Get all the files from a particular root directory
 '''
 def get_files(path):
     files = []
-    for file in glob.glob(path + '/**/*Parameters_*.txt', recursive=True):
+    for file in tqdm(glob.glob(path + '/**/*_Parameters_*.txt', recursive=True)):
         files.append(file)
     return files
 
@@ -45,7 +53,7 @@ Get the dataframe from the files. Merge all of them into a single dataframe.
 '''
 def get_df(files, filter = (lambda x: True)):
     df = pd.DataFrame()
-    for file in files:
+    for file in tqdm(files):
         df = pd.concat([df, (pd.read_csv(file, sep='\t'))], ignore_index = True)
 
     #filter column "filename" of df using filter
@@ -77,6 +85,8 @@ df = get_df(get_files(args.input_data_path), filter = filter_).sort_values(["Fil
 if args.species is not None:
     print(f"Filtering by species {args.species}... ", end="", flush=True)
     df = filter_by_species(df, args.species)
+
+df.drop_duplicates(inplace = True)
 
 print("Done.")
 
@@ -139,26 +149,36 @@ else:
 
     final_cols = list(df.columns)
     to_drop   = ['Filename', 'NextDirUp', 'Path', 'Version', 'Filter', 
-                 'Preemphasis', 'MaxSegLnght', 'ParentDir']
+                 'Preemphasis', 'MaxSegLngth', 'ParentDir']
     for col_to_drop in to_drop:
-        final_cols.remove(col_to_drop)
+        if col_to_drop in final_cols:
+            final_cols.remove(col_to_drop)
     df_new = df[final_cols]
     df = df_new
 
     columns_to_not_scale = ["file_id", "chirp_idx"]
     columns_to_scale = [col for col in df.columns if col not in columns_to_not_scale]
 
-    scaler = StandardScaler()
+    if args.scaler == 'robust':
+        scaler = RobustScaler()
+    elif args.scaler == 'quantile':
+        scaler = QuantileTransformer(output_distribution='normal')        
+    else:
+        scaler = StandardScaler()
     scaler.set_output(transform="pandas")
     
-    chunk_size = 100000
-    print(len(df))
-    for i in tqdm(range(0, len(df), chunk_size)):
-        chunk = df.loc[i:min(len(df), i+chunk_size),:]
-        scaler.partial_fit(chunk[columns_to_scale])
-    
-    for i in tqdm(range(0, len(df), chunk_size)):
-        df.loc[i:min(len(df), i+chunk_size), columns_to_scale] = scaler.transform(df.loc[i:i+chunk_size, columns_to_scale])
+    if args.scaler == 'robust' or args.scaler == 'quantile':
+        scaler.fit(df[columns_to_scale])
+        df.loc[:, columns_to_scale] = scaler.transform(df.loc[:, columns_to_scale])
+    else:
+        chunk_size = 100000
+        print(len(df))
+        for i in tqdm(range(0, len(df), chunk_size)):
+            chunk = df.loc[i:min(len(df), i+chunk_size),:]
+            scaler.partial_fit(chunk[columns_to_scale])
+        
+        for i in tqdm(range(0, len(df), chunk_size)):
+            df.loc[i:min(len(df), i+chunk_size), columns_to_scale] = scaler.transform(df.loc[i:i+chunk_size, columns_to_scale])
     
 
     #storing off the scaler

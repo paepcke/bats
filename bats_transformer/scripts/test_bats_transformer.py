@@ -2,7 +2,9 @@ from utils import run_test_py
 import os
 import argparse
 
-# sample usage: python scripts/test_bats_transformer.py --model_paths models/daytime_files_new_10_11/models_{31..31} --out_dir outputs/test/ --input_data_path data/daytime_files_new/splits --gpus 0 --shuffle_data
+# sample usage: python scripts/test_bats_transformer.py --model_paths models/daytime_files_new_10_11/models_{31..31} --out_dir outputs/test/ --input_data_path data/daytime_files_new/splits --gpus 0
+# python scripts/test_bats_transformer.py --model_paths models/july_daytime_test/model_{31..31} --out_dir outputs/july_daytime_test/ --input_data_path data/july_daytime_chunked_quantile/splits --gpus 0
+# python scripts/test_bats_transformer.py --model_paths models/2022_barn_daytime_2secs_test/model_{31..31} --out_dir outputs/2022_barn_daytime_2_secs_test/ --input_data_path data/2022_barn_daytime_2secs/splits --gpus 0
 
 ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "FBak20dB", "LowFreq", "Bndw20dB", 
                "CallsPerSec", "EndSlope", "SteepestSlope", "StartSlope", "Bndw15dB", "HiFtoUpprKnSlp", "HiFtoKnSlope", 
@@ -18,6 +20,7 @@ ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--model_paths", nargs='+', type=str, default = [])
+parser.add_argument("--quantized", action='store_true', help='Whether the model is quantized')
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = ignore_cols)
 parser.add_argument("--out_dir", type=str, default = "/home/vdesai/data/model_outputs/daytime")
 parser.add_argument("--input_data_path", type=str, default='/home/vdesai/data/training_data/daytime/splits')
@@ -31,7 +34,9 @@ if not os.path.exists(args.out_dir):
 
 for model_path in args.model_paths:
     run_test_py(model_path = model_path,
+                quantized = args.quantized,
                 data_path = args.input_data_path,
+                shuffle_data = args.shuffle_data,
                 log_file = os.path.join(os.path.abspath(args.out_dir), f"{model_path.split('/')[-1]}.log"),
                 ignore_cols = args.ignore_cols,
                 gpus = args.gpus, additional_flags=['--telegram_updates'])
