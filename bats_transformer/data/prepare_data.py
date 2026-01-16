@@ -17,6 +17,7 @@ import gc
 # Sample use:
 # python data/prepare_data.py -i ../audio/audio_07_22/original -o data/july_daytime_2022/splits/split -s 10 -f -m 5 -d
 # python data/prepare_data.py -i ../audio/audio_07_22/chopped -o data/july_daytime_chunked_quantile/splits/split -s 10 -f -m 5 --scaler quantile
+# python data/prepare_data.py -i ../audio/audio_07_22/chopped -o data/july_daytime_filter_epfu/splits/split -s 10 -f -m 5 --scaler quantile --species Epfu
 
 '''
 Add the command line interface arguments to specify the input data path, 
@@ -28,7 +29,7 @@ def add_cli(parser):
                         help='input file')
     
     parser.add_argument('-o', '--output_data_path', type=str, 
-                        default='./data.csv', help='output file')
+                        default='./data', help='output file')
     
     parser.add_argument('-s', '--splits', type = int, default = 1)
     parser.add_argument('-f', '--use_feather', action='store_true', 
@@ -49,6 +50,22 @@ def get_files(path):
     return files
 
 '''
+Get the species attribution dataframe from the cumulative sonobatch files
+'''
+def get_species_attribution_df(path):
+    # get all .txt files with CumulativeSonoBatch in the name but not BatchSummary or NightlySummary
+    cumulative_sonobatch_files = [
+        fn for fn in sorted(os.listdir(path))
+        if os.path.isfile(os.path.join(path, fn)) and fn.endswith(".txt") and "CumulativeSonoBatch" in fn and "BatchSummary" not in fn and "NightlySummary" not in fn]
+    # read in the cumulative sono batch files into a single dataframe
+    cumulative_sonobatch_dfs = []
+    for fn in cumulative_sonobatch_files:
+        df = pd.read_csv(os.path.join(path, fn), sep=None, engine="python")
+        cumulative_sonobatch_dfs.append(df)
+    cumulative_sonobatch_df = pd.concat(cumulative_sonobatch_dfs, ignore_index=True)
+    return cumulative_sonobatch_df
+
+'''
 Get the dataframe from the files. Merge all of them into a single dataframe.
 '''
 def get_df(files, filter = (lambda x: True)):
@@ -60,10 +77,14 @@ def get_df(files, filter = (lambda x: True)):
     df = df[df["Filename"].apply(filter)]
     return df
 
-def filter_by_species(df, species):
+'''
+Using the species dataframe, filter the audio dataframe to only include rows whose filename corresponds to the given species.
+'''
+def filter_by_species(audio_df, species_df, species):
+    correct_species_files = species_df[species_df["SppAccp"] == species]["Filename"].unique()
     if species is not None:
-        df = df[df["Filename"].apply(lambda x: (("-" + species + "-") in x) or (x.endswith("-" + species + ".wav")))]
-    return df
+        audio_df = audio_df[audio_df["Filename"].isin(correct_species_files)]
+    return audio_df
 
 args = add_cli(argparse.ArgumentParser()).parse_args()
 minimum_length = args.minimum_length
@@ -84,7 +105,8 @@ df = get_df(get_files(args.input_data_path), filter = filter_).sort_values(["Fil
 
 if args.species is not None:
     print(f"Filtering by species {args.species}... ", end="", flush=True)
-    df = filter_by_species(df, args.species)
+    species_df = get_species_attribution_df(args.input_data_path)
+    df = filter_by_species(df, species_df, args.species)
 
 df.drop_duplicates(inplace = True)
 
