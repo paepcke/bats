@@ -1,3 +1,6 @@
+import sys
+sys.path.append('../src')
+
 import argparse
 import pandas as pd
 import numpy as np
@@ -5,11 +8,16 @@ import glob
 import joblib
 from joblib import Parallel, delayed
 from tqdm import tqdm
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler, QuantileTransformer
 from data_calcs.daytime_file_selection import DaytimeFileSelector
 from data_calcs.utils import Utils # for filename-friendly timestamp
 import os
 import gc
+
+# Sample use:
+# python data/prepare_data.py -i ../audio/audio_07_22/original -o data/july_daytime_2022/splits/split -s 10 -f -m 5 -d
+# python data/prepare_data.py -i ../audio/audio_07_22/chopped -o data/july_daytime_chunked_quantile/splits/split -s 10 -f -m 5 --scaler quantile
+# python data/prepare_data.py -i ../audio/audio_07_22/chopped -o data/july_daytime_filter_epfu/splits/split -s 10 -f -m 5 --scaler quantile --species Epfu
 
 '''
 Add the command line interface arguments to specify the input data path, 
@@ -21,7 +29,7 @@ def add_cli(parser):
                         help='input file')
     
     parser.add_argument('-o', '--output_data_path', type=str, 
-                        default='./data.csv', help='output file')
+                        default='./data', help='output file')
     
     parser.add_argument('-s', '--splits', type = int, default = 1)
     parser.add_argument('-f', '--use_feather', action='store_true', 
@@ -29,6 +37,7 @@ def add_cli(parser):
     parser.add_argument('-m', '--minimum_length', type = int, default = 5)
     parser.add_argument('-d', '--daytime', action='store_true')
     parser.add_argument('--species', type=str)
+    parser.add_argument('--scaler', type=str, default='standard')
     return parser
 
 '''
@@ -36,26 +45,46 @@ Get all the files from a particular root directory
 '''
 def get_files(path):
     files = []
-    for file in glob.glob(path + '/**/*Parameters_*.txt', recursive=True):
+    for file in tqdm(glob.glob(path + '/**/*_Parameters_*.txt', recursive=True)):
         files.append(file)
     return files
+
+'''
+Get the species attribution dataframe from the cumulative sonobatch files
+'''
+def get_species_attribution_df(path):
+    # get all .txt files with CumulativeSonoBatch in the name but not BatchSummary or NightlySummary
+    cumulative_sonobatch_files = [
+        fn for fn in sorted(os.listdir(path))
+        if os.path.isfile(os.path.join(path, fn)) and fn.endswith(".txt") and "CumulativeSonoBatch" in fn and "BatchSummary" not in fn and "NightlySummary" not in fn]
+    # read in the cumulative sono batch files into a single dataframe
+    cumulative_sonobatch_dfs = []
+    for fn in cumulative_sonobatch_files:
+        df = pd.read_csv(os.path.join(path, fn), sep=None, engine="python")
+        cumulative_sonobatch_dfs.append(df)
+    cumulative_sonobatch_df = pd.concat(cumulative_sonobatch_dfs, ignore_index=True)
+    return cumulative_sonobatch_df
 
 '''
 Get the dataframe from the files. Merge all of them into a single dataframe.
 '''
 def get_df(files, filter = (lambda x: True)):
     df = pd.DataFrame()
-    for file in files:
+    for file in tqdm(files):
         df = pd.concat([df, (pd.read_csv(file, sep='\t'))], ignore_index = True)
 
     #filter column "filename" of df using filter
     df = df[df["Filename"].apply(filter)]
     return df
 
-def filter_by_species(df, species):
+'''
+Using the species dataframe, filter the audio dataframe to only include rows whose filename corresponds to the given species.
+'''
+def filter_by_species(audio_df, species_df, species):
+    correct_species_files = species_df[species_df["SppAccp"] == species]["Filename"].unique()
     if species is not None:
-        df = df[df["Filename"].apply(lambda x: (("-" + species + "-") in x) or (x.endswith("-" + species + ".wav")))]
-    return df
+        audio_df = audio_df[audio_df["Filename"].isin(correct_species_files)]
+    return audio_df
 
 args = add_cli(argparse.ArgumentParser()).parse_args()
 minimum_length = args.minimum_length
@@ -76,7 +105,10 @@ df = get_df(get_files(args.input_data_path), filter = filter_).sort_values(["Fil
 
 if args.species is not None:
     print(f"Filtering by species {args.species}... ", end="", flush=True)
-    df = filter_by_species(df, args.species)
+    species_df = get_species_attribution_df(args.input_data_path)
+    df = filter_by_species(df, species_df, args.species)
+
+df.drop_duplicates(inplace = True)
 
 print("Done.")
 
@@ -139,26 +171,36 @@ else:
 
     final_cols = list(df.columns)
     to_drop   = ['Filename', 'NextDirUp', 'Path', 'Version', 'Filter', 
-                 'Preemphasis', 'MaxSegLnght', 'ParentDir']
+                 'Preemphasis', 'MaxSegLngth', 'ParentDir']
     for col_to_drop in to_drop:
-        final_cols.remove(col_to_drop)
+        if col_to_drop in final_cols:
+            final_cols.remove(col_to_drop)
     df_new = df[final_cols]
     df = df_new
 
     columns_to_not_scale = ["file_id", "chirp_idx"]
     columns_to_scale = [col for col in df.columns if col not in columns_to_not_scale]
 
-    scaler = StandardScaler()
+    if args.scaler == 'robust':
+        scaler = RobustScaler()
+    elif args.scaler == 'quantile':
+        scaler = QuantileTransformer(output_distribution='normal')        
+    else:
+        scaler = StandardScaler()
     scaler.set_output(transform="pandas")
     
-    chunk_size = 100000
-    print(len(df))
-    for i in tqdm(range(0, len(df), chunk_size)):
-        chunk = df.loc[i:min(len(df), i+chunk_size),:]
-        scaler.partial_fit(chunk[columns_to_scale])
-    
-    for i in tqdm(range(0, len(df), chunk_size)):
-        df.loc[i:min(len(df), i+chunk_size), columns_to_scale] = scaler.transform(df.loc[i:i+chunk_size, columns_to_scale])
+    if args.scaler == 'robust' or args.scaler == 'quantile':
+        scaler.fit(df[columns_to_scale])
+        df.loc[:, columns_to_scale] = scaler.transform(df.loc[:, columns_to_scale])
+    else:
+        chunk_size = 100000
+        print(len(df))
+        for i in tqdm(range(0, len(df), chunk_size)):
+            chunk = df.loc[i:min(len(df), i+chunk_size),:]
+            scaler.partial_fit(chunk[columns_to_scale])
+        
+        for i in tqdm(range(0, len(df), chunk_size)):
+            df.loc[i:min(len(df), i+chunk_size), columns_to_scale] = scaler.transform(df.loc[i:i+chunk_size, columns_to_scale])
     
 
     #storing off the scaler

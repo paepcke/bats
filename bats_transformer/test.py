@@ -25,6 +25,7 @@ stf.data.DataModule.add_cli(parser)
 preprocess.add_cli(parser)
 
 parser.add_argument("--model_path", type=str, default = None)
+parser.add_argument("--quantized", action='store_true', help='Whether the model is quantized')
 parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 parser.add_argument("--log_file", type=str, required=True)
 parser.add_argument("--telegram_updates", action="store_true")
@@ -36,7 +37,6 @@ print(f"Batch size: {config.batch_size}")
 args = config
 ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir", "file_id", "chirp_idx", "split"] + config.ignore_cols
 
-
 data_module = stf.data.DataModule(
     datasetCls = BatsCSVDatasetWithMetadata,
     dataset_kwargs = {
@@ -47,7 +47,7 @@ data_module = stf.data.DataModule(
         "time_col_name": "TimeIndex",
         "val_split": 0.05,
         "test_split": 0.05,
-        "context_points": None,
+        "context_points": 5,
         "target_points": 1,
         "shuffle": args.shuffle,
         "random_seed": args.random_seed
@@ -68,13 +68,18 @@ print(f"{x_dim = }, {yc_dim = }, {yt_dim = }")
 config.null_value = None
 config.pad_value = None
 
-model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(max_seq_len = 54).load_from_checkpoint(checkpoint_path=args.model_path)
+if args.quantized:
+    model = stf.spacetimeformer_model.Spacetimeformer_Quantized_Forecaster(max_seq_len = 54).load_from_checkpoint(checkpoint_path=args.model_path)
+else:
+    model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(max_seq_len = 54).load_from_checkpoint(checkpoint_path=args.model_path)
 model.set_null_value(config.null_value)
+num_quantiles = model.spacetimeformer.num_quantiles
 
 #how to move model to gpu?
 if(len(args.gpus)):
     model = model.to(torch.device(f"cuda:{args.gpus[0]}"))
 
+model.eval()
 dummy_dataset = data_module.train_dataloader().dataset
 time_cols = [dummy_dataset.time_col_name]
 target_cols = dummy_dataset.target_cols
@@ -87,6 +92,8 @@ print("metadata_cols", metadata_cols)
 ground_truths_list = []
 predictions_list = []
 losses_list = []
+if args.quantized:
+    predicted_probs_df = pd.DataFrame(columns=time_cols + target_cols + metadata_cols)
 # for batch in tqdm.tqdm(chain(
 #                 data_module.train_dataloader(),
 #                 data_module.val_dataloader(), 
@@ -96,11 +103,32 @@ for batch in tqdm.tqdm(data_module.test_dataloader()):
     
     x_c_batch, y_c_batch, x_t_batch, y_t_batch, metadata = batch
     y_hat_t = spacetimeformer_predict(model, x_c_batch, y_c_batch, x_t_batch)
+    if num_quantiles != None:
+        y_hat_t = y_hat_t[:, :, :, num_quantiles // 2].view(y_hat_t.shape[0], y_hat_t.shape[1], -1)  # select median quantile
     loss = spacetimeformer_predict_calculate_loss(model, x_c_batch, y_c_batch, x_t_batch, y_t_batch)
+    if args.quantized:
+        probs = spacetimeformer_predict_quantized_prob(model, x_c_batch, y_c_batch, x_t_batch)
+        probs = probs.reshape(probs.shape[0], probs.shape[1], -1)
 
     ground_truths_list += [np.squeeze(np.concatenate((x_t_batch.numpy(), y_t_batch.numpy(), metadata.numpy()), axis=2))]
     predictions_list += [np.squeeze(np.concatenate((x_t_batch.numpy(), y_hat_t.numpy(), metadata.numpy()), axis=2))]
     losses_list += [np.squeeze(np.concatenate((x_t_batch.numpy(), loss.numpy(), metadata.numpy()), axis=2))]
+    # print(x_t_batch)
+    # print(probs.reshape(probs.shape[0], probs.shape[1], -1))
+    # print(x_t_batch.shape, probs.shape, metadata.shape)
+    if args.quantized:
+        predicted_probs_sub_df = pd.DataFrame(columns=time_cols + target_cols + metadata_cols)
+        predicted_probs_sub_df[time_cols] = pd.DataFrame(x_t_batch.numpy().squeeze())
+        for i, col in enumerate(target_cols):
+            # print(",".join(list(map(str,list(probs[0,i,:].numpy().squeeze())))))
+            # predicted_probs_sub_df[col] = pd.DataFrame(list(probs[:,i,:].numpy().squeeze()))
+            for j in range(len(batch[0])):
+                predicted_probs_sub_df.at[j, col] = ",".join(list(map(str,list(probs[j,i,:].numpy().squeeze()))))
+                # predicted_probs_sub_df.at[j, col] = list(probs[j,i,:].numpy().squeeze())
+        for i, col in enumerate(metadata_cols):
+            predicted_probs_sub_df[col] = pd.DataFrame(metadata.numpy().squeeze()[:,i])
+        print(predicted_probs_sub_df)
+        predicted_probs_df = pd.concat([predicted_probs_df, predicted_probs_sub_df], ignore_index=True)
 
 ground_truths = pd.concat(
     [pd.DataFrame(d, columns = time_cols + target_cols + metadata_cols) for d in ground_truths_list], 
@@ -129,6 +157,11 @@ ground_truths.to_csv(ground_truth_path)
 predictions.to_csv(predictions_path)
 losses.to_csv(losses_path)
 
+if args.quantized:
+    predicted_probs_df["model_id"] = args.model_path
+    predicted_probs_path = args.log_file.replace(".log", "_predicted_probs.log")
+    predicted_probs_df.to_csv(predicted_probs_path)
+
 #ping on telegram after inference is done
-if(args.telegram_updates):
-    send_telegram_message("inference for {} is done".format(args.model_path))
+# if(args.telegram_updates):
+#     send_telegram_message("inference for {} is done".format(args.model_path))

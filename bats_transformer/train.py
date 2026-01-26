@@ -6,7 +6,7 @@ import pytorch_lightning as pl
 import spacetimeformer as stf
 import pandas as pd
 
-from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.loggers import WandbLogger, CSVLogger
 from data import preprocess
 import time
 import tqdm
@@ -29,6 +29,7 @@ parser.add_argument("--plot_samples", type=int, default=8)
 parser.add_argument("--attn_plot", action="store_true")
 parser.add_argument("--debug", action="store_true")
 parser.add_argument("--run_name", type=str, required=True)
+parser.add_argument("--quantize", action="store_true")
 parser.add_argument("--accumulate", type=int, default=1)
 parser.add_argument("--val_check_interval", type=float, default=1.0)
 parser.add_argument("--limit_val_batches", type=float, default=1.0)
@@ -54,14 +55,15 @@ parser.add_argument("--ignore_cols", nargs='+', type=str, default = [])
 
 
 config = parser.parse_args()
-config.batch_size = 4
+# config.batch_size = 4
 print(f"Batch size: {config.batch_size}")
 args = config
 ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir", "file_id", "chirp_idx", "split"] + config.ignore_cols
 
-
-wandb_logger = WandbLogger(name=f"{args.run_name}", save_dir="/home/vdesai/bats_data/logs/") if args.wandb else None
-
+log_filepath = args.model_path.split("/model")[0] + "/logs/"
+# print(log_filepath)
+logger = WandbLogger(name=f"{args.run_name}", save_dir="/home/vdesai/bats_data/logs/") if args.wandb else CSVLogger(save_dir=log_filepath, name=args.run_name)
+# print(logger)
 
 data_module = stf.data.DataModule(
     datasetCls = BatsCSVDataset,
@@ -72,10 +74,11 @@ data_module = stf.data.DataModule(
         "time_col_name": "TimeIndex",
         "val_split": 0.05,
         "test_split": 0.05,
-        "context_points": None,
+        "context_points": 5,
         "target_points": 1,
         "shuffle": args.shuffle,
-        "random_seed": args.random_seed
+        "random_seed": args.random_seed,
+        # "target_cols": ["HiFreq"]
     },
     #get output of subprocess in a variable
     batch_size = config.batch_size,
@@ -105,17 +108,85 @@ assert len(val_loader.dataset) > 0, "Validation dataset is empty"
 assert len(test_loader.dataset) > 0, "Test dataset is empty"
 
 print("Length of splits", len(train_loader.dataset), len(val_loader.dataset), len(test_loader.dataset))
-config.null_value = None
-config.pad_value = None
+config.null_value = 0
+config.pad_value = 0
 seed = args.random_seed
 max_epochs = args.max_epochs
+
+config.loss = "quantile"
+config.quantiles = [0.05, 0.5, 0.95]
+# config.class_loss_imp = 0
 
 pl.seed_everything(seed)
 # initialize the spacetimeformer model
 print("Initializing model... ", flush = True)
 t = time.time()
 
-model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
+if not args.quantize:
+    model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
+            d_x=x_dim,
+            d_yc=yc_dim,
+            d_yt=yt_dim,
+            max_seq_len=max_seq_len,
+            start_token_len=config.start_token_len,
+            attn_factor=config.attn_factor,
+            d_model=config.d_model,
+            d_queries_keys=config.d_qk,
+            d_values=config.d_v,
+            n_heads=config.n_heads,
+            e_layers=config.enc_layers,
+            d_layers=config.dec_layers,
+            d_ff=config.d_ff,
+            dropout_emb=config.dropout_emb,
+            dropout_attn_out=config.dropout_attn_out,
+            dropout_attn_matrix=config.dropout_attn_matrix,
+            dropout_qkv=config.dropout_qkv,
+            dropout_ff=config.dropout_ff,
+            pos_emb_type=config.pos_emb_type,
+            use_final_norm=not config.no_final_norm,
+            global_self_attn=config.global_self_attn,
+            local_self_attn=config.local_self_attn,
+            global_cross_attn=config.global_cross_attn,
+            local_cross_attn=config.local_cross_attn,
+            performer_kernel=config.performer_kernel,
+            performer_redraw_interval=config.performer_redraw_interval,
+            attn_time_windows=config.attn_time_windows,
+            use_shifted_time_windows=config.use_shifted_time_windows,
+            norm=config.norm,
+            activation=config.activation,
+            init_lr=config.init_lr,
+            base_lr=config.base_lr,
+            warmup_steps=config.warmup_steps,
+            decay_factor=config.decay_factor,
+            patience = config.patience,
+            initial_downsample_convs=config.initial_downsample_convs,
+            intermediate_downsample_convs=config.intermediate_downsample_convs,
+            embed_method=config.embed_method,
+            l2_coeff=config.l2_coeff,
+            loss=config.loss,
+            num_quantiles=len(config.quantiles) if config.quantiles else None,
+            class_loss_imp=config.class_loss_imp,
+            recon_loss_imp=config.recon_loss_imp,
+            time_emb_dim=config.time_emb_dim,
+            null_value=config.null_value,
+            pad_value=config.pad_value,
+            linear_window=config.linear_window,
+            use_revin=config.use_revin,
+            linear_shared_weights=config.linear_shared_weights,
+            use_seasonal_decomp=config.use_seasonal_decomp,
+            use_val=not config.no_val,
+            use_time=not config.no_time,
+            use_space=not config.no_space,
+            use_given=not config.no_given,
+            recon_mask_skip_all=config.recon_mask_skip_all,
+            recon_mask_max_seq_len=config.recon_mask_max_seq_len,
+            recon_mask_drop_seq=config.recon_mask_drop_seq,
+            recon_mask_drop_standard=config.recon_mask_drop_standard,
+            recon_mask_drop_full=config.recon_mask_drop_full,
+        )
+
+if args.quantize:
+    model = stf.spacetimeformer_model.Spacetimeformer_Quantized_Forecaster(
             d_x=x_dim,
             d_yc=yc_dim,
             d_yt=yt_dim,
@@ -172,8 +243,7 @@ model = stf.spacetimeformer_model.Spacetimeformer_Forecaster(
             recon_mask_max_seq_len=config.recon_mask_max_seq_len,
             recon_mask_drop_seq=config.recon_mask_drop_seq,
             recon_mask_drop_standard=config.recon_mask_drop_standard,
-            recon_mask_drop_full=config.recon_mask_drop_full,
-        )
+            recon_mask_drop_full=config.recon_mask_drop_full,)
 print("Done.[Time taken: {}]".format(time.time() - t))
 
 model.set_null_value(config.null_value)
@@ -195,7 +265,7 @@ if(args.checkpoint_val_loss):
 print("Callbacks: ", callbacks)
 trainer = pl.Trainer(
         gpus=args.gpus,
-        logger=wandb_logger if args.wandb else None,
+        logger=logger,
         accelerator="dp",
         gradient_clip_val=args.grad_clip_norm,
         gradient_clip_algorithm="norm",
@@ -234,5 +304,5 @@ trainer.save_checkpoint(model_path)
 print(model.device)
 
 #ping on telegram after training is done
-if(args.telegram_updates):
-    send_telegram_message("training for {} is done".format(args.run_name))
+# if(args.telegram_updates):
+#     send_telegram_message("training for {} is done".format(args.run_name))

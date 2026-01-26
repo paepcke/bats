@@ -1,7 +1,7 @@
 import sys
 import subprocess
 
-def run_train_py(run_name, 
+def run_train_py(run_name, quantize,
                  random_seed, Dmodel = 20, Dqk = 20, 
                  layers = 2, heads = 1,
                  ignore_cols = [],
@@ -17,7 +17,7 @@ def run_train_py(run_name,
     if data_path is None:
         data_path = "/home/vdesai/bats_data/training_files/splits_feather"
     
-    max_epochs = 10
+    max_epochs = 1
     
     d_model = Dmodel
     d_qk = Dqk
@@ -74,10 +74,14 @@ def run_train_py(run_name,
 
     if(shuffle_data):
         command.append("--shuffle")
+
+    if(quantize):
+        command.append("--quantize")
     #get output of subprocess on console
     subprocess.run(command)
 
 def run_test_py(model_path, 
+                quantized = False,
                 data_path = None,
                 shuffle_data = False,
                 ignore_cols = [],
@@ -110,6 +114,9 @@ def run_test_py(model_path,
     
     if(shuffle_data):
         command.append("--shuffle")
+
+    if(quantized):
+        command.append("--quantized")
 
     if(additional_flags):
         command += additional_flags
