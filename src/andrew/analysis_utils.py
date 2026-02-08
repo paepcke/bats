@@ -222,6 +222,49 @@ def find_ideal_cluster_k(data, min_k, max_k):
     n_clusters["elbow_method"] = elbow_k
     return n_clusters
 
+def cluster_chirps(data, clustering_method, umap, n_clusters):
+    # getting the linkage tree allows us to specify the number of clusters we want afterwards
+    if clustering_method == "HDBSCAN":
+        if umap:
+            hdb = HDBSCAN(min_cluster_size=5, 
+                                min_samples=5, 
+                                metric="euclidean",
+                                max_cluster_size=1000,
+                                cluster_selection_epsilon=7e-7,
+                                )
+            hdb.fit(data)
+            Z = hdb.single_linkage_tree_.to_numpy()
+            chirp_labels = fcluster(Z, n_clusters, criterion='maxclust')
+            # chirp_labels = hdb.fit_predict(chirp_data_embedded)
+        else: 
+            hdb = HDBSCAN(min_cluster_size=5, 
+                                min_samples=5, 
+                                metric="euclidean",
+                                max_cluster_size=1000,
+                                cluster_selection_epsilon=2e-4,
+                                )
+            Z = hdb.fit(data)
+            Z = hdb.single_linkage_tree_.to_numpy()
+            chirp_labels = fcluster(Z, n_clusters, criterion='maxclust')
+            # chirp_labels = hdb.fit_predict(chirp_data)
+    elif clustering_method == "Agglomerative":
+        if umap:
+            agglomerative = cluster.AgglomerativeClustering(n_clusters=n_clusters,
+                                                            # distance_threshold=20,
+                                                            linkage="ward",
+                                                            )
+            chirp_labels = agglomerative.fit_predict(data)
+        else:
+            agglomerative = cluster.AgglomerativeClustering(n_clusters=n_clusters,
+                                                            # distance_threshold=100000,
+                                                            linkage="ward",
+                                                            )
+            chirp_labels = agglomerative.fit_predict(data)
+    else:
+        raise ValueError("clustering_method must be one of: 'HDBSCAN', 'Agglomerative'")
+    
+    return chirp_labels
+
 def detect_uncertainty_peaks(file_id, df, measure, sigma=3):
     """
     Detect peaks in tightness for a given file_id using DataSeriesAnalyzer.
@@ -400,7 +443,7 @@ def calculate_sequence_volume(attributes):
     volume = (np.pi ** (dim / 2)) / special.gamma((dim / 2) + 1) * (radius ** dim)
     return volume
 
-def most_common_subsequences(sequences, length, subseq_type="all"):
+def most_common_subsequences(sequences, length, subseq_type="all", k=None):
     assert subseq_type in ["all", "prefix", "suffix"], "subseq_type must be in [all, prefix, suffix]"
     subseq_count = Counter()
     for seq in sequences:
@@ -415,7 +458,10 @@ def most_common_subsequences(sequences, length, subseq_type="all"):
             if len(seq) >= length:
                 suffix = tuple(seq[-length:])
                 subseq_count[suffix] += 1
-    return subseq_count
+    if k:
+        return subseq_count.most_common(k)
+    else:
+        return subseq_count
 
 # =================================================
 # Old methods of finding peaks in uncertainty:
