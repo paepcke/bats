@@ -28,16 +28,18 @@ ignore_cols = ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasi
                "Kn-FcCurviness", "Amp2ndMean", "Quality", "HiFtoFcExp", "LnExpA_EndAmp", "RelPwr2ndTo1st", "LnExpA_StartAmp", 
                "HiFminusStartF", "Amp3rdMean", "PreFc500Residue", "Kn-FcCurvinessTrndSlp", "PreFc250Residue", "AmpVariance", "AmpMoment", 
                "meanKn-FcCurviness", "MinAccpQuality", "AmpEndLn60ExpC", "AmpStartLn60ExpC", "Preemphasis", "MaxSegLnght" ,"Max#CallsConsidered" ]
-ignore_cols += ["Amp1stQrtl", "Amp2ndQrtl", "Amp3rdQrtl", "Amp4thQrtl", "HiFtoUpprKnAmp", "HiFtoKnAmp", "HiFtoFcAmp", "UpprKnToKnAmp", "KnToFcAmp", "LdgToFcAmp"]
+# ignore_cols += ["Amp1stQrtl", "Amp2ndQrtl", "Amp3rdQrtl", "Amp4thQrtl", "HiFtoUpprKnAmp", "HiFtoKnAmp", "HiFtoFcAmp", "UpprKnToKnAmp", "KnToFcAmp", "LdgToFcAmp"]
 
 num_epochs = 10
 batch_size = 16
-seq_len = 21
+# seq_len = 21
+seq_len = 46
 num_features = 32  # number of features in your dataset
 prediction_length = 1
 target_cols = ["HiFreq", "Bndwdth"]
 
-model_path_prefix = "models/baseline_model/ft_10_no_amp"
+# model_path_prefix = "models/informer/ft_10_no_amp"
+model_path_prefix = "models/informer_2022_barn_daytime_2secs_ft_10"
 if not os.path.exists(model_path_prefix):
     os.mkdir(model_path_prefix)
 if not os.path.exists(f"{model_path_prefix}/plots"):
@@ -46,7 +48,8 @@ if not os.path.exists(f"{model_path_prefix}/plots"):
 data_module = stf.data.DataModule(
     datasetCls = BatsCSVDatasetWithMetadata,
     dataset_kwargs = {
-        "root_path": "./data/july_daytime_chunked_quantile/splits",
+        # "root_path": "./data/july_daytime_chunked_quantile/splits",
+        "root_path": "./data/2022_barn_daytime_2secs/splits",
         "prefix": "split",
         "ignore_cols": ignore_cols,
         "metadata_cols": ["file_id", "chirp_idx"],
@@ -91,66 +94,66 @@ device = torch.device("cpu")
 model = model.to(device)
 
 # 4. Sample DataLoader loop (you must build your own DataLoader)
-# losses = []
-# for epoch in tqdm(range(num_epochs)):
-#     model.train()
-#     step = 0
-#     for batch in tqdm(train_dataloader):
-#         x_t, x_c, y_t, y_c, _ = batch
-#         actual_batch_size = x_c.shape[0]
-#         # print(x_t)
-#         # print(x_c)
-#         # print(y_t)
-#         # print(y_c)
-#         # print([x.shape for x in batch])
-#         # batch[past_values] shape: (batch_size, seq_len, features)
-#         # batch[future_values] shape: (batch_size, pred_len, features)
-#         past_values = x_c.to(device)
-#         future_values = y_c.to(device)
-#         # If using time features or observed masks:
-#         past_time_features = x_t.to(device)
-#         future_time_features = y_t.to(device)
-#         past_observed_mask = torch.ones((actual_batch_size, seq_len, num_features), device=device)
-#         # if past_observed_mask is None:
-#         #     past_observed_mask = torch.ones((batch_size, seq_len, num_features), device=device)
-#         # print(past_values.shape)
-#         # print(future_values.shape)
-#         # print(past_time_features.shape)
-#         # print(future_time_features.shape)
-#         # print(past_observed_mask.shape)
+losses = []
+for epoch in tqdm(range(num_epochs)):
+    model.train()
+    step = 0
+    for batch in tqdm(train_dataloader):
+        x_t, x_c, y_t, y_c, _ = batch
+        actual_batch_size = x_c.shape[0]
+        # print(x_t)
+        # print(x_c)
+        # print(y_t)
+        # print(y_c)
+        # print([x.shape for x in batch])
+        # batch[past_values] shape: (batch_size, seq_len, features)
+        # batch[future_values] shape: (batch_size, pred_len, features)
+        past_values = x_c.to(device)
+        future_values = y_c.to(device)
+        # If using time features or observed masks:
+        past_time_features = x_t.to(device)
+        future_time_features = y_t.to(device)
+        past_observed_mask = torch.ones((actual_batch_size, seq_len, num_features), device=device)
+        # if past_observed_mask is None:
+        #     past_observed_mask = torch.ones((batch_size, seq_len, num_features), device=device)
+        # print(past_values.shape)
+        # print(future_values.shape)
+        # print(past_time_features.shape)
+        # print(future_time_features.shape)
+        # print(past_observed_mask.shape)
 
-#         optimizer.zero_grad()
-#         outputs = model(
-#             past_values=past_values,
-#             future_values=future_values,
-#             past_time_features=past_time_features,
-#             future_time_features=future_time_features,
-#             past_observed_mask=past_observed_mask,
-#             future_observed_mask=torch.ones_like(future_values)
-#             # include other optional args if you have them
-#         )
+        optimizer.zero_grad()
+        outputs = model(
+            past_values=past_values,
+            future_values=future_values,
+            past_time_features=past_time_features,
+            future_time_features=future_time_features,
+            past_observed_mask=past_observed_mask,
+            future_observed_mask=torch.ones_like(future_values)
+            # include other optional args if you have them
+        )
 
-#         # The model may return a dict or tuple; adjust accordingly:
-#         # For example: outputs.last_hidden_state of shape (batch_size, pred_len, c_out)
-#         preds = outputs
-#         loss = preds.loss
-#         # print(preds)
-#         # quit(0)
+        # The model may return a dict or tuple; adjust accordingly:
+        # For example: outputs.last_hidden_state of shape (batch_size, pred_len, c_out)
+        preds = outputs
+        loss = preds.loss
+        # print(preds)
+        # quit(0)
 
-#         # loss = criterion(preds, future_values)
-#         loss.backward()
-#         optimizer.step()
+        # loss = criterion(preds, future_values)
+        loss.backward()
+        optimizer.step()
 
-#         if step % 20 == 0:
-#             print(sum(losses[-20:]) / 20)
-#         step += 1
-#         losses.append(loss.item())
-#         # quit(0)
-#         # print(f"Epoch {epoch+1}/{num_epochs} — Training Loss: {avg_loss:.6f}")
-# plt.plot(losses)
-# plt.savefig(f"{model_path_prefix}/plots/loss.png")
-# model.save_pretrained(model_path_prefix)
-# config.save_pretrained(model_path_prefix)
+        if step % 20 == 0:
+            print(sum(losses[-20:]) / 20)
+        step += 1
+        losses.append(loss.item())
+        # quit(0)
+        # print(f"Epoch {epoch+1}/{num_epochs} — Training Loss: {avg_loss:.6f}")
+plt.plot(losses)
+plt.savefig(f"{model_path_prefix}/plots/loss.png")
+model.save_pretrained(model_path_prefix)
+config.save_pretrained(model_path_prefix)
 
 print("Running inference on test data...")
 model.eval()

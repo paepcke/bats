@@ -147,3 +147,12 @@ src/powerflock/tests/quad_sig_calibrator_experiment/
 .settings/
 doc/ScalingProcedureBatsData/
 src/data_calcs/tests/tmp_tst_data/
+audio/**/*
+*/audio/*
+*/data/**/*
+*/models/**/*
+*/plots/**/*
+**/*.png
+**/*.txt
+**/*.npy
+*/outputs/*.csv
