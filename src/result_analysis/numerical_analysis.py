@@ -4,7 +4,7 @@
 # @Date:   2025-10-29 09:53:54
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/result_analysis/numerical_analysis.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2025-10-29 16:20:29
+# @Last Modified time: 2025-11-20 09:09:50
 #
 # **********************************************************
 
@@ -15,8 +15,11 @@ for measure-by-measure accuracy, overall accuracy, and multi-model
 accuracy are provided.
 '''
 
+import argparse
 import csv
+import os
 from pathlib import Path
+import sys
 from typing import List
 import pyarrow.feather as feather
 import pyarrow as pa
@@ -102,6 +105,32 @@ class PredictionAnalyzer:
 
 # ---------------------- main() ----------------
 def main():
+
+    desc = ("Takes a set of input vectors, a set of output predictions \n"
+            "for row n+1, where n is the nth input."
+    )
+    parser = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]),
+                                     formatter_class=argparse.RawTextHelpFormatter,
+                                     description="Here is what this package does."
+                                     )
+
+    parser.add_argument('-l', '--errLogFile',
+                        help=('fully qualified log file name to which info and error \n'
+                              'messages are directed. Default: stdout.'),
+                        dest='errLogFile',
+                        default=None)
+    parser.add_argument('-d', '--dryRun',
+                        help=('show what script would do if run normally; \n'
+                              'no actual downloads or other changes are performed.'),
+                        action='store_true')
+    parser.add_argument('my_integers',
+                        type=int,
+                        nargs='+',
+                        help='Repeatable: integers. Will show as list in my_integers')
+
+    args = parser.parse_args()
+
+
     cur_dir = Path(__file__).parent
     in_data = cur_dir.joinpath('data/scaled_chirps_2024-06-25T12_55_03.feather')
 
