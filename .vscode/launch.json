@@ -1,0 +1,47 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Test Explorer (unittests)",
+            "type": "debugpy",
+            "request": "launch",
+            "purpose" : [ "debug-test" ],
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${env:HOME}/VSCodeWorkspaces/video_captioning/src/:${env:PYTHONPATH}"
+            },
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode" : false,
+            "logToFile"  : true,
+        },
+        {
+            "name": "Python: Cytoscape Barn prep Debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/chirp_cytoscape.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--infile", "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/test_set_chirp_attributes.csv", 
+                "--clusterstats", "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/chirp_prediction_confidence_measures.csv",
+                "--k", "8",
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Cytoscape Lake prep Debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/chirp_cytoscape.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--infile", "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_lake_2secs_myca_quantile_1_28/test_set_chirp_attributes.csv",
+                "--clusterstats", "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_lake_2secs_myca_quantile_1_28/chirp_prediction_confidence_measures.csv",
+                "--k", "8",
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        }
+    ],
+    "debug.defaultConfiguration": "Python: Test Explorer (unittests)"
+}
