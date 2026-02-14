@@ -186,7 +186,7 @@ def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), show=True, s
         plt.close()
     return ax
 
-def find_ideal_cluster_k(data, min_k, max_k):
+def find_ideal_cluster_k(data, min_k, max_k, plot=False):
     n_clusters = dict()
     
     # calculate gap statistic using optimalK
@@ -198,8 +198,9 @@ def find_ideal_cluster_k(data, min_k, max_k):
     first_positive_diff_idx = optimalK.gap_df[optimalK.gap_df["diff"] > 0].index[0]
     n_clusters["diff_statistic"] = first_positive_diff_idx + 1 # add 1 because index starts at 0
 
-    # plt.plot(optimalK.gap_df.n_clusters, optimalK.gap_df.gap_value)
-    optimalK.plot_results()
+    if plot:
+        # plt.plot(optimalK.gap_df.n_clusters, optimalK.gap_df.gap_value)
+        optimalK.plot_results()
 
     # Use the elbow method to find the number of clusters where the within-cluster sum of squares (WCSS) starts to level off
     # Use agglomerative clustering to compute WCSS for k=1 to 50
@@ -210,11 +211,12 @@ def find_ideal_cluster_k(data, min_k, max_k):
         labels = agglom.labels_
         centroids = np.array([data[labels == j].mean(axis=0) for j in range(i)])
         wcss.append(sum(np.min(cdist(data, centroids, 'euclidean'), axis=1)) / data.shape[0])
-    plt.plot(range(min_k, max_k), wcss)
-    plt.title('Elbow Method for Optimal k')
-    plt.xlabel('Number of clusters (k)')
-    plt.ylabel('WCSS')
-    plt.show()
+    if plot:
+        plt.plot(range(min_k, max_k), wcss)
+        plt.title('Elbow Method for Optimal k')
+        plt.xlabel('Number of clusters (k)')
+        plt.ylabel('WCSS')
+        plt.show()
 
     # identify the elbow point in the WCSS plot using the "knee" method
     knee_locator = KneeLocator(range(min_k, max_k), wcss, curve='convex', direction='decreasing')
@@ -443,6 +445,9 @@ def calculate_sequence_volume(attributes):
     volume = (np.pi ** (dim / 2)) / special.gamma((dim / 2) + 1) * (radius ** dim)
     return volume
 
+# Function: most_common_subsequences
+# --------------------------------------
+# 
 def most_common_subsequences(sequences, length, subseq_type="all", k=None):
     assert subseq_type in ["all", "prefix", "suffix"], "subseq_type must be in [all, prefix, suffix]"
     subseq_count = Counter()
@@ -462,6 +467,39 @@ def most_common_subsequences(sequences, length, subseq_type="all", k=None):
         return subseq_count.most_common(k)
     else:
         return subseq_count
+
+# Function: quantile_normalize
+# ----------------------
+# quantile_normalize uses a QuantileTransformer to normalize a list of columns in a DataFrame to a normal distribution,
+# where values are transformed into their corresponding z-score.
+# @param df: the pandas DataFrame whose columns are being normalized
+# @param columns: the columns to normalize
+# @return: a pandas DataFrame whose columns are scaled, all other columns of df are kept constant
+def quantile_normalize(df, columns):
+    scaled_df = df.copy()
+    scaler = QuantileTransformer(output_distribution='normal')     
+    scaler.set_output(transform="pandas")
+    scaler.fit(df[columns])
+    scaled_df.loc[:, columns] = scaler.transform(df.loc[:, columns])
+    return scaled_df
+
+# Function: describe_cluster
+# ----------------------------
+# describe_cluster gets the average of all chirp attributes within a given cluster, producing the "average chirp" that
+# represents the given cluster.
+# @param df: a pandas DataFrame() containing chirp attributes and cluster ids
+# @param cluster_idx: the cluster id to be averaged over
+# @param normalize: whether to normalize the chirp attributes using a QuantileTransformer to produce z-score-like measures
+# return: a pandas Series() consisting of the average value for each chirp attribute
+def describe_cluster(df, cluster_idx, normalize=False, ignore_columns=None):
+    cols_to_use = [col for col in df.columns if col not in ignore_columns]
+    if normalize:
+        df_to_describe = quantile_normalize(df, cols_to_use)
+    else:
+        df_to_describe = df
+    cluster_data = df_to_describe[df_to_describe["cluster_idx"] == cluster_idx]
+    cluster_avg = cluster_data.loc[:, cols_to_use].mean(axis=0)
+    return cluster_avg
 
 # =================================================
 # Old methods of finding peaks in uncertainty:
