@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-10 18:26:56
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-11 18:26:04
+# @Last Modified time: 2026-02-14 11:52:37
 
 from __future__ import annotations
 
@@ -115,19 +115,33 @@ class ChirpClusterer:
     #-------------------
 
     def mk_node_tbl(self, df: pd.DataFrame) -> pd.DataFrame:
+        '''
+        Creates a .csv file that describes attributes of interest
+        for each of the k nodes. The .csv is then imported to 
+        Gephi, Cytoscape, etc.
+
+        Computed attributes are:
+           - ID: the cluster identifier
+           - Population: the number of chirps in the cluster
+           - IsFirst: the number of times a chirp in each node is 
+                      the first in a sequence
+           - IsLast   the number of times a chirp in each node is 
+                      the first in a sequence
+
+        :param df: complete chirp data
+        :return: a data frame containing one row for each node, 
+                 with attributes of interes in columns
+        '''
         cluster_ids = []
-        cluster_types = []
         cluster_populations = []
         k = len(df['cluster_id'].unique())
         population_counts = df['cluster_id'].value_counts()
         for cluster_id in df['cluster_id'].unique():
             cluster_ids.append(cluster_id)
-            cluster_types.append(f"chirp {k}-cluster")
             cluster_populations.append(int(population_counts[cluster_id]))
         node_table = pd.DataFrame({
             'ID' : cluster_ids,
             'Population': cluster_populations,
-            'Type': cluster_types
         })
         return node_table.sort_values(['ID'])
 
