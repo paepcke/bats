@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-10 18:26:56
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-12 17:30:08
+# @Last Modified time: 2026-02-14 17:22:40
 
 #**** file_id,chirp_idx,tightness,radius_mean,density,average_error_per_point,error_density,euclidean_distance,low_confidence,large_range,peak_detected,distance_to_prev_peak,significant_peak,cluster
 
@@ -150,9 +150,12 @@ class ChirpClusterer:
 
         df_clustered = self.add_cluster_grouping(
             df, clusterstats, 'cluster')
-        
-        link_tbl = self.mk_link_table(df_clustered)
-        node_tbl = self.mk_node_tbl(df_clustered, clusterstats)
+
+        # Add colums: 'is_first', 'is_last', and sequence duration:
+        df_clustered_augmented = self.add_seq_info(df_clustered)
+
+        link_tbl = self.mk_link_table(df_clustered_augmented)
+        node_tbl = self.mk_node_tbl(df_clustered_augmented, clusterstats)
 
         links_outfile = data_info.parent / f"{data_info.stem}_links.csv"
         nodes_outfile = data_info.parent / f"{data_info.stem}_nodes.csv"
@@ -248,13 +251,17 @@ class ChirpClusterer:
         0        16693          4   0.847147  ...                    NaN             False        8
         1        16694         19   0.828258  ...                    NaN             False        0
         2        16694         18   0.815064  ...                    9.0             False        0        
+                                 ...
 
-        The output df looks like this:
+        In addition to the cluster stats entering from the clusterstats,
+        we add:
+           - IsFirst: the number of times a chirp in each node is 
+                      the first in a sequence
+           - IsLast   the number of times a chirp in each node is 
+                      the first in a sequence
 
         :param df: _description_
-        :type df: pd.DataFrame
         :return: _description_
-        :rtype: pd.DataFrame
         '''
         cluster_profile = clusterstats.groupby('cluster').agg(
             tightness_med=('tightness', 'median'),
@@ -266,11 +273,40 @@ class ChirpClusterer:
         var_ratios = self.compute_variance_ratios(df)
         node_tbl = cluster_profile.join(var_ratios)
 
+        # Compute the IsStart and IsEnd columns: 
+        # Get the minimum and maximum chip_idx of each sequence
+
         # Add a 'cluster' col as needed for the node table,
         # which will be saved to .csv without the index:
         node_tbl.insert(0, 'cluster', node_tbl.index)
 
         return node_tbl
+
+    #------------------------------------
+    # add_seq_info
+    #-------------------
+
+    def add_seq_info(self, df: pd.DataFrame) -> pd.DataFrame:
+        '''
+        Add three columns: 'seq_duration', 'is_first', and 'is_last'
+        that indicate for each chirp whether it is the first or last
+        in its sequence, and the length of the sequence in msecs.
+        We use that info later in node files.
+
+        :param df: all chirp data
+        :return: augmented copy of df
+        '''
+        # Create the grouping object once to save processing time
+        grouped = df.groupby(['cluster', 'file_id'])
+
+        # 1. Identify the first and last chirps
+        df['is_first'] = df['chirp_idx'] == grouped['chirp_idx'].transform('min')
+        df['is_last']  = df['chirp_idx'] == grouped['chirp_idx'].transform('max')
+
+        # 2. Get the end time (duration) for the entire sequence
+        df['seq_duration'] = grouped['TimeInFile'].transform('max')
+
+        return df
 
     #------------------------------------
     # compute_variance_ratios
