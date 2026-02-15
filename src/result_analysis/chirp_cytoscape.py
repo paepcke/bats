@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-10 18:26:56
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-14 17:22:40
+# @Last Modified time: 2026-02-15 11:19:37
 
 #**** file_id,chirp_idx,tightness,radius_mean,density,average_error_per_point,error_density,euclidean_distance,low_confidence,large_range,peak_detected,distance_to_prev_peak,significant_peak,cluster
 
@@ -151,11 +151,8 @@ class ChirpClusterer:
         df_clustered = self.add_cluster_grouping(
             df, clusterstats, 'cluster')
 
-        # Add colums: 'is_first', 'is_last', and sequence duration:
-        df_clustered_augmented = self.add_seq_info(df_clustered)
-
-        link_tbl = self.mk_link_table(df_clustered_augmented)
-        node_tbl = self.mk_node_tbl(df_clustered_augmented, clusterstats)
+        link_tbl = self.mk_link_table(df_clustered)
+        node_tbl = self.mk_node_tbl(df_clustered, clusterstats)
 
         links_outfile = data_info.parent / f"{data_info.stem}_links.csv"
         nodes_outfile = data_info.parent / f"{data_info.stem}_nodes.csv"
@@ -271,14 +268,26 @@ class ChirpClusterer:
         # For each column, get the ratio of variance within
         # a cluster over the variance of that column overall:
         var_ratios = self.compute_variance_ratios(df)
-        node_tbl = cluster_profile.join(var_ratios)
+        node_tbl_tmp = cluster_profile.join(var_ratios)
 
         # Compute the IsStart and IsEnd columns: 
         # Get the minimum and maximum chip_idx of each sequence
 
+        df_plus_seq_info = self.add_seq_info(df)
+        # Create a lookup table like:
+        #                is_first  is_last
+        #     cluster                   
+        #     0             192      209
+        #     1              18       23
+        #     2             147       96
+        #               ...
+        lookup = df_plus_seq_info.groupby('cluster')[['is_first', 'is_last']].sum()
+        # Add the is_first and is_last summation cols to the node table:
+        node_tbl = node_tbl_tmp.join(lookup)
+
         # Add a 'cluster' col as needed for the node table,
         # which will be saved to .csv without the index:
-        node_tbl.insert(0, 'cluster', node_tbl.index)
+        node_tbl.insert(0, 'cluster', node_tbl_tmp.index)
 
         return node_tbl
 
@@ -297,7 +306,7 @@ class ChirpClusterer:
         :return: augmented copy of df
         '''
         # Create the grouping object once to save processing time
-        grouped = df.groupby(['cluster', 'file_id'])
+        grouped = df.groupby('file_id')
 
         # 1. Identify the first and last chirps
         df['is_first'] = df['chirp_idx'] == grouped['chirp_idx'].transform('min')
