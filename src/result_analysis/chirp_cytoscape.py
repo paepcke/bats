@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-10 18:26:56
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-15 11:19:37
+# @Last Modified time: 2026-02-15 19:44:08
 
 #**** file_id,chirp_idx,tightness,radius_mean,density,average_error_per_point,error_density,euclidean_distance,low_confidence,large_range,peak_detected,distance_to_prev_peak,significant_peak,cluster
 
@@ -14,6 +14,7 @@ from pathlib import Path
 import sys
 import numpy as np
 import pandas as pd
+import networkx as nx
 
 from logging_service.logging_service import LoggingService
 
@@ -160,6 +161,17 @@ class ChirpClusterer:
         link_tbl.to_csv(links_outfile, index=False)
         self.log.info(f"Writing nodes table to {nodes_outfile}...")
         node_tbl.to_csv(nodes_outfile, index=False)
+
+        # Also output respective GEXF graph exchange files
+        # in which the cols are typed:
+        dst_file = data_info.parent / f"{data_info.stem}.gexf"
+        self.log.info(f"Writing GEXF file to {dst_file}")      
+        self.write_gexf_file(link_tbl, node_tbl, dst_file)
+
+        # Same for GraphML, which is better in Cytoscape:
+        dst_file = data_info.parent / f"{data_info.stem}.graphml"
+        num_nodes, num_links = self.write_graphml_file(link_tbl, node_tbl, dst_file)
+        self.log.info(f"Wrote {num_nodes} nodes and {num_links} links to {dst_file}")
 
     #------------------------------------
     # mk_link_table
@@ -427,7 +439,82 @@ class ChirpClusterer:
     def read_csv_file(self, fpath):
         df = pd.read_csv(fpath)
         return df
+    
+    #------------------------------------
+    # write_gexf_file
+    #-------------------    
 
+    def write_gexf_file(self, link_tbl: pd.DataFrame, node_tbl: pd.DataFrame, dst_fname: Path):
+        '''
+        Given node and link tables, write a GEXF file
+
+        :param link_tbl: link table
+        :param node_tbl: node table
+        :param dst_fname: destination file
+        '''
+        # Force Source and Target to Python int (not numpy int)
+        link_tbl = link_tbl.copy()
+        link_tbl['Source'] = link_tbl['Source'].astype(int).astype(object)
+        link_tbl['Target'] = link_tbl['Target'].astype(int).astype(object)
+        
+        G = nx.MultiDiGraph()
+        
+        # Add nodes with attributes
+        for node_id, row in node_tbl.iterrows():
+            G.add_node(int(node_id), **{k: self._sanitize_value(v) for k, v in row.to_dict().items()})
+        
+        # Add edges with attributes
+        for _, row in link_tbl.iterrows():
+            attrs = {k: self._sanitize_value(v) for k, v in row.drop(['Source', 'Target']).to_dict().items()}
+            G.add_edge(row['Source'], row['Target'], **attrs)
+        
+        nx.write_gexf(G, str(dst_fname))
+
+    #------------------------------------
+    # write_graphml_file
+    #-------------------
+    
+    def write_graphml_file(self, 
+                           link_tbl: pd.DataFrame, 
+                           node_tbl: pd.DataFrame, 
+                           dst_fname: Path) -> tuple[int, int]:
+        '''
+        Given node and link tables, write a GraphML file
+        :param link_tbl: link table
+        :param node_tbl: node table
+        :param dst_fname: destination file
+        :returns a tuple with the number of nodes and links in the graph.
+        '''
+        link_tbl = link_tbl.copy()
+        link_tbl['Source'] = link_tbl['Source'].astype(int).astype(object)
+        link_tbl['Target'] = link_tbl['Target'].astype(int).astype(object)
+        
+        G = nx.MultiDiGraph()
+        
+        for node_id, row in node_tbl.iterrows():
+            G.add_node(int(node_id), **{k: self._sanitize_value(v) for k, v in row.to_dict().items()})
+        
+        for _, row in link_tbl.iterrows():
+            attrs = {k: self._sanitize_value(v) for k, v in row.drop(['Source', 'Target']).to_dict().items()}
+            G.add_edge(row['Source'], row['Target'], **attrs)
+        
+        nx.write_graphml(G, str(dst_fname), infer_numeric_types=True)
+        res = (G.number_of_nodes(), G.number_of_edges())
+        return res
+
+    #------------------------------------
+    # _sanitize_value
+    #-------------------
+
+    def _sanitize_value(self, val: any) -> any:
+        if isinstance(val, (np.integer,)):
+            return int(val)
+        if isinstance(val, (np.floating,)):
+            return float(val) if not np.isnan(val) else ""
+        if isinstance(val, (np.bool_,)):
+            return bool(val)
+        return val
+    
     #------------------------------------
     # main
     #-------------------
