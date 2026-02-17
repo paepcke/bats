@@ -41,7 +41,25 @@
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
-        }
+        },
+        {
+            "name": "Python: Basic chart Bar ",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/basic_charting.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--infile", "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/test_set_chirp_attributes_augmented.csv", 
+                "--chart_type", "bar",
+                "--x_column", "cluster",
+                "--y_column", "is_first is_last",
+                "--title", "Cluster first/last in sequence",
+                "--xlabel", "Cluster ID",
+                "--ylabel", "Frequency"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        },
     ],
     "debug.defaultConfiguration": "Python: Test Explorer (unittests)"
 }

@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-10 18:26:56
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-15 19:44:08
+# @Last Modified time: 2026-02-17 10:52:28
 
 #**** file_id,chirp_idx,tightness,radius_mean,density,average_error_per_point,error_density,euclidean_distance,low_confidence,large_range,peak_detected,distance_to_prev_peak,significant_peak,cluster
 
@@ -48,7 +48,7 @@ class ChirpClusterer:
         'PrcntKneeDur',
         'StartF',
         'UpprKnFreq',
-        'HiFtoUpprKnAmp',
+        'HiFtoUpprKnAmp', # 
         'HiFtoKnAmp',
         'HiFtoFcAmp',
         'UpprKnToKnAmp',
@@ -155,6 +155,9 @@ class ChirpClusterer:
         link_tbl = self.mk_link_table(df_clustered)
         node_tbl = self.mk_node_tbl(df_clustered, clusterstats)
 
+        # Save the enriched df:
+        df_clustered.to_csv(data_info.parent / f"{data_info.stem}_augmented.csv")
+        
         links_outfile = data_info.parent / f"{data_info.stem}_links.csv"
         nodes_outfile = data_info.parent / f"{data_info.stem}_nodes.csv"
         self.log.info(f"Writing link table to {links_outfile}...")
@@ -277,6 +280,13 @@ class ChirpClusterer:
             population=('tightness', 'size')
         )
 
+        # Add a population percentage for each cluster:
+        cluster_profile['population_perc'] = 100 * cluster_profile['population'] / cluster_profile['population'].sum()
+        # Add a formatted string column for the percentage, with just one 
+        # decimal point. Needed b/c Cytoscape otherwise uses many 
+        # decimal points, and no percentage sign.
+        cluster_profile['population_perc_str'] = cluster_profile['population_perc'].apply(lambda x: f"{x:.1f}%")
+
         # For each column, get the ratio of variance within
         # a cluster over the variance of that column overall:
         var_ratios = self.compute_variance_ratios(df)
@@ -287,7 +297,7 @@ class ChirpClusterer:
 
         df_plus_seq_info = self.add_seq_info(df)
         # Create a lookup table like:
-        #                is_first  is_last
+        #                is_first  is_last   is_first_perc   is_last_perc
         #     cluster                   
         #     0             192      209
         #     1              18       23
