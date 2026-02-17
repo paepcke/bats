@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-10 18:26:56
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-17 10:52:28
+# @Last Modified time: 2026-02-17 13:13:15
 
 #**** file_id,chirp_idx,tightness,radius_mean,density,average_error_per_point,error_density,euclidean_distance,low_confidence,large_range,peak_detected,distance_to_prev_peak,significant_peak,cluster
 
@@ -302,9 +302,16 @@ class ChirpClusterer:
         #     0             192      209
         #     1              18       23
         #     2             147       96
-        #               ...
+        #
+        #             ...
+        sequence_count = len(df_plus_seq_info['file_id'].unique())
+
         lookup = df_plus_seq_info.groupby('cluster')[['is_first', 'is_last']].sum()
-        # Add the is_first and is_last summation cols to the node table:
+        lookup.columns = ['is_first_cnt', 'is_last_cnt']
+
+        lookup['is_first_perc'] = 100 * lookup['is_first_cnt'] / sequence_count
+        lookup['is_last_perc']  = 100 * lookup['is_last_cnt']  / sequence_count
+
         node_tbl = node_tbl_tmp.join(lookup)
 
         # Add a 'cluster' col as needed for the node table,
