@@ -62,14 +62,59 @@
             "justMyCode": false
         },
         {
-            "name": "Python: Normality check",
+            "name": "Python: Normality via histogram no clusters",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/src/result_analysis/bat_measures_normality.py",
             "console": "integratedTerminal",
             "args": [
                 "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/test_set_chirp_attributes_augmented.csv", 
-                "--cols", "HiFreq", "Bndwdth",
+                "vizcurve",
+                "--cols", "HiFreq", "Bndwdth"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Normality via histogram clustered",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/bat_measures_normality.py",
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/test_set_chirp_attributes_augmented.csv", 
+                "vizcurve",
+                "--clustered",
+                "--cols", "HiFreq", "Bndwdth"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Normality shapiro-wilk check clustered",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/bat_measures_normality.py",
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/test_set_chirp_attributes_augmented.csv", 
+                "shapiro",
+                "--clustered",
+                "--cols", "HiFreq", "Bndwdth"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Normality shapiro-wilk no clusters",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/bat_measures_normality.py",
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/test_set_chirp_attributes_augmented.csv", 
+                "shapiro",
+                "--cols", "HiFreq", "Bndwdth"
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
