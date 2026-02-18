@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-10 18:26:56
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-17 13:13:15
+# @Last Modified time: 2026-02-17 17:24:38
 
 #**** file_id,chirp_idx,tightness,radius_mean,density,average_error_per_point,error_density,euclidean_distance,low_confidence,large_range,peak_detected,distance_to_prev_peak,significant_peak,cluster
 
@@ -289,8 +289,8 @@ class ChirpClusterer:
 
         # For each column, get the ratio of variance within
         # a cluster over the variance of that column overall:
-        var_ratios = self.compute_variance_ratios(df)
-        node_tbl_tmp = cluster_profile.join(var_ratios)
+        #var_ratios = self.compute_variance_ratios(df)
+        #node_tbl_tmp = cluster_profile.join(var_ratios)
 
         # Compute the IsStart and IsEnd columns: 
         # Get the minimum and maximum chip_idx of each sequence
