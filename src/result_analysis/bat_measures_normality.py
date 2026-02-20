@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-17 19:03:14
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-18 14:17:02
+# @Last Modified time: 2026-02-19 09:01:51
 
 import argparse
 import os
@@ -131,7 +131,8 @@ class NormalityChecker:
             cluster_grp = df.groupby('cluster')
             cluster_result_dfs = []
             for cluster_id, df_slice in cluster_grp:
-                cluster_result_dfs.append(self.run_tests(df_slice,tests, cols, f"cluster {cluster_id}"))
+                cluster_result_dfs.append(
+                    self.run_tests(df_slice,tests, cols, f"cluster {cluster_id}"))
             self.res_df = pd.concat(cluster_result_dfs)
         else:
             self.res_df = self.run_tests(df, tests, cols, 'all_clusters')
@@ -140,7 +141,7 @@ class NormalityChecker:
         self.res_df.index.names = ['measure', 'cluster']
 
         if outfile is not None:
-            self.write_file(outfile)
+            self.write_outfile(self.res_df, outfile)
             
         print(self.res_df)
 

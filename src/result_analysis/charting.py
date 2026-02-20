@@ -10,6 +10,7 @@ import csv
 from enum import Enum
 from functools import partial
 import os
+from pathlib import Path
 import sys
 import warnings
 
@@ -30,6 +31,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
+from scipy.cluster.hierarchy import linkage, leaves_list
+from scipy.spatial.distance import pdist
 
 #from sklearn.metrics._classification import precision_score, recall_score
 class CELL_LABELING(Enum):
@@ -77,6 +80,7 @@ class Charter:
         if actions is None:
             return
 
+        self.figs = []
         errors = []
         for action in actions:
             try:
@@ -120,7 +124,16 @@ class Charter:
                         )
                     
                 elif action == 'pr_curves':
-                    pass #data = 0 #********************
+                    raise NotImplementedError("Pr-curves are not implemented")
+                
+                elif type(action) == VizNormalityClustersDisplayReq:
+                    # A matrix showing which (bat) measures are normal in 
+                    # different chirp clusters
+                    self.log.info("Building measure normality matrix...")
+                    normality_fig = Charter.gen_normality_overview(action.df, action.outdir)
+                    self.figs.append(normality_fig)
+                    self.log.info("Done building measure normality matrix.")
+
             except Exception as e:
                 # Don't have one error kill all actions, but take note:
                 errors.append({action:  e})
@@ -902,6 +915,205 @@ class Charter:
                               )
         ax = Charter.set_xticklabel_excerpts(ax, time_quantity_series.index.values, num_labels_wanted, rotation=45)
         return ax
+    
+    @classmethod
+    def gen_normality_overview(cls, 
+                               df: pd.DataFrame = None,
+                               outdir: str | Path | None = None) -> plt.Figure:
+        """
+        Generate matrix visualization of normality across measures and clusters.
+        
+        :param df: DataFrame with columns: measure, cluster, normal.
+                If None, uses self.df
+        :param outdir: optional directory to output image
+            as normality_in_clusters.png in outdir, disambiguated
+            by '_1', '_2' before the suffix, if needed.
+        :return: Figure containing the normality matrix with summaries
+        """
+            
+        # Create pivot table: rows=measures, cols=clusters, values=normal
+        matrix = df.pivot(index='measure', columns='cluster', values='normal')
+        
+        # Save cluster codes before adding summary column
+        cluster_codes = matrix.columns.codes.copy()
+        
+        # Calculate row summaries (how many clusters are normal per measure)
+        row_summary = matrix.sum(axis='columns').astype(int)
+        
+        # Add row summary as a new column to the matrix
+        matrix['# Normal'] = row_summary
+        
+        # Calculate column summaries (how many measures are normal per cluster)
+        col_summary = matrix.iloc[:, :-1].sum(axis='rows').astype(int)  # Exclude summary column
+        
+        # Sort measures by similarity using hierarchical clustering on the pattern
+        # Convert boolean to float for distance calculation (exclude summary column)
+        matrix_float = matrix.iloc[:, :-1].astype(float)
+        
+        # Only cluster if we have more than 1 measure
+        if len(matrix_float) > 1:
+            # Calculate pairwise distances and perform hierarchical clustering
+            distances = pdist(matrix_float, metric='euclidean')
+            linkage_matrix = linkage(distances, method='average')
+            order = leaves_list(linkage_matrix)
+            matrix = matrix.iloc[order]
+        
+        n_measures = len(matrix.index)
+        n_clusters = len(matrix.columns) - 1  # Exclude summary column
+        
+        # Create figure
+        fig = plt.figure(figsize=(15, max(12, n_measures * 0.5)))
+        
+        # Create grid: main plot + column summary
+        gs = fig.add_gridspec(2, 1, height_ratios=[20, 1],
+                            hspace=0.02,
+                            top=0.88, bottom=0.05)
+        
+        ax_main = fig.add_subplot(gs[0, 0])
+        ax_col_summary = fig.add_subplot(gs[1, 0])
+        
+        # Split matrix into main data and row summary
+        main_matrix = matrix.iloc[:, :-1].astype(int)
+        row_summary_values = matrix.iloc[:, -1].values
+        
+        # Plot main matrix (blue/red)
+        im_main = ax_main.imshow(main_matrix, aspect='auto', cmap='RdBu', 
+                                vmin=0, vmax=1, interpolation='nearest',
+                                extent=[-0.5, n_clusters - 0.5, n_measures - 0.5, -0.5])
+        
+        # Plot row summary column (RdBu colormap - red=low, blue=high)
+        row_summary_2d = row_summary_values.reshape(-1, 1)
+        # Normalize to 0-1 range for RdBu colormap
+        row_summary_normalized = row_summary_2d / n_clusters
+        im_summary = ax_main.imshow(row_summary_normalized, aspect='auto',
+                                    cmap='RdBu', vmin=0, vmax=1,
+                                    interpolation='nearest',
+                                    extent=[n_clusters - 0.5, n_clusters + 0.5, n_measures - 0.5, -0.5])
+        
+        # Configure x-axis - use saved cluster_codes
+        all_ticks = list(range(n_clusters)) + [n_clusters]
+        cluster_labels = [str(c) for c in cluster_codes] + ['# Normal']
+        
+        ax_main.set_xticks(all_ticks)
+        ax_main.set_xticklabels(cluster_labels, fontsize=18)
+        
+        # Configure y-axis
+        ax_main.set_yticks(range(n_measures))
+        ax_main.set_yticklabels(matrix.index, fontsize=18)
+        
+        # Labels
+        ax_main.set_xlabel('Cluster', fontsize=24, fontweight='bold', labelpad=15)
+        ax_main.set_ylabel('Measure', fontsize=24, fontweight='bold', labelpad=10)
+        ax_main.tick_params(axis='x', top=True, labeltop=True, bottom=False,
+                        labelbottom=False, pad=8)
+        ax_main.tick_params(axis='y', pad=8)
+        ax_main.xaxis.set_label_position('top')
+        
+        # Set limits
+        ax_main.set_ylim(n_measures - 0.5, -0.5)
+        ax_main.set_xlim(-0.5, n_clusters + 0.5)
+        
+        # Add grid
+        ax_main.set_xticks(np.arange(n_clusters + 1) - 0.5, minor=True)
+        ax_main.set_yticks(np.arange(n_measures) - 0.5, minor=True)
+        ax_main.grid(which='minor', color='gray', linestyle='-', linewidth=0.5)
+        
+        # Thicker line to separate matrix from row summary
+        ax_main.axvline(x=n_clusters - 0.5, color='black', linewidth=2.5)
+        
+        # Add text annotations for row summary counts
+        for i, val in enumerate(row_summary_values):
+            ax_main.text(n_clusters, i, str(int(val)), ha='center', va='center',
+                        fontweight='normal', fontsize=18, color='black')
+        
+        # Column summary (only for main matrix columns, not row summary)
+        # Add dummy cell at the end
+        col_summary_with_dummy = np.append(col_summary.values, np.nan).reshape(1, -1)
+        
+        # Normalize for RdBu colormap (red=low, blue=high)
+        col_summary_normalized = col_summary.values / n_measures
+        col_summary_normalized_with_dummy = np.append(col_summary_normalized, np.nan).reshape(1, -1)
+        
+        im_col = ax_col_summary.imshow(col_summary_normalized_with_dummy, aspect='auto',
+                                    cmap='RdBu', vmin=0, vmax=1,
+                                    interpolation='nearest',
+                                    extent=[-0.5, n_clusters + 0.5, 0.5, -0.5])
+        ax_col_summary.set_xticks(range(n_clusters + 1))
+        ax_col_summary.set_xticklabels([])
+        ax_col_summary.set_yticks([0])
+        ax_col_summary.set_yticklabels(['# Normal'], fontsize=24)
+        ax_col_summary.tick_params(axis='x', top=False, labeltop=False,
+                                bottom=False, labelbottom=False)
+        ax_col_summary.tick_params(axis='y', pad=8)
+        ax_col_summary.set_xlim(-0.5, n_clusters + 0.5)
+        ax_col_summary.set_ylim(0.5, -0.5)
+        
+        # Vertical separator line in column summary
+        ax_col_summary.axvline(x=n_clusters - 0.5, color='black', linewidth=2.5)
+        
+        # Add text annotations for column summary (only for actual clusters)
+        for i, val in enumerate(col_summary.values):
+            ax_col_summary.text(i, 0, str(val), ha='center', va='center',
+                            fontweight='normal', fontsize=24)
+        
+        # Title
+        fig.suptitle(f'Normality Test Results: {n_measures} Measures × {n_clusters} Clusters',
+                    fontsize=28, fontweight='bold', y=0.98)
+        
+        # Add DISCRETE colorbar for main matrix
+        from matplotlib.colors import BoundaryNorm, ListedColormap
+        
+        colors = ['#d73027', '#4575b4']
+        cmap_discrete = ListedColormap(colors)
+        bounds = [-0.5, 0.5, 1.5]
+        norm = BoundaryNorm(bounds, cmap_discrete.N)
+        
+        cbar = fig.colorbar(im_main, ax=ax_main, orientation='horizontal',
+                        pad=0.08, aspect=30, shrink=0.6,
+                        ticks=[0, 1], boundaries=bounds)
+        cbar.set_ticklabels(['Not Normal', 'Normal'], fontsize=20)
+
+        if outdir:
+            Charter.log.info(f"Writing 'normality_in_cluster.png' to {outdir}")
+            fpath = cls._unique_fname(outdir, 'normality_in_clusters')
+            plt.savefig(fpath, dpi=300, bbox_inches='tight', transparent=True)
+        
+        return fig
+
+    #------------------------------------
+    # _unique_fname
+    #-------------------
+
+    @staticmethod
+    def _unique_fname(
+                      outdir: str | Path, 
+                      file_stem: str,
+                      suffix: str = '.png') -> Path:
+        '''
+        Given directory and a file name without a suffix,
+        return a filename in the directory that has the
+        given file stem and suffix, and does not exist in
+        the directory.
+
+        To disambiguate filenames, a '_1', '_2', etc. is
+        added to the file stem.
+
+        :param outdir: destination dir
+        :param file_stem: file name without suffix
+        :param suffix: the desired suffix
+        :return: filename unique in the directory
+        '''
+        if not isinstance(outdir, Path):
+            outdir = Path(outdir)
+        disambiguator = 0
+        while True:
+            if disambiguator == 0:
+                fpath = (outdir / file_stem).with_suffix(suffix)
+            else:
+                fpath = (outdir / f"{file_stem}_{disambiguator}").with_suffix(suffix)
+            if not fpath.exists():
+                return fpath
+            disambiguator += 1
 
 # -------------------- Utilities for Charter Class --------------
 
@@ -2214,6 +2426,62 @@ class VizPRCurvesReq(VizRequest):
         
         self.name = "PRCurvesVizRequest"
 
+class VizNormalityClustersDisplayReq(VizRequest):
+    """
+    Visualize normality test results across measures and clusters.
+    Assume a df with (at least) columns 'measure', 'cluster', and 'is_normal'.
+    Creates a table with measure names on the Y axis, and cluster IDs on
+    the X axis. Cells are colored depending on whether the respective measure
+    is normally distributed in the respective cluster, or not. 
+    Adds summary column and row.
+    """
+    
+    def __init__(self, data_path: str | Path, outdir: str | Path | None):
+        """
+        Load normality test data from CSV or Feather file.
+        
+        :param data_path: Path to file containing columns: measure, cluster, normal.
+                         Supported formats: .csv, .feather
+        :param outdir: if provided, charts will be written to 
+            <outdir>/normality_clusters_display<n>.png, 
+            where <n> is incremented for avoiding file overwrite.
+        :raises FileNotFoundError: If data file doesn't exist
+        :raises ValueError: If file format unsupported or required columns missing
+        """
+        super().__init__(data_path)
+
+        self.name = 'NormalityClustersVizRequest'
+        data_path = Path(data_path)
+        self.outdir = outdir
+        
+        if not data_path.exists():
+            raise FileNotFoundError(f"Data file not found: {data_path}")
+        
+        # Load based on file extension
+        if data_path.suffix == '.csv':
+            self.df = pd.read_csv(data_path)
+        elif data_path.suffix == '.feather':
+            self.df = pd.read_feather(data_path)
+        else:
+            raise ValueError(f"Unsupported file format: {data_path.suffix}. Use .csv or .feather")
+        
+        # Validate required columns
+        required_cols = {'measure', 'cluster', 'normal'}
+        missing_cols = required_cols - set(self.df.columns)
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+        
+        # Extract and validate data
+        # For use elsewhere, the 'cluster' col can be strings
+        # like 'cluster 0', 'cluster 1', etc. Turn those into
+        # categories so that we have both, the strings and underlying
+        # ints available via:
+        #   codes = df['cluster'].cat.codes
+        #   names = df['cluster'].cat.categories
+        self.df = self.df[['measure', 'cluster', 'normal']].copy()
+        self.df['cluster'] = self.df['cluster'].astype('category')
+        self.df['normal'] = self.df['normal'].astype(bool)
+
 # --------------- Main -------------
 
 if __name__ == '__main__':
@@ -2246,6 +2514,14 @@ if __name__ == '__main__':
                         help='draw (family of) PR curves; value: path to csv file',
                         default=None
                         )
+    parser.add_argument('--normality_in_clusters',
+                        help='draw matrix of measure normalities; value: path to csv/feather file',
+                        default=None
+                        )
+    parser.add_argument('-o', '--outdir',
+                        help='directory for saving figures',
+                        default=None
+                        )
 
     args = parser.parse_args()
     
@@ -2267,6 +2543,12 @@ if __name__ == '__main__':
         
     if args.pr_curves is not None:
         actions.append(VizPRCurvesReq(path=args.pr_curves))
+
+    if args.normality_in_clusters is not None:
+        actions.append(VizNormalityClustersDisplayReq(
+            args.normality_in_clusters,
+            args.outdir
+            ))
         
     charter = Charter(actions)
     for fig_num, fig in enumerate(charter.figs):
