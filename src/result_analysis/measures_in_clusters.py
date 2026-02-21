@@ -3,14 +3,64 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-19 18:33:23
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-21 08:13:11
+# @Last Modified time: 2026-02-21 10:16:04
 """
 Given each measure's normality in each cluster in file bats_measures_normality_all.csv,
 and the all-measures cluster assignments, examine whether any values are particularly important
 for cluster membership.
 
 Then determine which measures are important for which clusters.
-Example usage:
+The final output are three dataframes (written to files if requested 
+in arg.outdir):
+
+   meas_towards_clusters_pairwise.csv
+   meas_towards_clusters_measures_summary.csv
+   meas_towards_clusters_cluster_profiles.csv
+
+   
+Explanation for the cluster profiles (assuming 9 clusters for this explanation):
+
+meas_towards_clusters_cluster_profiles.csv:
+
+cluster | measure | n_significant_discriminations | avg_effect_size | tendency | importance_score |
+
+n_significant_discriminations: 
+   How many other clusters this measure significantly distinguishes this cluster from.
+   The values are number of clusters. If that is 8 when the number of clusters
+   is 9, then that measure significantly distinguishes against all other clusters
+
+average_effect_size: 
+  rank-biserial correlation across all pairwise comparisons involving this cluster.
+
+  This is the average of the effect sizes for the measure from comparing 
+  Cluster 0 vs 1, Cluster 0 vs 2, ..., Cluster 0 vs 8
+  Higher values mean stronger, more consistent differences
+  Ranges from 0 (no effect) to 1 (complete separation)  
+
+tendency:
+  Whether this cluster tends to have HIGH or LOW values for this 
+  measure compared to other clusters.
+
+  For example:
+    Cluster 0: All measures might show tendency = 
+         low → Cluster 0 has systematically lower values
+    Cluster 1: Measures might show tendency = 
+         high → Cluster 1 has systematically higher values
+
+  This is calculated by counting across all pairwise comparisons:
+
+    If Cluster 0's mean > other cluster's mean more often → tendency = "high"
+    If Cluster 0's mean < other cluster's mean more often → tendency = "low" 
+
+importance_score:
+  Combined metric: n_significant_discriminations × avg_effect_size
+  This scores both:
+     Breadth: How many clusters it discriminates from
+     Strength: How strong those discriminations are
+
+  Used to rank which measures best characterize each cluster
+
+Example usage for running
 
     # After running your importance analysis:
     results = analyze_measure_cluster_importance(
@@ -551,6 +601,23 @@ class CombinedAnalysis:
         """
         Return the merged results with a human-readable effect size label
         and composite importance tier.
+
+        Most useful: columns composite_importance and priority_rank
+        for a measure: The priority_rank is the importance rank *within*
+        the composite_importance. So:
+
+           measure_name  composite_importance  priority_rank
+           HiFreq        LARGE                 1
+           Bndwdth       LARGE                 2           
+
+        means that within all measures with cluster-global importance
+        of LARGE, HiFreq is the most important.
+
+        The mean_rank column:
+            `mean_rank` is the **average** of:
+            1. **`kw_rank`** - Rank by Kruskal-Wallis effect size (eta-squared or Cramér's V)
+            2. **`gini_rank`** - Rank by Random Forest Gini importance
+            3. **`perm_rank`** - Rank by Random Forest permutation importance
         
         :param top_n: Number of top features to return. If None, returns all.
         :return: Summary DataFrame sorted by mean_rank ascending.
@@ -572,23 +639,6 @@ class CombinedAnalysis:
                 if e >= 0.10: return "small"
                 return "negligible"
         
-        def _composite_importance(row):
-            """
-            Assign composite importance tier based on:
-            - High: large effect size AND top 10 mean rank
-            - Medium-High: large effect size OR top 10 mean rank
-            - Low: everything else
-            """
-            kw_label = row['kw_effect_size_label']
-            mean_rank = row['mean_rank']
-            
-            if kw_label == 'large' and mean_rank <= 10:
-                return 'High'
-            elif kw_label == 'large' or mean_rank <= 10:
-                return 'Medium-High'
-            else:
-                return 'Low'
-        
         # Create output dataframe
         out = self.results_.copy()
         
@@ -600,10 +650,10 @@ class CombinedAnalysis:
         out["kw_effect_size_label"] = out.apply(_label, axis=1)
         
         # Add composite importance
-        out['composite_importance'] = out.apply(_composite_importance, axis=1)
+        out['composite_importance'] = out.apply(self._composite_importance, axis='columns')
         
         # Convert composite_importance to ordered categorical
-        importance_order = ['High', 'Medium-High', 'Low']
+        importance_order = [ImportanceTier.LARGE, ImportanceTier.MEDIUM, ImportanceTier.LOW]
         out['composite_importance'] = pd.Categorical(
             out['composite_importance'],
             categories=importance_order,
@@ -616,9 +666,9 @@ class CombinedAnalysis:
         
         # Reorder columns to put key info first
         first_cols = [
-            'priority_rank',
             'measure_name',
             'composite_importance',
+            'priority_rank',
             'kw_effect_size',
             'kw_effect_size_label',
             'kw_rank',
@@ -632,6 +682,36 @@ class CombinedAnalysis:
             out = out.head(top_n)
         
         return out
+
+    #------------------------------------
+    # _composite_importance
+    #-------------------
+
+    def _composite_importance(self, kw_results_row: pd.Series) -> ImportanceTier:
+        """
+        Assign composite importance tier based on combined 
+        Kruskal-Wallis criteria.
+        
+        Uses both KW effect size and mean rank to categorize overall importance:
+        - LARGE: large KW effect size AND top 10 mean rank (both criteria met)
+        - MEDIUM: large KW effect size XOR top 10 mean rank (exactly one criterion met)
+        - LOW: neither criterion met
+        
+        :param row: DataFrame row with kw_effect_size_label and mean_rank
+        :return: ImportanceTier enum value
+        """
+        kw_label = kw_results_row['kw_effect_size_label']
+        mean_rank = kw_results_row['mean_rank']
+        
+        has_large_effect = (kw_label == ImportanceTier.LARGE)
+        has_good_rank = (mean_rank <= 10)
+        
+        if has_large_effect and has_good_rank:
+            return ImportanceTier.LARGE
+        elif has_large_effect or has_good_rank:
+            return ImportanceTier.MEDIUM
+        else:
+            return ImportanceTier.LOW        
 
     #------------------------------------
     # save
@@ -688,9 +768,9 @@ class PostHocTests:
         self.log = LoggingService()
 
         if isinstance(df_info, pd.DataFrame):
-            df_raw = df_info
+            self.df_raw = df_info
         else:
-            df_raw = Utils.read_df_file(df_info)
+            self.df_raw = Utils.read_df_file(df_info)
         if summary_df_info is not None:
             if isinstance(summary_df_info, pd.DataFrame):
                 self.summary_df = summary_df_info
@@ -698,18 +778,22 @@ class PostHocTests:
                 self.summary_df = Utils.read_df_file(summary_df_info)
 
         # Final data df, and measure columns to include:
-        self.df, missing_cols = Utils.extract_cols_safely(df_raw, measure_cols)
+        self.df, missing_cols = Utils.extract_cols_safely(self.df_raw, measure_cols)
         if len(missing_cols) > 0:
             self.log.warn(f"PosthocTests: Requested columns {missing_cols} not in given df")
             # Remove the missing cols from measure_cols:
             self.measure_cols = [col for col in measure_cols if col not in missing_cols]
         else:
             self.measure_cols = measure_cols
+        # Add the cluster assigment column:
+        self.df[cluster_col] = self.df_raw[cluster_col]
 
         # Cluster grouping var:
-        if cluster_col not in df_raw:
+        if cluster_col not in self.df_raw:
             raise ValueError(f"Cluster column {cluster_col} not found in df_info")
         self.cluster_col = cluster_col
+
+        self.alpha = alpha
 
         # Check tier spec:
         if importance_tier not in ImportanceTier:
@@ -743,7 +827,7 @@ class PostHocTests:
                 self.summary_df['composite_importance'] == str(self.importance_tier)
             ]['measure_name'].tolist()
             measure_cols = [m for m in self.measure_cols if m in high_measures]
-            self.log.info(f"Analyzing {len(measure_cols)} {self.importance_tier} importance measures")
+            self.log.info(f"Analyzing {len(measure_cols)} {self.importance_tier}-importance measures")
         else:
             # All measures examined, no matter what their importance
             measure_cols = self.measure_cols
@@ -1039,6 +1123,6 @@ if __name__ == "__main__":
         print('=================================================')
         posthocs.print_analysis_summary(posthoc_res)
 
-    if args.outfile:
+    if args.outdir:
         analysis.save(summary, args.outdir, args.force)
         posthocs.save(posthoc_res, args.outdir, args.force)

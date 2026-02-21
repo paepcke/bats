@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-20 08:53:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-20 15:53:22
+# @Last Modified time: 2026-02-21 12:41:40
 
 # =====================================================================
 # Class Utilities
@@ -10,6 +10,7 @@
 
 from pathlib import Path
 
+from matplotlib import pyplot as plt
 import pandas as pd
 
 
@@ -138,3 +139,23 @@ class Utils:
             df.to_csv(outfile, index=False)
         elif outfile.suffix == '.feather':
             df.to_feather(outfile)
+
+    #------------------------------------
+    # right_size_fontsizes
+    #-------------------
+
+    @staticmethod
+    def right_size_fontsizes():
+        # Adjust font sizes:
+        # Set global sizes
+        plt.rcParams.update({
+            'font.size': 18,          # Base font size
+            'axes.titlesize': 24,     # Title size
+            'axes.labelsize': 20,     # X and Y label size
+            'xtick.labelsize': 16,    # X tick label size
+            'ytick.labelsize': 16,    # Y tick label size
+            'legend.fontsize': 16,    # Legend size
+            'lines.linewidth': 3,     # Thicker lines for visibility
+            'lines.markersize': 10    # Larger markers
+        })        
+        
