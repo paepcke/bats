@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-19 18:33:23
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-21 10:16:04
+# @Last Modified time: 2026-02-21 13:26:50
 """
 Given each measure's normality in each cluster in file bats_measures_normality_all.csv,
 and the all-measures cluster assignments, examine whether any values are particularly important
@@ -173,6 +173,10 @@ class KruskalWallisTester:
             self.col_names = list(self.df.columns.drop(cluster_id_col))
         else:
             self.col_names = col_names
+
+        # is_first and is_last (in chirp sequence) is not
+        # part of the dfs coming on from the workflow. Add those:
+        df_raw = Utils.add_is_first_last(df_raw)
 
         self.df, missing_cols = Utils.extract_cols_safely(df_raw, self.col_names)
         if len(missing_cols) > 0:
@@ -388,6 +392,11 @@ class RandomForestTester:
         self.log = LoggingService()
         
         df_raw = Utils.read_df_file(infile)
+
+        # is_first and is_last (in chirp sequence) is not
+        # part of the dfs coming on from the workflow. Add those:
+        df_raw = Utils.add_is_first_last(df_raw)
+        
         if col_names is None:
             self.col_names = list(self.df.columns.drop(cluster_id_col))
         else:
@@ -771,6 +780,10 @@ class PostHocTests:
             self.df_raw = df_info
         else:
             self.df_raw = Utils.read_df_file(df_info)
+        # is_first and is_last (in chirp sequence) is not
+        # part of the dfs coming on from the workflow. Add those:
+        self.df_raw = Utils.add_is_first_last(self.df_raw)
+        
         if summary_df_info is not None:
             if isinstance(summary_df_info, pd.DataFrame):
                 self.summary_df = summary_df_info
@@ -1123,6 +1136,13 @@ if __name__ == "__main__":
         print('=================================================')
         posthocs.print_analysis_summary(posthoc_res)
 
+    #****************
+    print(f"args.outdir: {args.outdir}")
+    #****************
     if args.outdir:
+        # Create if does not exist:
+        if not Path(args.outdir).exists:
+            dir_path = Path(args.outdir)
+            dir_path.mkdir(parents=True, exist_ok=True)
         analysis.save(summary, args.outdir, args.force)
         posthocs.save(posthoc_res, args.outdir, args.force)

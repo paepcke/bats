@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-20 08:53:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-21 12:41:40
+# @Last Modified time: 2026-02-21 13:17:48
 
 # =====================================================================
 # Class Utilities
@@ -157,5 +157,34 @@ class Utils:
             'legend.fontsize': 16,    # Legend size
             'lines.linewidth': 3,     # Thicker lines for visibility
             'lines.markersize': 10    # Larger markers
-        })        
-        
+        })  
+
+    #------------------------------------
+    # add_is_first_last
+    #-------------------              
+
+    @staticmethod
+    def add_is_first_last(df_raw:pd.DataFrame) -> pd.DataFrame:
+        '''
+        Checks whether the columns is_first and is_last
+        are present. Adds them if not. The df is assumed
+        to be a full bats measures df that includes the
+        chirp sequence grouping column file_id, and the 
+        index of each chirp within its sequence: chirp_idx.
+
+        The new columns are bools indicating whether the
+        respective chirp is the first or last in its sequence.
+
+        :param df_raw: df to be augmented
+        :return: augmented df
+        '''
+        if 'is_first' not in df_raw.columns:
+            df_raw['is_first'] = df_raw['chirp_idx'] == 0
+
+        if 'is_last' not in df_raw.columns:
+            # 1. Group by the file_id
+            # 2. Transform the chirp_idx to find the max within each group
+            # 3. Compare that max to the original chirp_idx
+            df_raw['is_last'] = df_raw.groupby('file_id')['chirp_idx'].transform('max') == df_raw['chirp_idx']
+
+        return df_raw

@@ -134,7 +134,7 @@
             "justMyCode": false
         },
         {
-            "name": "Python: Measure importance (KW and Random Forest",
+            "name": "Python: Measure importance (KW and Random Forest)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/src/result_analysis/measures_in_clusters.py",
