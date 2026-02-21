@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-19 18:33:23
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-20 17:47:43
+# @Last Modified time: 2026-02-21 08:13:11
 """
 Given each measure's normality in each cluster in file bats_measures_normality_all.csv,
 and the all-measures cluster assignments, examine whether any values are particularly important
@@ -61,7 +61,7 @@ class ImportanceTier(StrEnum):
     LOW = 'low'
     MEDIUM = 'medium'
     LARGE = 'large'
-    ALL = 'all'
+    ANYRANKED = 'all'
 
 class DunnCorrectionMethods(StrEnum):
     BONFERRONI =     'bonferroni'
@@ -738,7 +738,7 @@ class PostHocTests:
         3. Summarizes which clusters each measure best discriminates
         """
         # Filter measures by importance if summary provided
-        if self.summary_df is not None and self.importance_tier != ImportanceTier.ALL:
+        if self.summary_df is not None and self.importance_tier != ImportanceTier.ANYRANKED:
             high_measures = self.summary_df[
                 self.summary_df['composite_importance'] == str(self.importance_tier)
             ]['measure_name'].tolist()
