@@ -1161,7 +1161,7 @@ class Charter:
               confusion_matrices_from_raw_results(), followed by compute_confusion_matrix()
         
         Depending on the original dataframe/tensor,np_array
-        from which which the .csv was created, the first line
+        from which the .csv was created, the first line
         has a leading comma. This results in:
         
               Unnamed: 0  foo  bar  fum

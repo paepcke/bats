@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-17 19:03:14
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-19 09:01:51
+# @Last Modified time: 2026-02-20 09:00:19
 
 import argparse
 import os
@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 from scipy.stats import shapiro
 
 from logging_service.logging_service import LoggingService
+
+from sonobat_utils.utils import Utils
 
 PHYSICAL_MEASURES = [
     'TimeInFile',
@@ -94,7 +96,7 @@ class NormalityChecker:
         self.log = LoggingService()
 
         if type(df_info) == str:
-            df = self.read_df(df_info)
+            df = Utils.read_df_file(df_info)
         elif isinstance(df_info, pd.DataFrame):
             df = df_info
         else:
@@ -293,69 +295,6 @@ class NormalityChecker:
         results_df = pd.DataFrame.from_dict(result_dict, orient='index')
         return results_df
 
-    #------------------------------------
-    # read_df
-    #-------------------        
-
-    def read_df(self, fpath: Path | str) -> pd.DataFrame:
-        '''
-        Given a path to a supposed dataframe on disk,
-        load and return the df. Reads .feather or .csv 
-
-        :param fpath: path to data
-        :raises FileNotFoundError: if file not found
-        :raises TypeError: if file not .feather or .csv
-        :return: the loaded df
-        '''
-        ppath = Path(fpath)
-        if not ppath.exists():
-            raise FileNotFoundError(f"File {fpath} not found")
-        if ppath.suffix == '.feather':
-            df = pd.read_feather(ppath)
-        elif ppath.suffix == '.csv':
-            df = pd.read_csv(ppath)
-        else:
-            raise TypeError(f"Input file must be .feather or .csv, not {fpath}")
-        return df
-        
-    #------------------------------------
-    # write_outfile
-    #-------------------
-
-    def write_outfile(self, df: pd.DataFrame, outfile: str):
-
-        while True:
-            if not os.path.exists(outfile):
-                # Outfile does not already exist; all good
-                break
-
-            resp = input(f"File '{outfile}' exists; overwrite/new path/cancel (o/p/c): ").lower()
-
-            if resp == 'o':
-                print(f"Overwriting {outfile}...")
-                break  # Exit loop and use current outfile
-            
-            elif resp == 'p':
-                new_path = input("Enter new file path: ")
-                outfile = new_path
-                # Loop restarts to check if the NEW path also exists
-            
-            elif resp == 'c':
-                print("Not saving result.")
-                return
-            
-            else:
-                print("Invalid input. Please enter 'o', 'p', or 'c'.")            
-
-        outpath = Path(outfile)
-        if outpath.suffix == '.csv':
-            df.to_csv(outfile)
-        elif outpath.suffix == '.feather':
-            df.to_feather(outfile)
-        elif outpath.suffix == '':
-            outpath_default = outpath.with_suffix('.csv')
-            print(f"Writing to {outpath_default}")
-            df.to_csv(outpath_default)
 
 
 #----------- main --------------

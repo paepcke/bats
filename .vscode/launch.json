@@ -138,10 +138,12 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/src/result_analysis/measures_in_clusters.py",
+            "subProcess": false,
             "console": "integratedTerminal",
             "args": [
-                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/test_set_chirp_attributes_augmented.csv",
-                "--cols", "HiFreq", "Bndwdth", "is_first", "is_last"
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures.csv",
+                "--cols", "HiFreq", "Bndwdth",
+                "--force"
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
