@@ -162,6 +162,23 @@
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
+        },
+        {
+            "name": "Python: Visualize cluster histograms",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/viz_measures_in_clusters.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures.csv",
+                "${workspaceFolder}/src/result_analysis/data/barn_results/meas_towards_clusters_cluster_profiles.csv",
+                "--illustrations", "histograms",
+                "--measure", "HiFtoKnAmp",
+                "--clusters", "0", "1", "3"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
         }
 
     ],
