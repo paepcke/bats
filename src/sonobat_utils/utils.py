@@ -2,15 +2,17 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-20 08:53:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-21 13:17:48
+# @Last Modified time: 2026-02-22 19:05:39
 
 # =====================================================================
 # Class Utilities
 # =====================================================================
 
 from pathlib import Path
+import pickle
 
 from matplotlib import pyplot as plt
+from sklearn.base import BaseEstimator
 import pandas as pd
 
 
@@ -87,10 +89,10 @@ class Utils:
     #-------------------
 
     @staticmethod
-    def write_outfile(df: pd.DataFrame, 
-                      outfile: str | Path,
-                      force: bool = False
-                      ) -> None:
+    def write_df_outfile(df: pd.DataFrame, 
+                         outfile: str | Path,
+                         force: bool = False
+                         ) -> None:
         '''
         Writes dataframe to file in either .csv or .feather format.
         If force is False (default), asks user for confirmation and
@@ -139,6 +141,36 @@ class Utils:
             df.to_csv(outfile, index=False)
         elif outfile.suffix == '.feather':
             df.to_feather(outfile)
+
+    #------------------------------------
+    # write_scaler_outfile
+    #-------------------
+
+    @staticmethod
+    def write_scaler_outfile(scaler, outfile: str | Path, derive_fname: bool = False):
+        '''
+        Write an sklearn scaler to a file. If derive_fname, 
+        then the file will be called:
+
+            <outfile-stem>_scaler.pks
+
+        else the the file will be pickled to the 
+        given file.
+
+        :param scaler: the scaler object to write
+        :param outfile: outfile 
+        :param derive_fname: whether or not to create
+           the output file from the given outfile.
+        '''
+        if derive_fname:
+            scaler_method = scaler.__class__.__name__
+            scaler_name = f"{outfile.stem}_scaler_{scaler_method}.pks"
+            scaler_path = outfile.with_name(scaler_name)
+        else:
+            scaler_path = outfile
+        with open(scaler_path, 'wb') as fd:
+            pickle.dump(scaler, fd)
+
 
     #------------------------------------
     # right_size_fontsizes

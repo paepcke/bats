@@ -745,7 +745,7 @@ class CombinedAnalysis:
         out_fname = 'meas_importance_all_clusters.csv'
         outfile = outdir / out_fname
         self.log.info(f"Writing measures importances to {outfile}...")
-        Utils.write_outfile(self.summary(), outfile, force=True)
+        Utils.write_df_outfile(self.summary(), outfile, force=True)
 
 class PostHocTests:
 
@@ -1005,11 +1005,11 @@ class PostHocTests:
         out2_path = outdir / 'meas_towards_clusters_measures_summary.csv'
         out3_path = outdir / 'meas_towards_clusters_cluster_profiles.csv'
         self.log.info(f"Writing pairwise tests to {out1_path}")
-        Utils.write_outfile(result_dfs['pairwise_tests'], out1_path, force)
+        Utils.write_df_outfile(result_dfs['pairwise_tests'], out1_path, force)
         self.log.info(f"Writing measures summary to {out2_path}")
-        Utils.write_outfile(result_dfs['measure_summary'], out2_path, force)
+        Utils.write_df_outfile(result_dfs['measure_summary'], out2_path, force)
         self.log.info(f"Writing cluster profiles to {out3_path}")
-        Utils.write_outfile(result_dfs['cluster_profiles'], out3_path, force)
+        Utils.write_df_outfile(result_dfs['cluster_profiles'], out3_path, force)
 
     #------------------------------------
     # print_analysis_summary

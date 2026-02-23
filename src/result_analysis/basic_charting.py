@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-17 10:13:33
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-21 18:39:10
+# @Last Modified time: 2026-02-22 20:43:11
 
 import argparse
 from enum import StrEnum
@@ -44,6 +44,10 @@ class SimpleCharter:
         else:
             df = Utils.read_df_file(data_info)
 
+        self.title  = title
+        self.xlabel = xlabel
+        self.ylabel = ylabel
+
         if type(y_axis_cols) == str:
             y_axis_cols = [y_axis_cols]
         # Ensure that columns are present:
@@ -63,12 +67,12 @@ class SimpleCharter:
             fig = self.bar_chart(x_values, bars, title, xlabel, ylabel)
         
         elif chart_type == ChartType.HISTOGRAMS:
-            fig = self.histograms(df)            
+            self.fig = self.histograms(df)            
         else:
             msg = f"Only chart types {list(ChartType)} are currently implemented, not '{chart_type}'"
             raise NotImplementedError(msg)
         
-        if fig:
+        if self.fig:
             if outfile is not None:
                 if outfile.exists():
                     conf = input(f"Outfile '{outfile}' exists. Replace (y/n): ")
@@ -150,7 +154,7 @@ class SimpleCharter:
             print("Warning: Only the first 4 columns will be plotted")
         
         # Define colors with good alpha blending
-        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A']
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
         
         # Create figure
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -164,16 +168,17 @@ class SimpleCharter:
             ax.hist(
                 col.dropna(),
                 bins=bins,
-                alpha=0.5,  # Transparency for blending
+                #alpha=0.5,  # Transparency for blending
+                alpha=0.8,  # Transparency for blending
                 color=colors[i],
                 label=name,
                 edgecolor='white',
                 linewidth=0.5
             )        
         # Styling
-        ax.set_xlabel('Value', fontsize=12)
-        ax.set_ylabel('Frequency', fontsize=12)
-        ax.set_title('Distribution Comparison', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Value' if self.xlabel == '' else self.xlabel, fontsize=12)
+        ax.set_ylabel('Frequency' if self.ylabel == '' else self.ylabel, fontsize=12)
+        ax.set_title('Distribution Comparison' if self.title == '' else self.title, fontsize=14, fontweight='bold')
         ax.legend(loc='best', framealpha=0.9)
         ax.grid(True, alpha=0.3, linestyle='--')
         

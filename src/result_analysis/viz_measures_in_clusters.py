@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-21 10:04:19
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-21 18:39:28
+# @Last Modified time: 2026-02-22 20:41:12
 
 import argparse
 from enum import StrEnum
@@ -404,12 +404,13 @@ class Histogrammer:
     #-------------------
 
     def run(self):
-        SimpleCharter(
+        charter = SimpleCharter(
             self.histogram_df,
             ChartType.HISTOGRAMS,
             title=f"Measure '{self.measure}' across clusters {self.clusters}",
             xlabel=f"Measure {self.measure}"
             )
+        return charter.fig
 
 
 # ------------------ Main ---------------    
