@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-20 08:53:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-22 19:05:39
+# @Last Modified time: 2026-02-24 09:37:58
 
 # =====================================================================
 # Class Utilities
@@ -92,18 +92,23 @@ class Utils:
     def write_df_outfile(df: pd.DataFrame, 
                          outfile: str | Path,
                          force: bool = False
-                         ) -> None:
+                         ) -> Path | bool:
         '''
         Writes dataframe to file in either .csv or .feather format.
         If force is False (default), asks user for confirmation and
         alternative outfile if outfile already exists. 
 
-        Suffix ouf outfile determines output format. If no
+        Suffix of outfile determines output format. If no
         suffix, .csv is assumed. Only .csv and .feather are supported.
+
+        Returns the outfile to which df was written,
+        or False if outfile existed, and human user asked to abort.
 
         :param df: dataframe to save
         :param outfile: where to save
         :param force: whether to overwrite, defaults to False
+        :returns the actual outfile path to which df was written, 
+            or False if user canceled.
         '''
 
         outfile = Path(outfile)
@@ -113,17 +118,101 @@ class Utils:
         if outfile.suffix not in ['.csv', '.feather']:
             raise NotImplementedError(f"Only .csv and .feather are supported for writing, not {outfile}")
 
+        outfile = Utils.solicit_overwrite_permission(outfile, force)
+
+        if not outfile:
+            # Caller does not wish to overwrite, nor
+            # did they provide an alternative path
+            return False
+
+        if outfile.suffix == '.csv':
+            df.to_csv(outfile, index=False)
+        elif outfile.suffix == '.feather':
+            df.to_feather(outfile)
+
+        return outfile
+
+    #------------------------------------
+    # write_scaler_outfile
+    #-------------------
+
+    @staticmethod
+    def write_scaler_outfile(
+        scaler: BaseEstimator, 
+        outfile: str | Path, 
+        derive_fname: bool = False,
+        force: bool = False) -> Path | bool:
+        '''
+        Write an sklearn scaler to a file. If derive_fname, then
+        assume the file name convention:
+           scaled data in the form 
+             all_chirp_measures_scaled_min_max.csv:
+           i.e.    
+                 <root>_scaled_<scale-method>.{csv|feather}
+
+           The scaler metadata in the form:
+             all_chirp_measures_scaler_metadata_min_max.pks
+           i.e.    
+                 <root>_scaler_metadata_<scale-method>.pks
+
+        When derive_fname is True, then outfile is assumed to be
+        that name of the scaled data file in the proper form as
+        per above. Error if deviation from the template is detected.
+        The scaler metadata name will be generated, and the scaler
+        info will be written to it.
+
+        For derive_fname is False, the scaler metadata file 
+        will be pickled to the given outfile.
+
+        If file exists, user is asked to provide an alternative
+        name, allow overwrite, or to abort. If force is True,
+        overwrite of already existing file with same name is
+        automatic; user won't be consulted.
+
+        Returns the outfile to which df was written,
+        or False if outfile existed, and human user asked to abort.
+
+        :param scaler: the scaler object to write
+        :param outfile: outfile verbatim if derive_fname is False,
+            else path to the associated scaled-data file
+        :param derive_fname: whether or not to create
+           the output file from the given outfile.
+        :returns the path to which scaler data was written,
+            or False if user aborted
+        '''
+        if derive_fname:
+            scaler_dst = Utils._derive_scaler_metadata_nm(outfile)
+        else:
+            scaler_dst = Path(outfile)
+
+        outfile = Utils.solicit_overwrite_permission(scaler_dst, force)
+
+        if not outfile:
+            return False
+        
+        with open(outfile, 'wb') as fd:
+            pickle.dump(scaler, fd)
+        return outfile
+
+    #------------------------------------
+    # solicit_overwrite_permission
+    #-------------------
+
+    @staticmethod
+    def solicit_overwrite_permission(
+        outfile: str | Path, 
+        force: bool = False) -> Path | bool:
+        outfile = Path(outfile)
         while True:
             if not outfile.exists() or force:
                 # Outfile does not already exist, or
                 # we may overwrite; all good
-                break
+                return outfile
 
             resp = input(f"File '{outfile}' exists; overwrite/new path/cancel (o/p/c): ").lower()
 
             if resp == 'o':
-                print(f"Overwriting {outfile}...")
-                break  # Exit loop and use current outfile
+                return outfile
             
             elif resp == 'p':
                 new_path = input("Enter new file path: ")
@@ -131,46 +220,71 @@ class Utils:
                 # Loop restarts to check if the NEW path also exists
             
             elif resp == 'c':
-                print("Not saving result.")
-                return
+                return False
             
             else:
                 print("Invalid input. Please enter 'o', 'p', or 'c'.")            
 
-        if outfile.suffix == '.csv':
-            df.to_csv(outfile, index=False)
-        elif outfile.suffix == '.feather':
-            df.to_feather(outfile)
-
     #------------------------------------
-    # write_scaler_outfile
+    # _derive_scaler_metadata_nm
     #-------------------
 
     @staticmethod
-    def write_scaler_outfile(scaler, outfile: str | Path, derive_fname: bool = False):
+    def _derive_scaler_metadata_nm(scaled_data_outfile: str | Path):
         '''
-        Write an sklearn scaler to a file. If derive_fname, 
-        then the file will be called:
+        Create the path to a file destination for scaler metadate. The
+        path will follow the convention:
 
-            <outfile-stem>_scaler.pks
+            <root>_scaler_metadata_<scale-method>.pks
 
-        else the the file will be pickled to the 
-        given file.
+        The destination path will be based on the scaled_data_outfile. 
+        That path is assumed to be of the form:
 
-        :param scaler: the scaler object to write
-        :param outfile: outfile 
-        :param derive_fname: whether or not to create
-           the output file from the given outfile.
+            <root>_scaled_<scale-method>.{csv|feather}
+
+        such as: all_chirp_measures_scaled_min_max.csv
+
+        :param scaled_data_outfile: full path to scaled data for
+            which scaler metadata is being saved        
+        :return: path to where scaler metadata is to be saved 
         '''
-        if derive_fname:
-            scaler_method = scaler.__class__.__name__
-            scaler_name = f"{outfile.stem}_scaler_{scaler_method}.pks"
-            scaler_path = outfile.with_name(scaler_name)
-        else:
-            scaler_path = outfile
-        with open(scaler_path, 'wb') as fd:
-            pickle.dump(scaler, fd)
+        ref_fpath = Path(scaled_data_outfile)
 
+        # Sanity check for reference fname. 
+        # Get like:
+        #    ['all', 'chirp', 'measures', 'scaled', 'robust']
+        # or like:
+        #    ['mydata', 'scaled', 'min', 'max]
+        elements = ref_fpath.stem.split('_')
+
+        # We expect everything before 'scaled' to be
+        # the dataset name, which varies, and all after
+        # 'scaled' to be the scaling method.
+
+        if len(elements) < 2:
+            msg = (f"Scaler destination file only derivable from names conforming to " 
+                   f"<root>_scaled_<scale_method>.<suffix>, not {scaled_data_outfile}")
+            raise ValueError(msg)
+
+        # Find the index of the last 'scaled'
+        # We reverse the list to find the first occurrence from the end
+        target = 'scaled'
+        
+        if target not in elements:
+            msg = (f"File name {scaled_data_outfile} does not conform " 
+                   "to <root>_scaled_<scale-method>.<suffix>")
+            raise ValueError(msg)
+            
+        # Calculate the index from the end
+        last_index = len(elements) - 1 - elements[::-1].index(target)
+        
+        # Slice the list
+        root = '_'.join(elements[:last_index])
+        scaling_method = '_'.join(elements[last_index + 1:])
+        
+        dst_nm = f"{root}_scaler_metadata_{scaling_method}.pks"
+        dst_path = ref_fpath.parent / dst_nm
+        return dst_path
 
     #------------------------------------
     # right_size_fontsizes
