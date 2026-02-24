@@ -195,6 +195,21 @@
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
+        },
+        {
+            "name": "Python: outlier detection",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/outlier_analysis.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures.csv",
+                "--sd-threshold", "1.0",
+                "--ignore", "cluster", "file_id", "chirp_idx", "idiom_start", "idiom_end", "in_idiom"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
         }
 
     ],
