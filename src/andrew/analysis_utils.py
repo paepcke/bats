@@ -16,6 +16,7 @@ from hdbscan import HDBSCAN
 from sklearn.decomposition import PCA
 from sklearn import cluster
 from collections import Counter
+from scipy.ndimage import gaussian_filter
 import sys
 sys.path.append("..")
 from peak_detection.data_series_analyzer import DataSeriesAnalyzer
@@ -121,7 +122,81 @@ def compute_cluster_measures(X, radius_for_density=None):
         "density": density,
     }
 
-def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), show=True, save_filename=None):
+def calculate_ensemble_measures(prediction_files, truth_files):
+    prediction_list = []
+    truth_list = []
+    absolute_errors = []
+    euclidean_distances = []
+    for pred_file, truth_file in zip(prediction_files, truth_files):
+        pred_df = pd.read_csv(pred_file)
+        truth_df = pd.read_csv(truth_file)
+        prediction_list.append(pred_df)
+        truth_list.append(truth_df)
+
+        # select numeric columns and keep only common columns
+        pred_num = pred_df.select_dtypes(include=[np.number])
+        truth_num = truth_df.select_dtypes(include=[np.number])
+        common_cols = pred_num.columns.intersection(truth_num.columns)
+
+        if len(common_cols) == 0:
+            # nothing numeric in common, append empty dataframe
+            absolute_errors.append(pd.DataFrame())
+        else:
+            # align row counts (use the shorter one) and reset index for safe subtraction
+            n = min(len(pred_num), len(truth_num))
+            pred_slice = pred_num.loc[: n - 1, common_cols].reset_index(drop=True)
+            truth_slice = truth_num.loc[: n - 1, common_cols].reset_index(drop=True)
+
+            # error = truth - prediction, keep absolute per-cell errors
+            errors = truth_slice - pred_slice
+            abs_errors = errors.abs()
+
+            euclidean_distances.append((errors * errors).sum(axis=1).pow(0.5))
+
+            absolute_errors.append(abs_errors)
+
+    euclidean_distances = np.array(euclidean_distances)
+    for error_df in absolute_errors:
+        error_df.drop(["Unnamed: 0", "TimeIndex", "file_id", "chirp_idx"], axis=1, inplace=True, errors="ignore")
+
+    tightness = []
+    radii = []
+    densities = []
+    error_densities = []
+
+    for i in range(len(prediction_list[0])):
+        pred_cluster_i = group_ensemble_data(prediction_list, i)
+        measures = compute_cluster_measures(pred_cluster_i)
+        tightness.append(measures["tightness"])
+        radii.append(measures["radius_mean"])
+        densities.append(measures["density"])
+
+        error_cluster_i = group_ensemble_data(absolute_errors, i)
+        error_measures = compute_cluster_measures(error_cluster_i)
+        error_densities.append(error_measures["density"])
+        # print(measures["tightness"])
+
+    average_error_per_point = []
+    for error_df in absolute_errors:
+        if not error_df.empty:
+            avg_error = error_df.mean(axis=1)
+            average_error_per_point.append(avg_error.values)
+        else:
+            average_error_per_point.append(np.nan)  # or some other placeholder for empty dataframes
+    average_error_per_point = np.array(average_error_per_point)
+
+    # copy file_id and chirp_idx from prediction_list as ints
+    prediction_ensemble_measures = prediction_list[0][['file_id', 'chirp_idx']].copy().astype(int)
+    # prediction_ensemble_measures.insert(0, 'id', prediction_list[0].index)
+    prediction_ensemble_measures['tightness'] = tightness
+    prediction_ensemble_measures['radius_mean'] = radii
+    prediction_ensemble_measures['density'] = densities
+    prediction_ensemble_measures['average_error_per_point'] = average_error_per_point.mean(axis=0)
+    prediction_ensemble_measures['error_density'] = error_densities
+    prediction_ensemble_measures['euclidean_distance'] = euclidean_distances.mean(axis=0)
+    return truth_list[0], prediction_ensemble_measures
+
+def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), metrics=[], show=True, save_filename=None):
     """
     Plot tightness vs chirp_idx for a given file_id using the existing `prediction_ensemble_measures`.
     Returns the matplotlib Axes instance.
@@ -140,15 +215,24 @@ def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), show=True, s
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
 
-    ax.plot(x, sel["tightness"], marker="o", linestyle="-", color="C0")
+    if type(metrics) == str:
+        metrics = [metrics]
+
+    if "tightness" in metrics:
+        ax.plot(x, sel["tightness"], marker="o", linestyle="-", color="C0")
     # Color points based on the value of sel["low_confidence"]
-    colors = sel["low_confidence"].map({True: "red", False: "blue"})
-    ax.plot(x, sel["radius_mean"] / -2, marker="", linestyle="-", color="C1")
-    ax.scatter(x, sel["radius_mean"] / -2, c=colors, marker="o", label="radius_mean (colored by low_confidence)")
-    ax.plot(x, np.log(sel["density"]) / 100, marker="o", linestyle="-", color="C2")
-    # ax.plot(x, sel["average_error_per_point"], marker="o", linestyle="-", color="C3")
-    ax.plot(x, np.log(sel["error_density"]) / 100, marker="o", linestyle="-", color="C4")
-    ax.plot(x, sel["euclidean_distance"] / 5, marker="o", linestyle="-", color="C5")
+    # colors = sel["low_confidence"].map({True: "red", False: "blue"})
+    if "radius_mean" in metrics:
+        ax.plot(x, sel["radius_mean"] / -2, marker="", linestyle="-", color="C1")
+    # ax.scatter(x, sel["radius_mean"] / -2, c=colors, marker="o", label="radius_mean (colored by low_confidence)")
+    if "density" in metrics:
+        ax.plot(x, np.log(sel["density"]) / 100, marker="o", linestyle="-", color="C2")
+    if "average_error_per_point" in metrics:
+        ax.plot(x, sel["average_error_per_point"], marker="o", linestyle="-", color="C3")
+    if "error_density" in metrics:
+        ax.plot(x, np.log(sel["error_density"]) / 100, marker="o", linestyle="-", color="C4")
+    if "euclidean_distance" in metrics:
+        ax.plot(x, sel["euclidean_distance"] / 5, marker="o", linestyle="-", color="C5")
     ax.set_xlabel("chirp_idx")
     ax.set_ylabel("tightness")
 
@@ -186,6 +270,18 @@ def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), show=True, s
         plt.close()
     return ax
 
+def plot_smoothed_uncertainty(file_id, df, measure, sigma=1, ylim=None, show=True):
+    sel = df[df['file_id'] == file_id]
+    smoothed = gaussian_filter(sel[measure], sigma=sigma, order=0, mode='reflect')
+    plt.plot(sel['chirp_idx'], -np.log(smoothed))
+    plt.title(f"{measure} vs chirp_idx: file={file_id}")
+    plt.xlabel("chirp_idx")
+    plt.ylabel(f"-ln({measure})")
+    if ylim is not None:
+        plt.ylim(ylim)
+    if show:
+        plt.show()
+
 def find_ideal_cluster_k(data, min_k, max_k, plot=False):
     n_clusters = dict()
     
@@ -213,6 +309,7 @@ def find_ideal_cluster_k(data, min_k, max_k, plot=False):
         wcss.append(sum(np.min(cdist(data, centroids, 'euclidean'), axis=1)) / data.shape[0])
     if plot:
         plt.plot(range(min_k, max_k), wcss)
+        plt.xticks(np.arange(min_k, max_k + 1, step=(max_k - min_k) // 10))
         plt.title('Elbow Method for Optimal k')
         plt.xlabel('Number of clusters (k)')
         plt.ylabel('WCSS')
