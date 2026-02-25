@@ -3,11 +3,12 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-21 10:04:19
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-22 20:41:12
+# @Last Modified time: 2026-02-24 16:20:34
+
+import os
 
 import argparse
 from enum import StrEnum
-import os
 from pathlib import Path
 import sys
 from matplotlib.figure import Figure
@@ -89,7 +90,33 @@ class VisualizerMeasuresInClusters:
                     continue
                 measure = kwargs['measure']
                 clusters = kwargs['clusters']
-                vizzer = Histogrammer(self.df, measure, clusters)
+
+                # Some clusters have vastly different value ranges
+                # than others. Example for HiFtoKnAmp in clusters 0,1,3:
+                #
+                # data.min():
+                # cluster_0   -1.755108
+                # cluster_1   -1.755108
+                # cluster_3   -1.755108
+
+                # data.max()
+                # cluster_0         4.842160
+                # cluster_1         4.939314
+                # cluster_3    379385.817896
+
+                # data[data > 6.0].count():
+                # cluster_0      0
+                # cluster_1      0
+                # cluster_3    142
+
+                # We want to show the distribution in all requested 
+                # clusters to show on a single histogram.
+                # This means we must deal with these range discrepancies. 
+                
+                data_to_plot, num_clipped_vals = self._adjust_for_histogram_outliers(
+                    self.df, measure, clusters)
+
+                vizzer = Histogrammer(data_to_plot, measure, clusters, num_clipped_vals)
                 fig = vizzer.run()
                 figs.append(fig)
                 fnames.append(f"maes_measure_{measure}_histo.png")
@@ -103,7 +130,53 @@ class VisualizerMeasuresInClusters:
                 one_fig.savefig(outpath)
 
         plt.show()
-             
+
+    #------------------------------------
+    # _adjust_for_histogram_outliers
+    #-------------------        
+
+    def _adjust_for_histogram_outliers(
+            self, 
+            df: pd.DataFrame, 
+            col_name: str, 
+            clusters: None | int | list[int],
+            percentile: float = 0.95  # Changed default to 0.95
+            ) -> tuple[pd.DataFrame, int]:
+        '''
+        Return df clipped_df with columns [col_name, 'cluster'].
+        All col_name values in this df are clipped to an 
+        'appropriate' value. 
+        That value is computed by the threshold below which 
+        99% of col_name values are set.
+        Only rows for which the 'cluster' column value is
+        in the clusters list are retained.
+        Returned is a tuple: the clipped df, and the number 
+        of values in col_name that have been clipped.
+        
+        :param df: df from which col_name and 'cluster' columns are taken
+        :param col_name: column name of focus
+        :param clusters: clusters to include  
+        :param percentile: percentile threshold for clipping (default 0.95)
+        :return: clipped dataframe and total number of clipped values
+        '''
+        
+        if clusters is None:
+            plot_data = df[[col_name, 'cluster']].dropna().copy()
+        else:
+            if isinstance(clusters, int):
+                clusters = [clusters]
+            cluster_mask = df['cluster'].isin(clusters)
+            plot_data = df.loc[cluster_mask, [col_name, 'cluster']].dropna().copy()
+        
+        # Single global percentile across all selected clusters
+        threshold = plot_data[col_name].quantile(percentile)
+        clip_limit = threshold * 1.1
+        
+        # Count and clip
+        clipped_count = (plot_data[col_name] > clip_limit).sum()
+        plot_data[col_name] = plot_data[col_name].clip(upper=clip_limit)
+        
+        return plot_data, clipped_count
 
 # ------------------- Class HeatMapTendencyBinary -------------
 class HeatMapTendencyBinary:        
@@ -389,7 +462,45 @@ class Histogrammer:
     # Constructor
     #-------------------
 
-    def __init__(self, df: pd.DataFrame, measure: str, clusters: list[str]):
+    def __init__(self, 
+                 df: pd.DataFrame, 
+                 measure: str, 
+                 clusters: list[str],
+                 num_clipped_values: int = 0):
+        '''
+        Prepares for the Histogram maker's run() method.
+
+        The df is the histogram data. A data column contains
+        measurement values. A second column 'cluster' declares
+        cluster membership. Like:
+
+                HiFtoKnAmp  cluster
+            0        1.643988        3
+            1       -0.663841        0
+            2        0.235559        0
+                    ...
+        
+        The number of distinct cluster values determines
+        the number of histograms shown on one axis.
+
+        Any clipping of extreme values must already have been
+        done and been reflected in df.
+
+        The measure is the column name for which a 
+        histogram is to be constructed (grouped by 
+        clusters: the column series)
+
+        The clusters is the grouping variable, and labels
+        the histograms in the chart's legend later.
+
+        :param df: data and cluster memberships
+        :param measure: measure being histogrammed
+        :param clusters: clusters whose distributin of
+            measure are to be drawn.
+        :param num_clipped_values: number of previously
+            clipped values to note in the title, defaults to 0
+        '''
+
         self.measure = measure
         # Create a dictionary with cluster as key, measures values as Series
         cluster_data = {
@@ -398,16 +509,21 @@ class Histogrammer:
         }
         self.histogram_df = pd.DataFrame(cluster_data)
         self.clusters = clusters 
+        self.num_clipped_values = num_clipped_values
     
     #------------------------------------
     # run
     #-------------------
 
     def run(self):
+        if self.num_clipped_values > 0:
+            title = f"Measure '{self.measure}' across clusters {self.clusters} ({self.num_clipped_values} clipped values)"
+        else:
+            title = f"Measure '{self.measure}' across clusters {self.clusters}"
         charter = SimpleCharter(
             self.histogram_df,
             ChartType.HISTOGRAMS,
-            title=f"Measure '{self.measure}' across clusters {self.clusters}",
+            title=title,
             xlabel=f"Measure {self.measure}"
             )
         return charter.fig

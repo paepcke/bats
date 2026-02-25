@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-17 10:13:33
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-22 20:43:11
+# @Last Modified time: 2026-02-24 16:01:23
 
 import argparse
 from enum import StrEnum
@@ -169,7 +169,8 @@ class SimpleCharter:
                 col.dropna(),
                 bins=bins,
                 #alpha=0.5,  # Transparency for blending
-                alpha=0.8,  # Transparency for blending
+                #alpha=0.8,  # Transparency for blending
+                alpha=1.0,   # No blending
                 color=colors[i],
                 label=name,
                 edgecolor='white',

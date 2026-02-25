@@ -171,7 +171,7 @@
             "subProcess": false,
             "console": "integratedTerminal",
             "args": [
-                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_scaled.csv",
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_scaled_robust.csv",
                 "${workspaceFolder}/src/result_analysis/data/barn_results/meas_towards_clusters_cluster_profiles.csv",
                 "--illustrations", "histograms",
                 "--measure", "HiFtoKnAmp",
