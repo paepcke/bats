@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-22 08:26:51
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-24 09:45:24
+# @Last Modified time: 2026-02-25 09:46:59
 
 '''
 Facilities around scaling dataframes, including 
@@ -87,14 +87,15 @@ class Scaling:
                 new_df, scaler = self.robust_scale(df, cols)
                 
             # Write scaled df to file:
-            true_df_outfile = Utils.write_df_outfile(new_df, outfile)
+            true_df_outfile = Utils.write_df_outfile(new_df, outfile, force)
             if true_df_outfile:
                 self.log.info(f"Wrote scaled df to {true_df_outfile}")
                 # Also write scaler metadata to file:
                 true_scaler_dst_path = Utils.write_scaler_outfile(
                     scaler, 
                     outfile, 
-                    derive_fname=True)
+                    derive_fname=True,
+                    force=force)
                 if true_scaler_dst_path:
                     self.log.info(f"Wrote scaling metadata to {true_scaler_dst_path}")
                 else:

@@ -204,9 +204,9 @@
             "subProcess": false,
             "console": "integratedTerminal",
             "args": [
-                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures.csv",
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_augmented.csv",
                 "robust",
-                "--outfile", "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_scaled_robust.csv",
+                "--outfile", "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_augmented_scaled_robust.csv",
                 "--column", "TimeInFile", "PrecedingIntrvl", "HiFreq", "Bndwdth", "FreqMaxPwr", "PrcntMaxAmpDur", "FreqKnee", "PrcntKneeDur", "StartF", "UpprKnFreq", "HiFtoUpprKnAmp", "HiFtoKnAmp", "HiFtoFcAmp", "UpprKnToKnAmp", "KnToFcAmp", "LdgToFcAmp", "FreqCtr", "FFwd32dB", "FFwd20dB", "FFwd15dB", "FBak5dB", "FFwd5dB", "Bndw32dB", "Amp1stQrtl", "Amp2ndQrtl", "Amp3rdQrtl", "Amp4thQrtl", "1st10kHzSlp", "1st5to15kHzSlp", "1st10kHzExp", "1st5to15kHzExp", "AmpK@start"
             ],
             "cwd": "${workspaceFolder}/src",
@@ -241,8 +241,21 @@
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
+        },
+        {
+            "name": "Python: Run all analyses on a list of sub populations",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/run_analysis_per_subpopulation.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "--force",
+                "idiom-internal", "idiom-starts", "idiom-ends", "idiom-any", "non-idiom-random"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
         }
-
     ],
     "debug.defaultConfiguration": "Python: Test Explorer (unittests)"
 }

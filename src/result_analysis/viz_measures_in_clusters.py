@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-21 10:04:19
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-24 16:20:34
+# @Last Modified time: 2026-02-25 12:43:15
 
 import os
 
@@ -73,8 +73,9 @@ class VisualizerMeasuresInClusters:
             elif viz == Vizzes.MEAS_IMPORTANCE_EFFECT_SIZE_HEAT:
                 vizzer = HeatMapEffectSize(self.cluster_profile, num_clusters)
                 fig, ax, pivot_tbl = vizzer.run()
-                figs.append(fig)
-                fnames.append('maes_effect_size_heat.png')
+                if fig is not None:
+                    figs.append(fig)
+                    fnames.append('maes_effect_size_heat.png')
             elif viz == Vizzes.MEAS_IMPORTANCE_HISTOGRAMS:
                 # We need additional information for this 
                 # chart in the kwargs. Ensure we have them:
@@ -375,6 +376,9 @@ class HeatMapEffectSize:
         color_matrix = self.get_color_matrix(self.pivot_data)
         
         # Determine vmin/vmax for symmetric colormap
+        if color_matrix.size == 0 or np.all(np.isnan(color_matrix)):
+            self.log.warn("Effect-size color matrix is empty or all-NaN; skipping heatmap.")
+            return None, None, None
         max_abs_value = np.nanmax(np.abs(color_matrix))
         vmin, vmax = -max_abs_value, max_abs_value
         

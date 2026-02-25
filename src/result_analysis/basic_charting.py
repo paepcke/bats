@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-17 10:13:33
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-24 16:01:23
+# @Last Modified time: 2026-02-25 12:30:04
 
 import argparse
 from enum import StrEnum
@@ -36,7 +36,8 @@ class SimpleCharter:
                  title: str = '',
                  xlabel: str = '',
                  ylabel: str = '',
-                 outfile: Path = None
+                 outfile: Path = None,
+                 block: bool = False
                  ):
         
         if isinstance(data_info, pd.DataFrame):
@@ -64,7 +65,7 @@ class SimpleCharter:
             x_values.sort()
             bars = df.groupby(x_axis_col)[y_axis_cols].sum()
 
-            fig = self.bar_chart(x_values, bars, title, xlabel, ylabel)
+            self.fig = self.bar_chart(x_values, bars, title, xlabel, ylabel)
         
         elif chart_type == ChartType.HISTOGRAMS:
             self.fig = self.histograms(df)            
@@ -80,7 +81,7 @@ class SimpleCharter:
                         print('Aborting')
                         return
                 plt.savefig(str(outfile), dpi=300, bbox_inches='tight', transparent=True)
-            plt.show(block=True)
+            plt.show(block=block)
 
     #------------------------------------
     # bar_chart 

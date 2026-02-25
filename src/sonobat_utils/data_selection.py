@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-24 18:32:08
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-25 08:18:58
+# @Last Modified time: 2026-02-25 09:29:47
 
 import argparse
 from enum import StrEnum
@@ -51,7 +51,8 @@ class DataSelector:
                rand_selector: RandSelector = RandSelector.N_SAMPLES,
                quantity: int | float = -1,
                seed: int = 42,
-               outfile: str | Path = None
+               outfile: str | Path = None,
+               force: bool = False
                ) -> pd.DataFrame:
         
         if not isinstance(seed, int):
@@ -79,8 +80,6 @@ class DataSelector:
         elif pop_type == PopulationType.NON_IDIOM_RANDOM:
             # Anything not inside or on the edge of an idiom:
             df_pop = df_all[(~df_all['in_idiom'] == True)]
-
-            #****df_pop = df_all[~df_all['in_idiom']]
         
         # HOW MUCH to get:
         if rand_selector == RandSelector.N_SAMPLES \
@@ -106,7 +105,7 @@ class DataSelector:
 
         if outfile is not None:
             self.log.info(f"Writing selected rows to {outfile}")
-            Utils.write_df_outfile(df_final, outfile)
+            Utils.write_df_outfile(df_final, outfile, force=force)
 
         return df_final
 
@@ -145,6 +144,11 @@ def parse_args():
     parser.add_argument('-o', '--outfile',
                         help='where to write the resulting df',
                         default=None)
+        
+    parser.add_argument('-f', '--force',
+                        action='store_true',
+                        help='overwrite already existing files without asking',
+                        )
 
     parser.add_argument('-s', '--seed',
                         type=int,
@@ -191,7 +195,8 @@ def main():
         args.rand_selector,
         args.quantity,
         args.seed,
-        args.outfile
+        args.outfile,
+        args.force
     )
 
 # ------------- Main Section --------------

@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-19 18:33:23
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-25 08:52:48
+# @Last Modified time: 2026-02-25 12:44:41
 """
 Given each measure's normality in each cluster in file bats_measures_normality_all.csv,
 and the all-measures cluster assignments, examine whether any values are particularly important
@@ -850,7 +850,7 @@ class PostHocTests:
         n_pairs = n_clusters * (n_clusters - 1) // 2
         
         info = (f"\nTotal pairwise comparisons per measure: {n_pairs}"
-                "   Total tests across {len(measure_cols)} measures: {n_pairs * len(measure_cols)}"
+                f"  Total tests across {len(measure_cols)} measures: {n_pairs * len(measure_cols)}"
                 f"  Multiple testing correction: {self.correction_method}")
         self.log.info(info)
         

@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-17 19:03:14
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-20 09:00:19
+# @Last Modified time: 2026-02-25 12:36:48
 
 import argparse
 import os
@@ -63,7 +63,8 @@ class NormalityChecker:
                  by_cluster: bool,
                  all_numerics: bool,
                  cols: str | list[str],
-                 outfile: str | None
+                 outfile: str | None,
+                 force: bool = False
                  ):
         '''
         Given a dataframe or file to .feather or .csv that can load
@@ -143,7 +144,7 @@ class NormalityChecker:
         self.res_df.index.names = ['measure', 'cluster']
 
         if outfile is not None:
-            self.write_outfile(self.res_df, outfile)
+            Utils.write_df_outfile(self.res_df.reset_index(), outfile, force=force)
             
         print(self.res_df)
 
@@ -185,7 +186,7 @@ class NormalityChecker:
     # normality_histogram
     #-------------------
 
-    def normality_histogram(self, data: pd.Series, cluster_id: str = None):
+    def normality_histogram(self, data: pd.Series, cluster_id: str = None, block: bool = False):
         
         is_normal: bool
 
@@ -227,7 +228,7 @@ class NormalityChecker:
         self.btn_yes.on_clicked(set_yes)
         self.btn_no.on_clicked(set_no)        
 
-        plt.show(block=True)
+        plt.show(block=block)
         return is_normal
             
     #------------------------------------
@@ -334,6 +335,11 @@ if __name__ == "__main__":
                         help='optional outfile; options are .csv and .feather',
                         )
 
+    parser.add_argument('-f', '--force',
+                        action='store_true',
+                        default=False,
+                        help='whether to overwrite destination files without asking')
+
     args = parser.parse_args()
 
     NormalityChecker(args.infile,
@@ -341,6 +347,7 @@ if __name__ == "__main__":
                      args.clustered,
                      args.numerics,
                      args.cols,
-                     args.outfile
+                     args.outfile,
+                     args.force
                      )
 
