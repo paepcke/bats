@@ -226,6 +226,21 @@
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
+        },
+        {
+            "name": "Python: gather population: idiom_internal",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/data_selection.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures.csv",
+                "--population_type", "non-idiom-random",
+                "--rand_selector", "match-in-idiom"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
         }
 
     ],

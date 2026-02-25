@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-19 18:33:23
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-21 13:26:50
+# @Last Modified time: 2026-02-25 08:52:48
 """
 Given each measure's normality in each cluster in file bats_measures_normality_all.csv,
 and the all-measures cluster assignments, examine whether any values are particularly important
@@ -133,7 +133,8 @@ RELEVANT_COLS = [
     'FFwd15dB', 'FBak5dB', 'FFwd5dB', 'Bndw32dB', 'Amp1stQrtl',
     'Amp2ndQrtl', 'Amp3rdQrtl', 'Amp4thQrtl', '1st10kHzSlp',
     '1st5to15kHzSlp', '1st10kHzExp', '1st5to15kHzExp', 'AmpK@start',
-    'chirp_idx','idiom_start', 'idiom_end','in_idiom', 'is_first', 'is_last'
+    'chirp_idx','idiom_start', 'idiom_end','in_idiom', 'is_first', 'is_last',
+    'seq_duration'
     ]
 
 # =====================================================================
