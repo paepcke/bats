@@ -21,6 +21,12 @@ import sys
 sys.path.append("..")
 from peak_detection.data_series_analyzer import DataSeriesAnalyzer
 
+def scale(df, scaler, cols_to_keep=[]):
+    columns_to_scale = [col for col in df.columns if col not in cols_to_keep]
+    scaler.fit(df[columns_to_scale])
+    df.loc[:, columns_to_scale] = scaler.transform(df.loc[:, columns_to_scale])
+    return df
+
 def unscale(df, scaler_path, cols_to_keep=[]):
     scaler = joblib.load(open(f'{scaler_path}', 'rb'))
     non_scaler_columns = {}
@@ -273,10 +279,16 @@ def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), metrics=[], 
 def plot_smoothed_uncertainty(file_id, df, measure, sigma=1, ylim=None, show=True):
     sel = df[df['file_id'] == file_id]
     smoothed = gaussian_filter(sel[measure], sigma=sigma, order=0, mode='reflect')
-    plt.plot(sel['chirp_idx'], -np.log(smoothed))
-    plt.title(f"{measure} vs chirp_idx: file={file_id}")
-    plt.xlabel("chirp_idx")
-    plt.ylabel(f"-ln({measure})")
+    if measure == "density":
+        plt.plot(sel['chirp_idx'], -np.log(smoothed))
+    else:
+        plt.plot(sel["chirp_idx"], smoothed)
+    plt.title(f"Uncertainty by chirp prediction: file={file_id}")
+    plt.xlabel("Chirp Index")
+    if measure == "density":
+        plt.ylabel(f"-ln({measure if measure != 'radius_mean' else 'distance'})")
+    else:
+        plt.ylabel(f"{measure if measure != 'radius_mean' else 'distance'}")
     if ylim is not None:
         plt.ylim(ylim)
     if show:
@@ -560,10 +572,8 @@ def most_common_subsequences(sequences, length, subseq_type="all", k=None):
             if len(seq) >= length:
                 suffix = tuple(seq[-length:])
                 subseq_count[suffix] += 1
-    if k:
-        return subseq_count.most_common(k)
-    else:
-        return subseq_count
+                
+    return subseq_count.most_common(k)
 
 # Function: quantile_normalize
 # ----------------------
