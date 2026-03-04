@@ -1,9 +1,10 @@
+# -*- coding: utf-8 -*-
+# @Author: Andrew Chen
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import scipy.stats as stats
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, QuantileTransformer
-import os
 from tqdm import tqdm
 import joblib
 from scipy import special
@@ -13,21 +14,53 @@ from scipy.spatial.distance import cdist
 from kneed import KneeLocator
 from scipy.cluster.hierarchy import fcluster
 from hdbscan import HDBSCAN
-from sklearn.decomposition import PCA
 from sklearn import cluster
 from collections import Counter
 from scipy.ndimage import gaussian_filter
-import sys
-sys.path.append("..")
 from peak_detection.data_series_analyzer import DataSeriesAnalyzer
+from scipy.stats import normaltest
 
 def scale(df, scaler, cols_to_keep=[]):
+    """
+    Scale numeric columns of a DataFrame using a provided sklearn scaler.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input DataFrame containing features to scale.
+    scaler : sklearn-like transformer
+        Fitted or unfitted scaler object implementing `fit` and `transform`.
+    cols_to_keep : list of str, optional
+        Column names that should NOT be scaled.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with selected columns scaled in-place.
+    """
     columns_to_scale = [col for col in df.columns if col not in cols_to_keep]
     scaler.fit(df[columns_to_scale])
     df.loc[:, columns_to_scale] = scaler.transform(df.loc[:, columns_to_scale])
     return df
 
 def unscale(df, scaler_path, cols_to_keep=[]):
+    """
+    Invert scaling transformation using a saved scaler.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Scaled DataFrame to be inverse transformed.
+    scaler_path : str
+        Path to a joblib-saved scaler.
+    cols_to_keep : list of str, optional
+        Columns to copy directly from the input df without inverse scaling.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame restored to original feature scale.
+    """
     scaler = joblib.load(open(f'{scaler_path}', 'rb'))
     non_scaler_columns = {}
     temp_df = df.copy()
@@ -60,23 +93,40 @@ def unscale(df, scaler_path, cols_to_keep=[]):
     return original_df
 
 def group_ensemble_data(prediction_df_list, index):
+    """
+    Extract ensemble predictions at a given row index.
+
+    Parameters
+    ----------
+    prediction_df_list : list of pandas.DataFrame
+        List of prediction DataFrames.
+    index : int
+        Row index to extract from each DataFrame.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of stacked predictions across ensemble members.
+    """
     preds_i = np.array([pred.iloc[index] for pred in prediction_df_list])
     return preds_i
 
 def compute_cluster_measures(X, radius_for_density=None):
     """
-    Compute cluster measures for an array X of shape (n_points, n_features).
-    Returns a dict with:
-      - n, dim
-      - centroid
-      - distances (to centroid)
-      - radius (max distance to centroid)
-      - avg_radius (mean distance to centroid)
-      - std_radius
-      - diameter (max pairwise distance)
-      - avg_pairwise_distance
-      - tightness = 1 / (1 + avg_pairwise_distance)  (higher -> tighter)
-      - density = n_points / vol_ball(radius)  (uses 'radius' or radius_for_density if provided)
+    Compute geometric and density-based statistics for a cluster of points.
+
+    Parameters
+    ----------
+    X : array-like of shape (n_points, n_features)
+        Data points in feature space.
+    radius_for_density : float, optional
+        Radius to use for density calculation. If None, uses max radius.
+
+    Returns
+    -------
+    dict
+        Dictionary containing cluster statistics including centroid,
+        radii, pairwise distances, tightness, volume, and density.
     """
     X = X[:, 2:len(X) - 3]
     X = np.asarray(X, dtype=float)
@@ -129,6 +179,54 @@ def compute_cluster_measures(X, radius_for_density=None):
     }
 
 def calculate_ensemble_measures(prediction_files, truth_files):
+    """
+    Compute ensemble-based uncertainty and error measures across multiple
+    prediction files relative to corresponding ground-truth files.
+
+    This function aggregates predictions from multiple ensemble members,
+    computes per-point geometric cluster statistics (e.g., tightness,
+    radius, density), and evaluates prediction error metrics relative to
+    ground truth. Metrics are computed per chirp index across ensemble
+    members.
+
+    Parameters
+    ----------
+    prediction_files : list of str
+        List of file paths to CSV files containing model predictions.
+        Each file must contain numeric prediction columns and identifier
+        columns including 'file_id' and 'chirp_idx'.
+    truth_files : list of str
+        List of file paths to CSV files containing corresponding ground
+        truth values. Must align one-to-one with `prediction_files`.
+
+    Returns
+    -------
+    tuple
+        (truth_df, prediction_ensemble_measures)
+
+        truth_df : pandas.DataFrame
+            The first loaded ground-truth DataFrame (used as reference).
+
+        prediction_ensemble_measures : pandas.DataFrame
+            DataFrame indexed like the first prediction file, containing:
+            - file_id (int)
+            - chirp_idx (int)
+            - tightness (float): inverse pairwise-distance-based compactness
+            - radius_mean (float): mean distance to cluster centroid
+            - density (float): estimated hypersphere density of predictions
+            - average_error_per_point (float): mean absolute error across ensemble
+            - error_density (float): density of absolute error cluster
+            - euclidean_distance (float): mean Euclidean error across ensemble
+
+    Notes
+    -----
+    - Only numeric columns common to both prediction and truth files are
+      used for error computation.
+    - Cluster measures are computed using `compute_cluster_measures` on
+      ensemble-stacked predictions at each chirp index.
+    - Density is estimated using the volume of a hypersphere defined by
+      the maximum centroid distance.
+    """
     prediction_list = []
     truth_list = []
     absolute_errors = []
@@ -204,8 +302,34 @@ def calculate_ensemble_measures(prediction_files, truth_files):
 
 def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), metrics=[], show=True, save_filename=None):
     """
-    Plot tightness vs chirp_idx for a given file_id using the existing `prediction_ensemble_measures`.
-    Returns the matplotlib Axes instance.
+    Plot selected uncertainty and error metrics across chirp indices for a given file.
+
+    Parameters
+    ----------
+    file_id : int or str
+        Identifier of the file whose chirp-level uncertainty should be plotted.
+    df : pandas.DataFrame
+        DataFrame containing at least the columns:
+        ['file_id', 'chirp_idx'] and one or more uncertainty metrics such as
+        'tightness', 'radius_mean', 'density',
+        'average_error_per_point', 'error_density', 'euclidean_distance'.
+    ax : matplotlib.axes.Axes, optional
+        Existing axes object to draw on. If None, a new figure and axes
+        are created.
+    figsize : tuple of int, optional
+        Size of the figure when creating a new one.
+    metrics : str or list of str, optional
+        Metric name(s) to plot. If a string is provided, it is converted
+        to a single-element list.
+    show : bool, optional
+        If True, calls `plt.show()` after plotting.
+    save_filename : str, optional
+        If provided, saves the figure to '<save_filename>.png'.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes object containing the generated plot.
     """
     sel = df[df["file_id"] == file_id].copy()
     if sel.empty:
@@ -216,7 +340,6 @@ def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), metrics=[], 
     # if chirp_idx are whole numbers, cast to int for nicer x ticks
     if np.allclose(x % 1, 0):
         x = x.astype(int)
-    # y = sel["tightness"]
 
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -258,7 +381,6 @@ def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), metrics=[], 
 
     ax.set_title(f"tightness vs chirp_idx (file_id={file_id})")
     ax.grid(True, linestyle="--", alpha=0.6)
-    # ax.set_ylim(-1,0.1)
 
     # label the three plotted series (they were plotted above in order) and show legend
     labels = ["tightness", "-radius_mean", "log(pred_density) / 100", "log(error_density) / 100", "mean euclidean distance / 5"]
@@ -277,6 +399,29 @@ def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), metrics=[], 
     return ax
 
 def plot_smoothed_uncertainty(file_id, df, measure, sigma=1, ylim=None, show=True):
+    """
+    Plot a Gaussian-smoothed uncertainty measure across chirp indices
+    for a specific file.
+
+    Parameters
+    ----------
+    file_id : int or str
+        Identifier of the file to visualize.
+    df : pandas.DataFrame
+        DataFrame containing 'file_id', 'chirp_idx', and the specified measure.
+    measure : str
+        Column name representing the uncertainty metric to smooth and plot.
+    sigma : float, optional
+        Standard deviation for Gaussian smoothing.
+    ylim : tuple, optional
+        y-axis limits as (min, max).
+    show : bool, optional
+        If True, displays the plot.
+
+    Returns
+    -------
+    None
+    """
     sel = df[df['file_id'] == file_id]
     smoothed = gaussian_filter(sel[measure], sigma=sigma, order=0, mode='reflect')
     if measure == "density":
@@ -295,6 +440,33 @@ def plot_smoothed_uncertainty(file_id, df, measure, sigma=1, ylim=None, show=Tru
         plt.show()
 
 def find_ideal_cluster_k(data, min_k, max_k, plot=False):
+    """
+    Estimate the optimal number of clusters using multiple heuristics.
+
+    This function applies:
+    - Gap statistic
+    - First positive gap-difference rule
+    - Elbow method (via WCSS and knee detection)
+
+    Parameters
+    ----------
+    data : array-like of shape (n_samples, n_features)
+        Feature matrix to cluster.
+    min_k : int
+        Minimum number of clusters to evaluate.
+    max_k : int
+        Maximum number of clusters to evaluate (exclusive upper bound).
+    plot : bool, optional
+        If True, visualizes gap statistic and elbow curves.
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - 'gap_statistic'
+        - 'diff_statistic'
+        - 'elbow_method'
+    """
     n_clusters = dict()
     
     # calculate gap statistic using optimalK
@@ -310,8 +482,9 @@ def find_ideal_cluster_k(data, min_k, max_k, plot=False):
         # plt.plot(optimalK.gap_df.n_clusters, optimalK.gap_df.gap_value)
         optimalK.plot_results()
 
-    # Use the elbow method to find the number of clusters where the within-cluster sum of squares (WCSS) starts to level off
-    # Use agglomerative clustering to compute WCSS for k=1 to 50
+    # Use the elbow method to find the number of clusters where the within-cluster sum of squares (WCSS) 
+    # starts to level off
+    # Use agglomerative clustering to compute WCSS from min_k to max_k
     wcss = []
     for i in tqdm(range(min_k, max_k)):
         agglom = cluster.AgglomerativeClustering(n_clusters=i)
@@ -334,6 +507,27 @@ def find_ideal_cluster_k(data, min_k, max_k, plot=False):
     return n_clusters
 
 def cluster_chirps(data, clustering_method, umap, n_clusters):
+    """
+    Cluster chirp feature representations using HDBSCAN or Agglomerative clustering.
+
+    Parameters
+    ----------
+    data : array-like
+        Feature matrix to cluster.
+    clustering_method : {'HDBSCAN', 'Agglomerative'}
+        Clustering algorithm to use.
+    umap : bool
+        Indicates whether the data has been UMAP-embedded (affects
+        clustering hyperparameters).
+    n_clusters : int
+        Desired number of clusters (used for hierarchical extraction
+        or agglomerative clustering).
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of cluster labels for each sample.
+    """
     # getting the linkage tree allows us to specify the number of clusters we want afterwards
     if clustering_method == "HDBSCAN":
         if umap:
@@ -378,8 +572,25 @@ def cluster_chirps(data, clustering_method, umap, n_clusters):
 
 def detect_uncertainty_peaks(file_id, df, measure, sigma=3):
     """
-    Detect peaks in tightness for a given file_id using DataSeriesAnalyzer.
-    Returns a list of chirp_idx where peaks were detected.
+    Detect significant peaks in an uncertainty measure using
+    DataSeriesAnalyzer.
+
+    Parameters
+    ----------
+    file_id : int or str
+        Identifier of the file to analyze.
+    df : pandas.DataFrame
+        DataFrame containing 'file_id', 'chirp_idx', and the specified measure.
+    measure : str
+        Column name representing the uncertainty metric.
+    sigma : float, optional
+        Smoothing parameter passed to the peak analyzer.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame describing detected peaks, including frame index,
+        prominence, and related statistics.
     """
     sel = df[df["file_id"] == file_id].copy()
     # sort sel by chirp_idx
@@ -394,20 +605,27 @@ def detect_uncertainty_peaks(file_id, df, measure, sigma=3):
     # Get a df with columns:
     # 'frame_number', 'prominence', 'plateau', 'smoothed_content_val', 'content_vals'
     peaks_info = analyzer.analyze(sigma=sigma)
-    # print(peaks_info)
     return peaks_info
 
-# Function: get_surrounding_peak_sequence
-# ----------------------------
-# Given the index of a peak chirp, this function retrieves a sequence of chirp indices
-# centered around the peak, extending a specified number of chirps before and after.
-# Parameters:
-# - peak_idx: Index of the peak chirp in dataframe
-# - df: DataFrame containing chirp data with 'file_id' and 'chirp_idx' columns
-# - context_size: Number of chirps to include before and after the peak
-# Returns:
-# - List of chirp indices surrounding the peak
 def get_surrounding_peak_sequence(peak_idx, df, context_size=5):
+    """
+    Retrieve indices surrounding a detected peak within the same file.
+
+    Parameters
+    ----------
+    peak_idx : int
+        Index of the peak row in the DataFrame.
+    df : pandas.DataFrame
+        DataFrame containing 'file_id' and 'chirp_idx'.
+    context_size : int, optional
+        Number of chirps to include before and after the peak.
+
+    Returns
+    -------
+    list of int
+        Original DataFrame indices representing the surrounding sequence.
+    """
+
     peak_row = df.loc[peak_idx]
     file_id = peak_row['file_id']
     chirp_idx = peak_row['chirp_idx']
@@ -421,25 +639,39 @@ def get_surrounding_peak_sequence(peak_idx, df, context_size=5):
     surrounding_indices = sel.loc[start_pos:end_pos, 'index'].tolist()
     return surrounding_indices
 
-# Function: identify_significant_peaks
-# ------------------------------------------
-# Given a DataFrame of idiom sequences with their uncertainty measures, identify significant peaks in a specified measure
-# for a particular sequence (row) based on similarity to other sequences and statistical significance
-# Parameters:
-# - idiom_df: DataFrame containing idiom sequences and their uncertainty measures
-# - row_idx: Index of the row in idiom_df to analyze
-# - measure: Column name in idiom_df representing the uncertainty measure to analyze (e.g., 'normalized_uncertainty_seq')
-# - similarity_threshold: Fractional threshold to determine similar sequences based on uncertainty range (default 0.1)
-# - significance_threshold: Z-score threshold to identify significant peaks (default 2.0)
-# Returns:
-# - significant_peaks: Indices of the significant peaks in the specified measure for the given row
-from scipy.stats import normaltest
-
 def identify_significant_peaks(idiom_df, row_idx, measure, range,
                                similarity_threshold=0.1,
                                std_threshold=None,
                                percentile_threshold=None,
                                verbose=0):
+    """
+    Identify statistically significant peaks in an uncertainty sequence
+    relative to similar sequences.
+
+    Parameters
+    ----------
+    idiom_df : pandas.DataFrame
+        DataFrame containing uncertainty sequences and metadata.
+    row_idx : int
+        Index of the row to analyze.
+    measure : str
+        Column containing sequences of uncertainty values.
+    range : str
+        Column name representing overall sequence range for similarity filtering.
+    similarity_threshold : float, optional
+        Fractional tolerance for selecting similar sequences.
+    std_threshold : float, optional
+        Z-score threshold for significance detection.
+    percentile_threshold : float, optional
+        Percentile threshold for peak detection.
+    verbose : int, optional
+        Verbosity level.
+
+    Returns
+    -------
+    list of int
+        Indices corresponding to significant peak positions.
+    """
     row = idiom_df.iloc[row_idx]
     # get sequences with similar uncertainty ranges
     similar_seqs = idiom_df[(idiom_df[range] >= (1 - similarity_threshold) * row[range]) & \
@@ -483,19 +715,25 @@ def identify_significant_peaks(idiom_df, row_idx, measure, range,
 
     return significant_peaks
 
-# Function: get_random_sequence
-# ---------------------------
-# This function retrieves a random sequence of 'n' chirp indices from the unscaled_truth_df,
-# ensuring that none of the indices in the selected sequence overlap with any indices
-# present in the existing_sequences list.
-# Parameters:
-# - n: The desired length of the chirp index sequence to retrieve.
-# - existing_sequences: A list of lists, where each inner list contains chirp indices
-#   that should not be included in the new sequence.
-# - unscaled_truth_df: A DataFrame containing chirp data
-# Return: A list of 'n' chirp indices that do not overlap with existing_sequences.
-
 def get_random_sequence(n, existing_sequences, unscaled_truth_df):
+    """
+    Retrieve a random contiguous chirp index sequence that does not
+    overlap with previously selected sequences.
+
+    Parameters
+    ----------
+    n : int
+        Desired sequence length.
+    existing_sequences : list of list of int
+        Previously selected index sequences to avoid overlapping.
+    unscaled_truth_df : pandas.DataFrame
+        DataFrame containing chirp data with 'file_id'.
+
+    Returns
+    -------
+    list of int
+        Randomly selected sequence of indices.
+    """
     existing_set = set()
     for seq in existing_sequences:
         existing_set.update(seq)
@@ -511,15 +749,24 @@ def get_random_sequence(n, existing_sequences, unscaled_truth_df):
         if not any(idx in existing_set for idx in seq_indices):
             return seq_indices
         
-# Function: get_random_idiom_sequence
-# ---------------------------
-# This function retrieves a random idiom sequence of length n from the idiom_df
-# Parameters:
-# - n: The desired length of the idiom sequence to retrieve.
-# - idiom_df: A DataFrame containing idiom sequences and their chirp indices.
-# Return: A list of 'n' chirp indices that make up the idiom sequence
-
 def get_random_idiom_sequence(n, idiom_df):
+    """
+    Retrieve a random contiguous subsequence from idiom-defined chirp sequences.
+
+    Parameters
+    ----------
+    n : int
+        Desired subsequence length.
+    idiom_df : pandas.DataFrame
+        DataFrame containing idiom sequences in column 'chirp_indices'
+        and sequence lengths in column 'length'.
+
+    Returns
+    -------
+    list
+        Subsequence of chirp indices.
+    """
+
     idiom_sequences = idiom_df[idiom_df['length'] >= n]['chirp_indices'].index
     if not idiom_sequences.any():
         raise ValueError("No idiom sequences of sufficient length found.")
@@ -527,26 +774,39 @@ def get_random_idiom_sequence(n, idiom_df):
     start_idx = np.random.randint(0, len(selected_idiom) - n + 1)
     return selected_idiom[start_idx:start_idx + n]
 
-# Function: get_attributes_from_indices
-# --------------------------------------
-# This function retrieves chirp attributes from the unscaled_truth_df
-# based on a provided list of chirp indices.
-# Parameters:
-# - indices: A list of chirp indices for which to retrieve attributes.
-# - unscaled_truth_df: A DataFrame containing chirp data.
-# Return: A list of chirp attributes corresponding to the provided indices.
-
 def get_attributes_from_indices(indices, unscaled_truth_df):
+    """
+    Extract chirp attribute vectors for given indices.
+
+    Parameters
+    ----------
+    indices : list of int
+        DataFrame row indices.
+    unscaled_truth_df : pandas.DataFrame
+        DataFrame containing chirp attribute columns.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        Attribute arrays corresponding to each index.
+    """
     return [unscaled_truth_df.iloc[i]["PrecedingIntrvl":"AmpK@start"].values for i in indices]
 
-# Function: calculate_sequence_volume
-# --------------------------------------
-# This function calculates the spherical volume in hyperspace occupied by a sequence of chirp attributes.
-# Parameters:
-# - attributes: A list of chirp attributes, where each attribute is a numpy array.
-# Return: The calculated volume as a float.
-
 def calculate_sequence_volume(attributes):
+    """
+    Compute the hyperspherical volume occupied by a set of attribute vectors.
+
+    Parameters
+    ----------
+    attributes : array-like
+        Collection of attribute vectors.
+
+    Returns
+    -------
+    float
+        Estimated volume of the minimal bounding hypersphere.
+    """
+
     centroid = np.mean(attributes, axis=0)
     distances = np.linalg.norm(attributes - centroid, axis=1)
     radius = np.max(distances)
@@ -554,10 +814,26 @@ def calculate_sequence_volume(attributes):
     volume = (np.pi ** (dim / 2)) / special.gamma((dim / 2) + 1) * (radius ** dim)
     return volume
 
-# Function: most_common_subsequences
-# --------------------------------------
-# 
 def most_common_subsequences(sequences, length, subseq_type="all", k=None):
+    """
+    Identify the most frequent subsequences of specified length.
+
+    Parameters
+    ----------
+    sequences : list of sequences
+        Collection of sequences to analyze.
+    length : int
+        Length of subsequences to count.
+    subseq_type : {'all', 'prefix', 'suffix'}, optional
+        Whether to count all subsequences, only prefixes, or only suffixes.
+    k : int, optional
+        Number of top results to return.
+
+    Returns
+    -------
+    list of tuple
+        List of (subsequence, count) pairs sorted by frequency.
+    """
     assert subseq_type in ["all", "prefix", "suffix"], "subseq_type must be in [all, prefix, suffix]"
     subseq_count = Counter()
     for seq in sequences:
@@ -575,14 +851,106 @@ def most_common_subsequences(sequences, length, subseq_type="all", k=None):
                 
     return subseq_count.most_common(k)
 
-# Function: quantile_normalize
-# ----------------------
-# quantile_normalize uses a QuantileTransformer to normalize a list of columns in a DataFrame to a normal distribution,
-# where values are transformed into their corresponding z-score.
-# @param df: the pandas DataFrame whose columns are being normalized
-# @param columns: the columns to normalize
-# @return: a pandas DataFrame whose columns are scaled, all other columns of df are kept constant
+def get_smoothed_uncertainty_sequence(df, peak_idx, measure, sigma=1):
+    """
+    Return a smoothed uncertainty sequence for the file containing a peak.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing uncertainty measures.
+    peak_idx : int
+        Index of a peak row.
+    measure : str
+        Column name of uncertainty measure.
+    sigma : float, optional
+        Gaussian smoothing parameter.
+
+    Returns
+    -------
+    list of float
+        Smoothed uncertainty values.
+    """
+    # Find the start and end indices of the sequence that contains the peak
+    file_id = df.iloc[peak_idx]["file_id"]
+    chirp_idx = df.iloc[peak_idx]["chirp_idx"]
+    
+    # Find all rows in the same file and chirp
+    sequence_rows = df[(df["file_id"] == file_id)]
+    # Apply Gaussian smoothing to the MEASURE column of these rows
+    sequence_rows[measure] = gaussian_filter(sequence_rows[measure].values, sigma=sigma, order=0, mode='reflect')
+    
+    # Return the smoothed uncertainty values for this sequence
+    return sequence_rows[measure].tolist()
+
+def calculate_height(df, peak_idx):
+    """
+    Calculate the prominence-like height of a detected peak relative to
+    surrounding troughs.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing 'chirp_idx' and 'smoothed_uncertainty'.
+    peak_idx : int
+        Index of the peak row.
+
+    Returns
+    -------
+    float
+        Height difference between peak and nearest trough.
+    """
+
+    adjusted_idx = df.loc[peak_idx]["chirp_idx"] - 4
+    sequence = df.loc[peak_idx]["smoothed_uncertainty"]
+    peak_value = sequence[adjusted_idx]
+    
+    # Find the troughs on either side of the peak
+    left_trough_idx = None
+    right_trough_idx = None
+    
+    # Look for troughs to the left of the peak
+    for i in range(adjusted_idx - 1, -1, -1):
+        if sequence[i] > sequence[i + 1]:
+            left_trough_idx = i + 1
+            break
+    
+    # Look for troughs to the right of the peak
+    for i in range(adjusted_idx + 1, len(sequence)):
+        if sequence[i] > sequence[i - 1]:
+            right_trough_idx = i - 1
+            break
+    
+    if left_trough_idx is not None and right_trough_idx is not None:
+        left_trough_uncertainty = sequence[left_trough_idx]
+        right_trough_uncertainty = sequence[right_trough_idx]
+        max_trough_uncertainty = max(left_trough_uncertainty, right_trough_uncertainty)
+        return peak_value - max_trough_uncertainty
+    elif left_trough_idx is not None:
+        return peak_value - sequence[left_trough_idx]
+    elif right_trough_idx is not None:
+        return peak_value - sequence[right_trough_idx]
+    else:
+        return 0
+
 def quantile_normalize(df, columns):
+    """
+    Apply quantile normalization to selected columns, mapping them to a
+    standard normal distribution.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Input DataFrame.
+    columns : list of str
+        Column names to normalize.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with normalized columns.
+    """
+
     scaled_df = df.copy()
     scaler = QuantileTransformer(output_distribution='normal')     
     scaler.set_output(transform="pandas")
@@ -590,21 +958,32 @@ def quantile_normalize(df, columns):
     scaled_df.loc[:, columns] = scaler.transform(df.loc[:, columns])
     return scaled_df
 
-# Function: describe_cluster
-# ----------------------------
-# describe_cluster gets the average of all chirp attributes within a given cluster, producing the "average chirp" that
-# represents the given cluster.
-# @param df: a pandas DataFrame() containing chirp attributes and cluster ids
-# @param cluster_idx: the cluster id to be averaged over
-# @param normalize: whether to normalize the chirp attributes using a QuantileTransformer to produce z-score-like measures
-# return: a pandas Series() consisting of the average value for each chirp attribute
 def describe_cluster(df, cluster_idx, normalize=False, ignore_columns=None):
+    """
+    Compute the average feature vector representing a specified cluster.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing feature columns and 'cluster_idx'.
+    cluster_idx : int
+        Cluster identifier to summarize.
+    normalize : bool, optional
+        If True, applies quantile normalization before averaging.
+    ignore_columns : list of str, optional
+        Columns to exclude from averaging.
+
+    Returns
+    -------
+    pandas.Series
+        Mean feature values for the specified cluster.
+    """
     cols_to_use = [col for col in df.columns if col not in ignore_columns]
     if normalize:
         df_to_describe = quantile_normalize(df, cols_to_use)
     else:
         df_to_describe = df
-    cluster_data = df_to_describe[df_to_describe["cluster_idx"] == cluster_idx]
+    cluster_data = df_to_describe[df_to_describe["cluster"] == cluster_idx]
     cluster_avg = cluster_data.loc[:, cols_to_use].mean(axis=0)
     return cluster_avg
 
