@@ -8,9 +8,10 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, QuantileTransfor
 from tqdm import tqdm
 import joblib
 from scipy import special
-from scipy.spatial.distance import pdist
+from scipy.signal import peak_prominences
+from scipy.spatial.distance import pdist, cdist, euclidean
+from scipy.stats import ttest_ind
 from gap_statistic import OptimalK
-from scipy.spatial.distance import cdist
 from kneed import KneeLocator
 from scipy.cluster.hierarchy import fcluster
 from hdbscan import HDBSCAN
@@ -986,6 +987,135 @@ def describe_cluster(df, cluster_idx, normalize=False, ignore_columns=None):
     cluster_data = df_to_describe[df_to_describe["cluster"] == cluster_idx]
     cluster_avg = cluster_data.loc[:, cols_to_use].mean(axis=0)
     return cluster_avg
+
+def identify_significant_peaks_by_range(df, reference_df, measure, sigma=1):
+    df["surrounding_seq_idx"] = df.index.map(lambda idx: get_surrounding_peak_sequence(idx, reference_df, context_size=4))
+    df["surrounding_seq_uncertainty"] = df["surrounding_seq_idx"].map(
+        lambda indices: reference_df.loc[indices, measure].values
+    )
+    df["surround_seq_uncertainty_smoothed"] = df["surrounding_seq_idx"].map(
+        lambda indices: gaussian_filter(reference_df.loc[indices, measure].values, sigma=sigma, order=0, mode='reflect')
+    )
+    df["seq_uncertainty_min"] = df["surround_seq_uncertainty_smoothed"].map(lambda arr: arr.min())
+    df["seq_uncertainty_max"] = df["surround_seq_uncertainty_smoothed"].map(lambda arr: arr.max())
+    df["seq_uncertainty_mean"] = df["surround_seq_uncertainty_smoothed"].map(lambda arr: arr.mean())
+    df["seq_uncertainty_range"] = df["seq_uncertainty_max"] - df["seq_uncertainty_min"]
+    # check if the seq_uncertainty_max occurs at the peak's index, i.e., the index of the row in df
+    df["peak_at_max"] = df.apply(
+        lambda row: row['surround_seq_uncertainty_smoothed'][row['surrounding_seq_idx'].index(row.name)] == row['seq_uncertainty_max'],
+        axis=1
+    )
+    df["normalized_surrounding_seq"] = df["surround_seq_uncertainty_smoothed"].map(
+        lambda arr: (arr - arr.mean())
+    )
+    return df
+
+def identify_significant_peaks_by_prominence(df, reference_df, measure, sigma=1):
+    # create a row called "smoothed_uncertainty" that contains the smoothed uncertainty values for the entire sequence that the peak belongs to
+    df["smoothed_uncertainty"] = df.apply(lambda row: get_smoothed_uncertainty_sequence(reference_df, row.name, measure, sigma), axis=1)
+    df["seq_len"] = df["smoothed_uncertainty"].apply(lambda x: len(x) + 4)
+
+    # add a new column to df called "height", the difference between the value of df["smoothed_uncertainty"]
+    # at the peak's index and the higher of the two troughs on either side of the peak (the lowest value before the values start
+    # increasing on either side of the peak)    
+    df["peak_value"] = df.apply(lambda row: row["smoothed_uncertainty"][row["chirp_idx"] - 4], axis=1)
+    df["height"] = df.apply(lambda row: calculate_height(df, row.name), axis=1)
+    df["prominence"] = df.apply(lambda row: peak_prominences(row["smoothed_uncertainty"], [row["chirp_idx"] - 4])[0][0], axis=1)
+    df["range"] = df["smoothed_uncertainty"].apply(lambda x: max(x) - min(x))
+    df["height_to_range"] = df["height"] / df["range"]
+    df["prominence_to_range"] = df["prominence"] / df["range"]
+    return df
+
+def compare_idiom_similarity_by_volume(idiom_sequences, ground_truth, sample_size, seq_length):
+    idiom_df = pd.DataFrame({"chirp_indices": idiom_sequences})
+    idiom_df["chirp_attributes"] = idiom_df["chirp_indices"].map(
+        lambda indices: get_attributes_from_indices(indices, ground_truth)
+    )
+    idiom_df["length"] = idiom_df["chirp_indices"].map(lambda indices: len(indices))
+
+    idiom_volumes = []
+    for _ in range(sample_size):
+        seq = get_random_idiom_sequence(seq_length, idiom_df)
+        attributes = get_attributes_from_indices(seq, ground_truth)
+        volume = calculate_sequence_volume(attributes)
+        idiom_volumes.append(volume)
+    idiom_volumes = np.array(idiom_volumes)
+
+    # get a distribution of non-idiom volumes by randomly sampling sequences of chirps that do not overlap with idioms
+    non_idiom_volumes = []
+    for _ in range(sample_size):
+        seq = get_random_sequence(seq_length, idiom_sequences, ground_truth)
+        attributes = get_attributes_from_indices(seq, ground_truth)
+        volume = calculate_sequence_volume(attributes)
+        non_idiom_volumes.append(volume)
+    non_idiom_volumes = np.array(non_idiom_volumes)
+
+    if sample_size < 20:
+        print("Idiom volumes:", idiom_volumes)
+        print("Non-idiom volumes:", non_idiom_volumes)
+
+    # scale down the volumes by 1e100 to avoid overflow in t-test
+    idiom_volumes /= 1e100
+    non_idiom_volumes /= 1e100
+
+    # take the log of the volumes (NOT STATISTICALLY EQUIVALENT TO SCALING)
+    # idiom_volumes = np.log(idiom_volumes + 1e-12)
+    # non_idiom_volumes = np.log(non_idiom_volumes + 1e-12)
+
+    if sample_size < 20:
+        print("Scaled idiom volumes:", idiom_volumes)
+        print("Scaled non-idiom volumes:", non_idiom_volumes)
+
+    # run a statistical t-test to compare the two distributions
+    t_stat, p_value = ttest_ind(idiom_volumes, non_idiom_volumes, equal_var=False, alternative='less')
+    print(f"Idiom volumes (scaled): mean = {np.mean(idiom_volumes):.4e}, std = {np.std(idiom_volumes):.4e}")
+    print(f"Non-idiom volumes (scaled): mean = {np.mean(non_idiom_volumes):.4e}, std = {np.std(non_idiom_volumes):.4e}")
+    print(f"T-test results: t-statistic = {t_stat:.4f}, p-value = {p_value:.4f}")
+
+def compare_idiom_similarity_by_pairwise_distance(idiom_sequences, ground_truth, sample_size, seq_length):
+    idiom_df = pd.DataFrame({"chirp_indices": idiom_sequences})
+    idiom_df["chirp_attributes"] = idiom_df["chirp_indices"].map(
+        lambda indices: get_attributes_from_indices(indices, ground_truth)
+    )
+    idiom_df["length"] = idiom_df["chirp_indices"].map(lambda indices: len(indices))
+    
+    idiom_pairwise_distances = []
+    non_idiom_pairwise_distances = []
+    for _ in tqdm(range(sample_size)):
+        seq = get_random_idiom_sequence(seq_length, idiom_df)
+        attributes = get_attributes_from_indices(seq, ground_truth)
+    # pick a random chirp in attributes and calculate distances to all other chirps
+    ref_idx = np.random.randint(0, len(attributes))
+    ref_chirp = attributes[ref_idx]
+    for i, chirp in enumerate(attributes):
+        if i == ref_idx:
+            continue
+        dist = euclidean(ref_chirp, chirp)
+        idiom_pairwise_distances.append(dist)
+
+    # pick SEQ_LENGTH - 1 random chirps not in the idiom sequence and calculate distances to the same ref_chirp
+    non_idiom_indices = []
+    for i in range(seq_length - 1):
+        seq = get_random_sequence(1, idiom_sequences, ground_truth)
+        non_idiom_indices.append(seq[0])
+
+    non_idiom_attributes = get_attributes_from_indices(non_idiom_indices, ground_truth)
+    for chirp in non_idiom_attributes:
+        dist = euclidean(ref_chirp, chirp)
+        non_idiom_pairwise_distances.append(dist)
+
+    idiom_pairwise_distances = np.array(idiom_pairwise_distances)
+    non_idiom_pairwise_distances = np.array(non_idiom_pairwise_distances)
+
+    if sample_size <= 10:
+        print("Idiom pairwise distances:", idiom_pairwise_distances)
+        print("Non-idiom pairwise distances:", non_idiom_pairwise_distances)
+
+    # run a statistical t-test to compare the two distributions
+    t_stat, p_value = ttest_ind(idiom_pairwise_distances, non_idiom_pairwise_distances, equal_var=False, alternative='less')
+    print(f"Idiom pairwise distances: mean = {np.mean(idiom_pairwise_distances):.4e}, std = {np.std(idiom_pairwise_distances):.4e}")
+    print(f"Non-idiom pairwise distances: mean = {np.mean(non_idiom_pairwise_distances):.4e}, std = {np.std(non_idiom_pairwise_distances):.4e}")
+    print(f"T-test results: t-statistic = {t_stat:.4f}, p-value = {p_value:.4f}")
 
 # =================================================
 # Old methods of finding peaks in uncertainty:
