@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-17 19:03:14
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-18 14:17:02
+# @Last Modified time: 2026-02-25 12:36:48
 
 import argparse
 import os
@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 from scipy.stats import shapiro
 
 from logging_service.logging_service import LoggingService
+
+from sonobat_utils.utils import Utils
 
 PHYSICAL_MEASURES = [
     'TimeInFile',
@@ -61,7 +63,8 @@ class NormalityChecker:
                  by_cluster: bool,
                  all_numerics: bool,
                  cols: str | list[str],
-                 outfile: str | None
+                 outfile: str | None,
+                 force: bool = False
                  ):
         '''
         Given a dataframe or file to .feather or .csv that can load
@@ -94,7 +97,7 @@ class NormalityChecker:
         self.log = LoggingService()
 
         if type(df_info) == str:
-            df = self.read_df(df_info)
+            df = Utils.read_df_file(df_info)
         elif isinstance(df_info, pd.DataFrame):
             df = df_info
         else:
@@ -131,7 +134,8 @@ class NormalityChecker:
             cluster_grp = df.groupby('cluster')
             cluster_result_dfs = []
             for cluster_id, df_slice in cluster_grp:
-                cluster_result_dfs.append(self.run_tests(df_slice,tests, cols, f"cluster {cluster_id}"))
+                cluster_result_dfs.append(
+                    self.run_tests(df_slice,tests, cols, f"cluster {cluster_id}"))
             self.res_df = pd.concat(cluster_result_dfs)
         else:
             self.res_df = self.run_tests(df, tests, cols, 'all_clusters')
@@ -140,7 +144,7 @@ class NormalityChecker:
         self.res_df.index.names = ['measure', 'cluster']
 
         if outfile is not None:
-            self.write_file(outfile)
+            Utils.write_df_outfile(self.res_df.reset_index(), outfile, force=force)
             
         print(self.res_df)
 
@@ -182,7 +186,7 @@ class NormalityChecker:
     # normality_histogram
     #-------------------
 
-    def normality_histogram(self, data: pd.Series, cluster_id: str = None):
+    def normality_histogram(self, data: pd.Series, cluster_id: str = None, block: bool = False):
         
         is_normal: bool
 
@@ -224,7 +228,7 @@ class NormalityChecker:
         self.btn_yes.on_clicked(set_yes)
         self.btn_no.on_clicked(set_no)        
 
-        plt.show(block=True)
+        plt.show(block=block)
         return is_normal
             
     #------------------------------------
@@ -292,69 +296,6 @@ class NormalityChecker:
         results_df = pd.DataFrame.from_dict(result_dict, orient='index')
         return results_df
 
-    #------------------------------------
-    # read_df
-    #-------------------        
-
-    def read_df(self, fpath: Path | str) -> pd.DataFrame:
-        '''
-        Given a path to a supposed dataframe on disk,
-        load and return the df. Reads .feather or .csv 
-
-        :param fpath: path to data
-        :raises FileNotFoundError: if file not found
-        :raises TypeError: if file not .feather or .csv
-        :return: the loaded df
-        '''
-        ppath = Path(fpath)
-        if not ppath.exists():
-            raise FileNotFoundError(f"File {fpath} not found")
-        if ppath.suffix == '.feather':
-            df = pd.read_feather(ppath)
-        elif ppath.suffix == '.csv':
-            df = pd.read_csv(ppath)
-        else:
-            raise TypeError(f"Input file must be .feather or .csv, not {fpath}")
-        return df
-        
-    #------------------------------------
-    # write_outfile
-    #-------------------
-
-    def write_outfile(self, df: pd.DataFrame, outfile: str):
-
-        while True:
-            if not os.path.exists(outfile):
-                # Outfile does not already exist; all good
-                break
-
-            resp = input(f"File '{outfile}' exists; overwrite/new path/cancel (o/p/c): ").lower()
-
-            if resp == 'o':
-                print(f"Overwriting {outfile}...")
-                break  # Exit loop and use current outfile
-            
-            elif resp == 'p':
-                new_path = input("Enter new file path: ")
-                outfile = new_path
-                # Loop restarts to check if the NEW path also exists
-            
-            elif resp == 'c':
-                print("Not saving result.")
-                return
-            
-            else:
-                print("Invalid input. Please enter 'o', 'p', or 'c'.")            
-
-        outpath = Path(outfile)
-        if outpath.suffix == '.csv':
-            df.to_csv(outfile)
-        elif outpath.suffix == '.feather':
-            df.to_feather(outfile)
-        elif outpath.suffix == '':
-            outpath_default = outpath.with_suffix('.csv')
-            print(f"Writing to {outpath_default}")
-            df.to_csv(outpath_default)
 
 
 #----------- main --------------
@@ -394,6 +335,11 @@ if __name__ == "__main__":
                         help='optional outfile; options are .csv and .feather',
                         )
 
+    parser.add_argument('-f', '--force',
+                        action='store_true',
+                        default=False,
+                        help='whether to overwrite destination files without asking')
+
     args = parser.parse_args()
 
     NormalityChecker(args.infile,
@@ -401,6 +347,7 @@ if __name__ == "__main__":
                      args.clustered,
                      args.numerics,
                      args.cols,
-                     args.outfile
+                     args.outfile,
+                     args.force
                      )
 

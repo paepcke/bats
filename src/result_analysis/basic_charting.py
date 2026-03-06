@@ -3,9 +3,10 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-17 10:13:33
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-17 19:02:18
+# @Last Modified time: 2026-02-25 12:30:04
 
 import argparse
+from enum import StrEnum
 import os
 from pathlib import Path
 import sys
@@ -15,6 +16,11 @@ from matplotlib.figure import Figure
 import numpy as np
 import pandas as pd
 
+from sonobat_utils.utils import Utils
+
+class ChartType(StrEnum):
+    BAR = 'bar'
+    HISTOGRAMS = 'histograms'
 
 class SimpleCharter:
 
@@ -23,56 +29,51 @@ class SimpleCharter:
     #-------------------
 
     def __init__(self, 
-                 infile: Path, 
-                 chart_type: str, 
-                 x_axis_col: str, 
-                 y_axis_cols: str | list[str],
+                 data_info: Path | pd.DataFrame, 
+                 chart_type: ChartType, 
+                 x_axis_col: str | None = None, 
+                 y_axis_cols: str | list[str] | None = None,
                  title: str = '',
                  xlabel: str = '',
                  ylabel: str = '',
-                 outfile: Path = None
+                 outfile: Path = None,
+                 block: bool = False
                  ):
         
-        if not infile.exists():
-            raise FileNotFoundError(f"Path {infile} not found")
-        if infile.suffix == '.feather':
-            df = pd.read_feather(infile)
-        elif infile.suffix == '.csv':
-            df = pd.read_csv(infile)
+        if isinstance(data_info, pd.DataFrame):
+            df = data_info
         else:
-            raise TypeError(f"Path must be .csv or .feather, not {infile}")
+            df = Utils.read_df_file(data_info)
+
+        self.title  = title
+        self.xlabel = xlabel
+        self.ylabel = ylabel
 
         if type(y_axis_cols) == str:
             y_axis_cols = [y_axis_cols]
         # Ensure that columns are present:
         col_names = df.columns
-        for col in [x_axis_col] + y_axis_cols:
-            if col not in col_names:
-                raise ValueError(f"Column {col} not in the given data")
+        if x_axis_col is not None and y_axis_cols is not None:
+            for col in [x_axis_col] + y_axis_cols:
+                if col not in col_names:
+                    raise ValueError(f"Column {col} not in the given data")
 
-        # Adjust font sizes:
-        # Set global sizes
-        plt.rcParams.update({
-            'font.size': 18,          # Base font size
-            'axes.titlesize': 24,     # Title size
-            'axes.labelsize': 20,     # X and Y label size
-            'xtick.labelsize': 16,    # X tick label size
-            'ytick.labelsize': 16,    # Y tick label size
-            'legend.fontsize': 16,    # Legend size
-            'lines.linewidth': 3,     # Thicker lines for visibility
-            'lines.markersize': 10    # Larger markers
-        })        
+        Utils.right_size_fontsizes()
 
-        if chart_type == 'bar':
+        if chart_type == ChartType.BAR:
             x_values = df[x_axis_col].unique()
             x_values.sort()
             bars = df.groupby(x_axis_col)[y_axis_cols].sum()
 
-            fig = self.bar_chart(x_values, bars, title, xlabel, ylabel)
-        else:
-            raise NotImplementedError(f"Only chart type 'bar' is currently implemented, not '{chart_type}'")
+            self.fig = self.bar_chart(x_values, bars, title, xlabel, ylabel)
         
-        if fig:
+        elif chart_type == ChartType.HISTOGRAMS:
+            self.fig = self.histograms(df)            
+        else:
+            msg = f"Only chart types {list(ChartType)} are currently implemented, not '{chart_type}'"
+            raise NotImplementedError(msg)
+        
+        if self.fig:
             if outfile is not None:
                 if outfile.exists():
                     conf = input(f"Outfile '{outfile}' exists. Replace (y/n): ")
@@ -80,7 +81,7 @@ class SimpleCharter:
                         print('Aborting')
                         return
                 plt.savefig(str(outfile), dpi=300, bbox_inches='tight', transparent=True)
-            plt.show(block=True)
+            plt.show(block=block)
 
     #------------------------------------
     # bar_chart 
@@ -132,6 +133,60 @@ class SimpleCharter:
         
         plt.tight_layout()
         return fig
+    
+    #------------------------------------
+    # histograms
+    #-------------------    
+
+    def histograms(self, data: pd.DataFrame | pd.Series) -> Figure:
+        """
+        Create overlapping histograms for one or more pandas Series.
+        
+        :param data: pandas DataFrame (each column plotted separately) or single pandas Series
+        :return: matplotlib Figure object containing the histogram plot
+        """
+        # Convert Series to single-column DataFrame
+        if isinstance(data, pd.Series):
+            data = data.to_frame()
+        
+        # Limit to 4 columns
+        if len(data.columns) > 4:
+            data = data.iloc[:, :4]
+            print("Warning: Only the first 4 columns will be plotted")
+        
+        # Define colors with good alpha blending
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Calculate common bins across all columns for proper alignment
+        all_values = pd.concat([data[col].dropna() for col in data.columns], ignore_index=True)
+        bins = np.histogram_bin_edges(all_values, bins='auto')
+        
+        # Plot each column
+        for i, (name, col) in enumerate(data.items()):
+            ax.hist(
+                col.dropna(),
+                bins=bins,
+                #alpha=0.5,  # Transparency for blending
+                #alpha=0.8,  # Transparency for blending
+                alpha=1.0,   # No blending
+                color=colors[i],
+                label=name,
+                edgecolor='white',
+                linewidth=0.5
+            )        
+        # Styling
+        ax.set_xlabel('Value' if self.xlabel == '' else self.xlabel, fontsize=12)
+        ax.set_ylabel('Frequency' if self.ylabel == '' else self.ylabel, fontsize=12)
+        ax.set_title('Distribution Comparison' if self.title == '' else self.title, fontsize=14, fontweight='bold')
+        ax.legend(loc='best', framealpha=0.9)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        plt.tight_layout()
+        
+        return fig
 
 # ---------------- Main -------------------
 
@@ -147,7 +202,8 @@ if __name__ == "__main__":
                         )
     
     parser.add_argument('chart_type',
-                        help="any of {'bar'} (others might get added)",
+                        choices=list(ChartType),
+                        help=f"type of chart to produce; required data depends on this type",
                         )
     
     parser.add_argument('x_column',
