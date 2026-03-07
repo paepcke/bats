@@ -15,6 +15,7 @@ import umap
 
 sys.path.append("..")
 from analysis_utils import *
+from intermodel_confidence import ChirpClusterer
 
 NO_AMP = 0 # set to 0 to keep all amp features, 1 to remove [Amp1stQrtl, Amp2ndQrtl, Amp3rdQrtl, Amp4thQrtl], 2 to remove all amp features
 
@@ -73,67 +74,42 @@ class IdiomComparer():
             dataframe["original_df"] = dataframe.apply(lambda x: 1 if x.name < len(df_1) else 2, axis=1)
 
         self.combined_chirp_attributes = combined_chirp_attributes
+        self.idiom_boundaries_attributes = idiom_boundaries_attributes
         return combined_chirp_attributes, idiom_boundaries_attributes, confidence_measures_attributes
 
-    def process_data(self, combined_chirp_attributes, idiom_boundaries_attributes):
-        # embed the combined chirp attributes for plotting
-        combined_chirp_attributes_embedded = umap.UMAP(
-            n_neighbors=15,
-            min_dist=0.1,
-            n_components=2,
-            random_state=42
-        ).fit_transform(combined_chirp_attributes.loc[:, 'PrecedingIntrvl':'AmpK@start'].to_numpy())
-
+    def extract_idioms(self):
         # get the idiom chirp attributes
         idiom_chirp_idxs = []
-        for idx, row in idiom_boundaries_attributes.iterrows():
+        for idx, row in self.idiom_boundaries_attributes.iterrows():
             for i in range(int(row[0]), int(row[1]) + 1):
                 idiom_chirp_idxs.append((idx, i, row["original_df"]))
 
         idiom_chirp_attributes = pd.DataFrame()
         for idiom_idx, chirp_idx, original_df in idiom_chirp_idxs:
-            attributes = combined_chirp_attributes.loc[(combined_chirp_attributes["original_df"] == original_df) & 
-                                                        (combined_chirp_attributes["OriginalIndex"] == chirp_idx)]
+            attributes = self.combined_chirp_attributes.loc[(self.combined_chirp_attributes["original_df"] == original_df) & 
+                                                            (self.combined_chirp_attributes["OriginalIndex"] == chirp_idx)]
             if idiom_chirp_attributes.empty:
                 idiom_chirp_attributes = attributes
             else:
                 idiom_chirp_attributes = pd.concat([idiom_chirp_attributes, attributes])
         idiom_chirp_attributes.reset_index(inplace=True)
-
-        idiom_chirp_data = idiom_chirp_attributes.loc[:, 'PrecedingIntrvl':'AmpK@start'].to_numpy()
-
-        # remove columns that contain "Amp" in their name if NO_AMP is set
-        if NO_AMP == 1:
-            amp_indices = [i - 3 for i, col in enumerate(idiom_chirp_attributes.columns) if col in ["Amp1stQrtl", "Amp2ndQrtl", "Amp3rdQrtl", "Amp4thQrtl"]]
-            idiom_chirp_data = np.delete(idiom_chirp_data, amp_indices, axis=1)
-        elif NO_AMP == 2:
-            amp_indices = [i - 3 for i, col in enumerate(idiom_chirp_attributes.columns) if "Amp" in col]
-            idiom_chirp_data = np.delete(idiom_chirp_data, amp_indices, axis=1)
-        self.combined_chirp_attributes_embedded = combined_chirp_attributes_embedded
+        
         self.idiom_chirp_attributes = idiom_chirp_attributes
-        return combined_chirp_attributes_embedded, idiom_chirp_data, idiom_chirp_attributes
+        return idiom_chirp_attributes
 
-    def cluster_data(self, idiom_chirp_data, idiom_chirp_attributes):
-        idiom_chirp_attributes_embedded = umap.UMAP(
-            n_neighbors=15,
-            min_dist=0.1,
-            n_components=2,
-            random_state=42
-        ).fit_transform(idiom_chirp_data)
-
-        print("Clustering the idiom chirps...")
-        # Run clustering on the set of idiom chirps combined from both idioms:
-        print("Finding ideal number of clusters...")
-        n_clusters = find_ideal_cluster_k(idiom_chirp_attributes_embedded, MIN_CLUSTER_K, MAX_CLUSTER_K, plot=False)
-        num_clusters = n_clusters["elbow_method"]
-
-        cluster_data_input = idiom_chirp_attributes_embedded if USE_UMAP else idiom_chirp_attributes.loc[:, 'PrecedingIntrvl':'AmpK@start'].to_numpy()
-        chirp_labels = cluster_chirps(cluster_data_input, CLUSTER_METHOD, USE_UMAP, num_clusters)
-        self.idiom_chirp_attributes['cluster'] = chirp_labels
-
-        idiom_label_sequences = idiom_chirp_attributes.groupby(["file_id", "original_df"]).agg(list)["cluster"].reset_index()
-        self.chirp_labels = chirp_labels
+    def cluster_data(self):
+        idiom_chirp_data = self.idiom_chirp_attributes.loc[:, 'PrecedingIntrvl':'AmpK@start'].to_numpy()
+        clusterer = ChirpClusterer(idiom_chirp_data, NO_AMP, USE_UMAP, CLUSTER_METHOD, MIN_CLUSTER_K, MAX_CLUSTER_K, calculate_k=True)
+        clusterer.prepare_data()
+        linked, idiom_chirp_attributes_embedded_df, chirp_labels, filtered_chirp_data_2d, filtered_chirp_labels = clusterer.cluster_data()
+        self.linked = linked
+        idiom_chirp_attributes_embedded = idiom_chirp_attributes_embedded_df.to_numpy()
         self.idiom_chirp_attributes_embedded = idiom_chirp_attributes_embedded
+        self.chirp_labels = chirp_labels
+        self.filtered_chirp_data_2d = filtered_chirp_data_2d
+        self.filtered_chirp_labels = filtered_chirp_labels
+
+        idiom_label_sequences = self.idiom_chirp_attributes.groupby(["file_id", "original_df"]).agg(list)["cluster"].reset_index()
         self.idiom_label_sequences = idiom_label_sequences
         return idiom_chirp_attributes_embedded, chirp_labels, idiom_label_sequences
 
@@ -250,11 +226,19 @@ class IdiomComparerVisualizer():
         self.plot_clusters_histogram()
 
     def plot_all_chirp_scatter(self):
+        # embed the combined chirp attributes for plotting
+        combined_chirp_attributes_embedded = umap.UMAP(
+            n_neighbors=15,
+            min_dist=0.1,
+            n_components=2,
+            random_state=42
+        ).fit_transform(self.idiom_comparer.combined_chirp_attributes.loc[:, 'PrecedingIntrvl':'AmpK@start'].to_numpy())
+
         # Figure 1: Scatterplot of all chirps, by experiment
         # Visualize how the two experiments are distributed in a 2-D projection:
         plt.figure(figsize=(10, 8))
-        scatter = plt.scatter(self.idiom_comparer.combined_chirp_attributes_embedded[:, 0], 
-                            self.idiom_comparer.combined_chirp_attributes_embedded[:, 1], 
+        scatter = plt.scatter(combined_chirp_attributes_embedded[:, 0], 
+                            combined_chirp_attributes_embedded[:, 1], 
                             c=self.idiom_comparer.combined_chirp_attributes["original_df"], 
                             cmap=self.cmap1,
                             vmin=1,
@@ -327,9 +311,10 @@ class IdiomComparerVisualizer():
         second_exp_first_row = self.idiom_comparer.idiom_chirp_attributes.loc[
             self.idiom_comparer.idiom_chirp_attributes["original_df"] == 2].iloc[0].name
         # Figure 4: Scatterplot of idiom chirps, clustered, one experiment at a time (with cluster outlines)
-        plt.figure(figsize=(10, 8))
         
         for exp_to_plot in [1, 2]:
+            plt.cla()
+            plt.figure(figsize=(10, 8))
             first_exp_attributes_embedded = self.idiom_comparer.idiom_chirp_attributes_embedded[:second_exp_first_row]
             second_exp_attributes_embedded = self.idiom_comparer.idiom_chirp_attributes_embedded[second_exp_first_row:]
             for i in range(self.num_clusters):
@@ -375,13 +360,13 @@ class IdiomComparerVisualizer():
 
 def idiom_comparer_pipeline(idiom_comparer, results_path):
     print("Loading in data...")
-    combined_chirp_attributes, idiom_boundaries_attributes, _ = idiom_comparer.combine_inputs()
+    idiom_comparer.combine_inputs()
 
-    print("Preparing data...")
-    _, idiom_chirp_data, idiom_chirp_attributes = idiom_comparer.process_data(combined_chirp_attributes, idiom_boundaries_attributes)
-    
+    print("Extracting idioms from data...")
+    idiom_comparer.extract_idioms()
+
     print("Clustering data...")
-    _, _, idiom_label_sequences = idiom_comparer.cluster_data(idiom_chirp_data, idiom_chirp_attributes)
+    idiom_comparer.cluster_data()
     return idiom_comparer
 
 def main(args):
@@ -404,11 +389,13 @@ def main(args):
 
     print("Calculating most common subsequences...")
     # FIGURE: 12.2
-    idiom_comparer.most_common_cluster(idiom_comparer.idiom_label_sequences)
-    
+    top_clusters = idiom_comparer.most_common_cluster(idiom_comparer.idiom_label_sequences)
+    print(top_clusters)
+
     # FIGURE: 12.3
-    idiom_comparer.most_common_transitions(idiom_comparer.idiom_label_sequences)
-    
+    top_transitions = idiom_comparer.most_common_transitions(idiom_comparer.idiom_label_sequences)
+    print(top_transitions)
+
     # Stepping away from comparison for a second, this section allows us to describe the characteristics of a given cluster
     profile_ignore_columns = ["index", "OriginalIndex", "file_id", "chirp_idx", "original_df", "cluster"]
     CLUSTER_TO_PROFILE = 7

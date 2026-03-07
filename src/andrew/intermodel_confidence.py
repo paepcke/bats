@@ -75,6 +75,76 @@ plt.rcParams.update({
     'lines.markersize': 10    # Larger markers
 })  
 
+class ChirpClusterer():
+    def __init__(self, chirp_attributes, no_amp=0, use_umap=True, cluster_method="Agglomerative", 
+                 min_k = 1, max_k=50, calculate_k=True, k=8):
+        self.chirp_attributes = chirp_attributes
+        self.no_amp = no_amp
+        self.use_umap = use_umap
+        self.cluster_method = cluster_method
+        self.min_k = min_k
+        self.max_k = max_k
+        self.calculate_k = calculate_k
+        self.k = k
+
+    def prepare_data(self):
+        # use sklearn hdbscan to cluster all chirps found in unscaled_ground_truth
+        # remove columns that contain "Amp" in their name if NO_AMP is set
+        if self.no_amp == 1:
+            amp_indices = [i - 1 for i, col in enumerate(self.chirp_attributes.columns) if col in ["Amp1stQrtl", "Amp2ndQrtl", "Amp3rdQrtl", "Amp4thQrtl"]]
+            self.chirp_attributes = np.delete(self.chirp_attributes, amp_indices, axis=1)
+        elif self.no_amp == 2:
+            amp_indices = [i - 1 for i, col in enumerate(self.chirp_attributes.columns) if "Amp" in col]
+            self.chirp_attributes = np.delete(self.chirp_attributes, amp_indices, axis=1)
+
+        chirp_data_embedded = umap.UMAP(
+            n_neighbors=15,
+            min_dist=0.1,
+            n_components=2,
+            random_state=42
+        ).fit_transform(self.chirp_attributes)
+
+        chirp_data_embedded_df = pd.DataFrame(chirp_data_embedded, columns=['UMAP1', 'UMAP2'])
+        self.chirp_data_embedded = chirp_data_embedded
+        self.chirp_data_embedded_df = chirp_data_embedded_df
+
+    def cluster_data(self):
+        
+        # First, we want to see how many clusters there should be.
+        print("Determining ideal number of clusters...")
+        # FIGURE: 5.1
+
+        if self.calculate_k:
+            n_clusters = find_ideal_cluster_k(self.chirp_data_embedded, self.min_k, self.max_k, plot=False)
+        else:
+            n_clusters = {"elbow_method": self.k}
+
+        num_clusters = int(n_clusters["elbow_method"])
+
+        cluster_data_input = self.chirp_data_embedded if self.use_umap else self.chirp_attributes
+        chirp_labels = cluster_chirps(cluster_data_input, self.cluster_method, self.use_umap, num_clusters)
+
+        # This is perhaps a separate clustering method, but visualized using a dendrogram
+        print("Calculating dendrogram...")
+        # plot dendrogram of agglomerative clustering
+        self.linked = linkage(self.chirp_data_embedded, 'ward')
+
+        # Cut at specific height to get clusters
+        dendrogram_clusters = fcluster(self.linked, t=num_clusters, criterion='maxclust') 
+        chirp_labels = dendrogram_clusters
+
+        chirp_data_2d = self.chirp_data_embedded
+        if not self.use_umap: # use PCA instead of UMAP
+            pca = PCA(n_components=2)
+            chirp_data_2d = pca.fit_transform(self.chirp_attributes)
+        # filter out noise points (label == -1)
+        filtered_chirp_data_2d = chirp_data_2d[chirp_labels != -1]
+        filtered_chirp_labels = chirp_labels[chirp_labels != -1]
+        self.chirp_labels = chirp_labels
+        self.filtered_chirp_data_2d = filtered_chirp_data_2d
+        self.filtered_chirp_labels = filtered_chirp_labels
+        return self.linked, self.chirp_data_embedded_df, chirp_labels, filtered_chirp_data_2d, filtered_chirp_labels
+
 class IdiomIdentifier():
     def __init__(self, prediction_files=None, truth_files=None, dataset_path=None):
         self.prediction_files = prediction_files
@@ -291,62 +361,17 @@ class IdiomIdentifier():
         #     np.save(f"{output_folder}/peak_truths.npy", low_conf_truths)
 
     def cluster_data(self):
-        # use sklearn hdbscan to cluster all chirps found in unscaled_ground_truth
         chirp_data = self.full_chirp_df_scaled.loc[:, 'PrecedingIntrvl':'AmpK@start'].to_numpy()
-
-        # remove columns that contain "Amp" in their name if NO_AMP is set
-        if NO_AMP == 1:
-            amp_indices = [i - 1 for i, col in enumerate(self.full_chirp_df.columns) if col in ["Amp1stQrtl", "Amp2ndQrtl", "Amp3rdQrtl", "Amp4thQrtl"]]
-            chirp_data = np.delete(chirp_data, amp_indices, axis=1)
-        elif NO_AMP == 2:
-            amp_indices = [i - 1 for i, col in enumerate(self.full_chirp_df.columns) if "Amp" in col]
-            chirp_data = np.delete(chirp_data, amp_indices, axis=1)
-
-        chirp_data_embedded = umap.UMAP(
-            n_neighbors=15,
-            min_dist=0.1,
-            n_components=2,
-            random_state=42
-        ).fit_transform(chirp_data)
-
-        chirp_data_embedded_df = pd.DataFrame(chirp_data_embedded, columns=['UMAP1', 'UMAP2'])
-
-        # First, we want to see how many clusters there should be.
-        print("Determining ideal number of clusters...")
-        # FIGURE: 5.1
-
-        if CALCULATE_K:
-            n_clusters = find_ideal_cluster_k(chirp_data_embedded, MIN_CLUSTER_K, MAX_CLUSTER_K, plot=False)
-        else:
-            n_clusters = {"elbow_method": 7}
-
-        self.num_clusters = int(n_clusters["elbow_method"])
-
-        cluster_data_input = chirp_data_embedded if USE_UMAP else chirp_data
-        chirp_labels = cluster_chirps(cluster_data_input, CLUSTER_METHOD, USE_UMAP, self.num_clusters)
-
-        # This is perhaps a separate clustering method, but visualized using a dendrogram
-        print("Calculating dendrogram...")
-        # plot dendrogram of agglomerative clustering
-        self.linked = linkage(chirp_data_embedded, 'ward')
-
-        # Cut at specific height to get clusters
-        dendrogram_clusters = fcluster(self.linked, t=self.num_clusters, criterion='maxclust') 
-        chirp_labels = dendrogram_clusters
-
-        chirp_data_2d = chirp_data_embedded
-        if not USE_UMAP: # use PCA instead of UMAP
-            pca = PCA(n_components=2)
-            chirp_data_2d = pca.fit_transform(chirp_data)
-        # filter out noise points (label == -1)
-        filtered_chirp_data_2d = chirp_data_2d[chirp_labels != -1]
-        filtered_chirp_labels = chirp_labels[chirp_labels != -1]
+        clusterer = ChirpClusterer(chirp_data, NO_AMP, USE_UMAP, CLUSTER_METHOD, MIN_CLUSTER_K, MAX_CLUSTER_K, CALCULATE_K, 7)
+        clusterer.prepare_data()
+        linked, chirp_data_embedded_df, chirp_labels, filtered_chirp_data_2d, filtered_chirp_labels = clusterer.cluster_data()
+        self.linked = linked
         self.chirp_data_embedded_df = chirp_data_embedded_df
         self.chirp_labels = chirp_labels
         self.filtered_chirp_data_2d = filtered_chirp_data_2d
         self.filtered_chirp_labels = filtered_chirp_labels
+
         return chirp_data_embedded_df, chirp_labels, filtered_chirp_data_2d, filtered_chirp_labels
-        
         # # for each sequence in whole_idiom_sequences, use chirp_data_embedded_df to get the sequence of 2D UMAP points
         # whole_idiom_umap_sequences = []
         # for seq_indices in self.whole_idiom_sequences:
@@ -510,6 +535,7 @@ class IdiomIdentifierVisualizer():
     def __init__(self, idiom_identifier, results_path):
         self.idiom_identifier = idiom_identifier
         self.results_path = results_path
+        self.num_clusters = max(self.idiom_identifier.chirp_labels) - min(self.idiom_identifier.chirp_labels) + 1
 
     def plot_uncertainty_histogram(self):
         # Figure 1: histogram of our chosen uncertainty measure: radius_mean
@@ -611,7 +637,7 @@ class IdiomIdentifierVisualizer():
     def plot_clustered_chirp_scatter(self):
         # Figure 8: scatterplot of chirps, clustered
         # plot the points in each cluster using PCA for dimensionality reduction
-        colormap = "tab10" if self.idiom_identifier.num_clusters <= 10 else "tab20"
+        colormap = "tab10" if self.num_clusters <= 10 else "tab20"
         plt.figure(figsize=(10, 8))
         scatter = plt.scatter(self.idiom_identifier.filtered_chirp_data_2d[:, 0], 
                               self.idiom_identifier.filtered_chirp_data_2d[:, 1], 
@@ -628,7 +654,7 @@ class IdiomIdentifierVisualizer():
         plt.figure(figsize=(10, 7))
         chirp_dendrogram = dendrogram(self.idiom_identifier.linked,
                 truncate_mode='lastp',
-                p=self.idiom_identifier.num_clusters,
+                p=int(self.num_clusters),
                 orientation='left',
                 #    distance_sort='descending',
                 labels=self.idiom_identifier.chirp_labels,
@@ -647,6 +673,7 @@ class IdiomIdentifierVisualizer():
 
     def plot_prominence_histogram(self):
         # Figure 10: histogram of prominence to range ratio
+        plt.cla()
         plt.hist(self.idiom_identifier.peak_df["prominence_to_range"], bins=20)
         plt.title("Histogram of Peak Prominence to Range Ratio")
         plt.xlabel("Prominence to Range Ratio")
@@ -657,7 +684,7 @@ class IdiomIdentifierVisualizer():
     def plot_chirp_peak_scatter(self):
         # Figure 11: scatterplot of chirps, clustered, with significant peaks highlighted
         # plot only the significant peaks on the previous scatter plot
-        colormap = "tab10" if self.idiom_identifier.num_clusters <= 10 else "tab20"
+        colormap = "tab10" if self.num_clusters <= 10 else "tab20"
         plt.figure(figsize=(10, 8))
         scatter = plt.scatter(self.idiom_identifier.filtered_chirp_data_2d[:, 0], 
                               self.idiom_identifier.filtered_chirp_data_2d[:, 1], 
@@ -701,7 +728,7 @@ class IdiomIdentifierVisualizer():
         # plot the graph of all chirps in filtered_chirp_data_2d with paths according to significant_idiom_sequence_clusters with
         # edge weights according to G
         plt.figure(figsize=(7, 6))
-        colormap = "tab10" if self.idiom_identifier.num_clusters <= 10 else "tab20"
+        colormap = "tab10" if self.num_clusters <= 10 else "tab20"
         scatter = plt.scatter(self.idiom_identifier.filtered_chirp_data_2d[:, 0],
                               self.idiom_identifier.filtered_chirp_data_2d[:, 1], 
                               c=self.idiom_identifier.filtered_chirp_labels, cmap=colormap, s=5, 
@@ -720,6 +747,7 @@ class IdiomIdentifierVisualizer():
     def plot_chirp_v_peak_cluster_histogram(self):
         # Figure 13: histogram of clusters for all chirps vs peaks
         # plt.hist(peak_chirp_clusters, bins=np.arange(chirp_labels.min(), chirp_labels.max() + 2) - 0.5)
+        plt.cla()
         plt.hist([self.idiom_identifier.chirp_labels, self.idiom_identifier.chirp_labels[self.idiom_identifier.significant_peak_ids]], 
                  density=True, bins=np.arange(self.idiom_identifier.chirp_labels.min(), self.idiom_identifier.chirp_labels.max() + 2) - 0.5)
         plt.legend(["All Chirps", "Peak Chirps"])
@@ -778,6 +806,7 @@ def idiom_identifier_pipeline(idiom_identifier, results_path):
     
     print("Outputting results...")
     idiom_identifier.output_results(results_path)
+    return idiom_identifier
 
 def main(args):
     output_folder = args.output_folder
@@ -809,7 +838,7 @@ def main(args):
     idiom_identifier = IdiomIdentifier(prediction_files=prediction_files, 
                                        truth_files=truth_files, 
                                        dataset_path=dataset_path)
-    idiom_identifier_pipeline(idiom_identifier, results_path)
+    idiom_identifier = idiom_identifier_pipeline(idiom_identifier, results_path)
     
     # Useful statistics on the data:
     prediction_ensemble_measures = idiom_identifier.prediction_ensemble_measures
