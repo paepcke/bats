@@ -5,7 +5,7 @@
 # @Date:   2026-03-07 16:37:48
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/chirp_detection/wav_file_scrubber.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-07 17:36:16
+# @Last Modified time: 2026-03-07 19:04:12
 #
 # **********************************************************
 """
@@ -263,10 +263,21 @@ _BAT_BAND_HI_KHZ: float = 120.0
 _PULSE_THRESHOLD_DBFS: float = -60.0
 
 #: Minimum valid pulse duration in milliseconds.
-_PULSE_DUR_MIN_MS: float = 2.0
+#: Small Myotis species produce FM sweeps as short as 0.3 ms; 0.5 ms is a
+#: conservative floor that rejects single-frame STFT noise spikes without
+#: losing genuine short calls.
+_PULSE_DUR_MIN_MS: float = 0.5
 
 #: Maximum valid pulse duration in milliseconds.
 _PULSE_DUR_MAX_MS: float = 35.0
+
+#: Maximum gap between consecutive above-threshold segments (ms) that is
+#: still considered part of the same pulse.  Short FM sweeps often dip below
+#: the energy threshold between harmonics or during a rapid frequency drop,
+#: fragmenting a single call into several micro-segments.  Segments separated
+#: by less than this gap are merged before the duration/bandwidth filter is
+#: applied.  Set to 0.0 to disable merging.
+_PULSE_MERGE_GAP_MS: float = 5.0
 
 #: Minimum spectral bandwidth (kHz) a pulse must have at −20 dB from its peak.
 _MIN_BANDWIDTH_KHZ: float = 5.0
@@ -274,10 +285,23 @@ _MIN_BANDWIDTH_KHZ: float = 5.0
 #: Maximum fraction of samples allowed at ±full-scale before flagging clipping.
 _MAX_CLIP_FRACTION: float = 0.005   # 0.5 %
 
-#: Minimum sample rate (Hz) accepted as ultrasound.
-_MIN_SAMPLE_RATE_HZ: int = 80_000
+#: Sample rates (Hz) at or above this value are treated as direct-recording
+#: ultrasound.  Rates below this threshold are assumed to be time-expanded
+#: files whose header SR has been divided by ``_TIME_EXPAND_FACTOR``.
+#: Known direct-recording rates (256k, 384k, 500k) are well above 80 kHz;
+#: known TE rates (8k, 22.05k, 25k, 44.1k, 48k, 50k) are well below it,
+#: so the boundary is unambiguous for all off-the-shelf bat detectors.
+_TE_SR_THRESHOLD_HZ: int = 80_000
 
-#: Maximum file duration in seconds.
+#: Factor by which time-expanded files slow the recording.  The header
+#: sample rate is multiplied by this value to recover the true ultrasound
+#: rate before any analysis.
+#: Override at the class level (WavScrubber._TIME_EXPAND_FACTOR) if your
+#: detector uses a different expansion ratio.
+_TIME_EXPAND_FACTOR: int = 10
+
+#: Maximum file duration in seconds (measured at the *true* sample rate
+#: after any time-expansion correction).
 _MAX_DURATION_S: float = 60.0
 
 
@@ -334,22 +358,42 @@ def _scrub_one(
         if peak > 0:
             audio /= peak
 
-    rec.duration_s = len(audio) / sr
+    # ------------------------------------------------------------------ #
+    #  2. Time-expansion detection and sample-rate correction             #
+    # ------------------------------------------------------------------ #
+    # Off-the-shelf bat detectors write time-expanded (TE) files with the
+    # header SR divided by _TIME_EXPAND_FACTOR (e.g. 250 kHz → 25 kHz).
+    # The PCM samples are correct; only the header rate is scaled down.
+    # We detect TE files by the header SR being below _TE_SR_THRESHOLD_HZ
+    # and recover the true ultrasound rate by multiplying back up.
+    # If the corrected rate is still below the threshold the file is
+    # genuinely not an ultrasound recording and we reject it.
+    time_expanded = False
+    if sr < _TE_SR_THRESHOLD_HZ:
+        corrected_sr = sr * _TIME_EXPAND_FACTOR
+        if corrected_sr < _TE_SR_THRESHOLD_HZ:
+            rec.verdict = ScrubReason.LOW_SAMPLE_RATE
+            rec.detail  = (
+                f"sample_rate={sr} Hz; even after ×{_TIME_EXPAND_FACTOR} "
+                f"correction ({corrected_sr} Hz) below "
+                f"{_TE_SR_THRESHOLD_HZ} Hz threshold"
+            )
+            return rec
+        sr           = corrected_sr
+        time_expanded = True
 
-    # ------------------------------------------------------------------ #
-    #  2. Sample-rate gate                                                 #
-    # ------------------------------------------------------------------ #
-    if sr < _MIN_SAMPLE_RATE_HZ:
-        rec.verdict = ScrubReason.LOW_SAMPLE_RATE
-        rec.detail  = f"sample_rate={sr} Hz < {_MIN_SAMPLE_RATE_HZ} Hz"
-        return rec
+    rec.sample_rate = sr   # store corrected rate
+    rec.duration_s  = len(audio) / sr
 
     # ------------------------------------------------------------------ #
     #  3. Duration gate                                                    #
     # ------------------------------------------------------------------ #
     if rec.duration_s > _MAX_DURATION_S:
         rec.verdict = ScrubReason.TOO_LONG
-        rec.detail  = f"duration={rec.duration_s:.1f} s > {_MAX_DURATION_S} s"
+        rec.detail  = (
+            f"duration={rec.duration_s:.1f} s > {_MAX_DURATION_S} s"
+            + (" (after TE correction)" if time_expanded else "")
+        )
         return rec
 
     # ------------------------------------------------------------------ #
@@ -364,7 +408,7 @@ def _scrub_one(
     # ------------------------------------------------------------------ #
     #  5. Bat-band STFT                                                    #
     # ------------------------------------------------------------------ #
-    # Window: ~0.5 ms gives good time resolution for 2–35 ms chirps.
+    # Window: ~0.5 ms gives good time resolution for sub-ms to 35 ms calls.
     nperseg  = max(64, int(round(0.0005 * sr)))
     noverlap = nperseg * 3 // 4
 
@@ -406,8 +450,10 @@ def _scrub_one(
     threshold_linear = 10.0 ** (_PULSE_THRESHOLD_DBFS / 10.0) * Sxx_bat.shape[0]
     above            = energy >= threshold_linear
 
-    # Find contiguous ON-segments (candidate pulses)
+    # Find contiguous ON-segments, then merge fragments separated by a short
+    # gap (e.g. a single sweep whose energy dips momentarily between harmonics).
     pulses = _find_segments(above, times_s)
+    pulses = _merge_segments(pulses, _PULSE_MERGE_GAP_MS / 1000.0)
     # pulses: list of (onset_s, offset_s)
 
     # ------------------------------------------------------------------ #
@@ -564,6 +610,41 @@ def _compute_spectrogram_gpu(
     return freqs, times, Sxx.astype(np.float32)
 
 
+def _merge_segments(
+    segments: list[tuple[float, float]],
+    max_gap_s: float,
+) -> list[tuple[float, float]]:
+    """
+    Merge consecutive segments whose inter-segment gap is ≤ *max_gap_s*.
+
+    A single FM sweep often fragments into several above-threshold runs when
+    the energy dips briefly between harmonics or at the low-frequency tail of
+    the sweep.  Merging restores each physical call to one segment before the
+    duration and bandwidth filters are applied.
+
+    Note: this does **not** merge segments that are far apart in time — the
+    gap threshold is intentionally small (default 5 ms) so that distinct
+    pulses in a rapid sequence (inter-pulse intervals down to ~20 ms) are
+    never joined together.
+
+    :param segments:  List of ``(onset_s, offset_s)`` tuples, sorted by onset.
+    :param max_gap_s: Maximum gap in seconds to bridge.  Pass ``0.0`` to
+                      disable merging.
+    :return:          Merged list of ``(onset_s, offset_s)`` tuples.
+    """
+    if not segments or max_gap_s <= 0.0:
+        return segments
+    merged: list[tuple[float, float]] = [segments[0]]
+    for onset, offset in segments[1:]:
+        prev_onset, prev_offset = merged[-1]
+        if onset - prev_offset <= max_gap_s:
+            merged[-1] = (prev_onset, max(prev_offset, offset))
+        else:
+            merged.append((onset, offset))
+    return merged
+
+
+
 def _find_segments(
     above: np.ndarray,
     times_s: np.ndarray,
@@ -628,6 +709,24 @@ class WavScrubber:
     :param show_progress:  If ``True``, print a progress line to stdout.
     """
 
+    # ------------------------------------------------------------------ #
+    #  Class-level tunables                                               #
+    # ------------------------------------------------------------------ #
+
+    #: Files with header SR below this value are treated as time-expanded.
+    #: Matches the module-level ``_TE_SR_THRESHOLD_HZ`` used in workers;
+    #: override here if your detector uses a non-standard boundary.
+    _TE_SR_THRESHOLD_HZ: int = _TE_SR_THRESHOLD_HZ
+
+    #: Expansion factor applied to time-expanded file header rates.
+    #: Change to 2 or 4 for detectors that use a different TE ratio.
+    _TIME_EXPAND_FACTOR: int = _TIME_EXPAND_FACTOR
+
+    #: Maximum expected recording duration in seconds (at the true
+    #: ultrasound rate after any TE correction).  Files longer than this
+    #: are rejected as TOO_LONG.
+    _MAX_DURATION_S: float = _MAX_DURATION_S
+
     def __init__(
         self,
         wav_paths: Sequence[str | Path],
@@ -677,7 +776,15 @@ class WavScrubber:
         self.use_gpu        = use_gpu
         self.max_duration_s = max_duration_s
         self.show_progress  = show_progress
-        self.checkpoint_csv = Path(checkpoint_csv) if checkpoint_csv else None
+        if checkpoint_csv is not None:
+            self.checkpoint_csv = Path(checkpoint_csv)
+        else:
+            # Default: a timestamped CSV in the current working directory.
+            # Using cwd() rather than __file__ so the file appears where
+            # the user is running from, not buried in the package tree.
+            import datetime
+            ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+            self.checkpoint_csv = Path.cwd() / f"scrub_checkpoint_{ts}.csv"
         self.worker_timeout = worker_timeout
 
         # Resolve GPU availability once at construction
@@ -1058,10 +1165,13 @@ def main() -> None:
 
     print(f"WavScrubber: {len(paths)} files to process")
     if args.checkpoint is None:
-        print(
-            "  Tip: pass --checkpoint scrub_progress.csv to enable "
-            "resume after Ctrl-C or a crash."
-        )
+        # Auto checkpoint path is resolved inside WavScrubber.__init__;
+        # reconstruct the same name here just to show the user upfront.
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        auto_ckpt = Path.cwd() / f"scrub_checkpoint_{ts}.csv"
+        print(f"  Checkpoint: {auto_ckpt}  (auto-generated; "
+              f"pass --checkpoint <path> to choose your own)")
 
     scrubber = WavScrubber(
         wav_paths       = paths,
