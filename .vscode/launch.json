@@ -255,6 +255,19 @@
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
+        },
+        {
+            "name": "Python: Chirp generation",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/chirp_gen/chirp_generation.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/chirp_gen/test/20180714_Parameters_v4.4.5.tsv"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
         }
     ],
     "debug.defaultConfiguration": "Python: Test Explorer (unittests)"

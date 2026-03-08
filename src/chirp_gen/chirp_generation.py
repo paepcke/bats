@@ -2,8 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-03-05 15:29:10
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-05 15:51:35
-
+# @Last Modified time: 2026-03-07 15:32:25
 """
 chirp_generator.py
 ==================
@@ -47,6 +46,9 @@ Optional measures (used when present, ignored when absent/NaN)
 
 from __future__ import annotations
 
+import argparse
+import os
+import sys
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -56,8 +58,9 @@ import pandas as pd
 import scipy.io.wavfile as wavfile
 import scipy.signal as signal
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+from sonobat_utils.utils import Utils
 
 
 # ---------------------------------------------------------------------------
@@ -204,14 +207,22 @@ class ChirpGenerator:
         * All required keys present and non-NaN.
         * ``Bndwdth`` ≈ ``HiFreq − LowFreq`` (when LowFreq present).
         * ``FreqKnee`` is strictly between ``Fc`` and ``HiFreq``.
-        * ``UpprKnFreq`` (when present) is strictly between ``FreqKnee``
-          and ``HiFreq``.
+        * ``UpprKnFreq``, when present **and distinct from FreqKnee**, is
+          strictly between ``FreqKnee`` and ``HiFreq``.  A value equal to
+          ``FreqKnee`` is treated as "no upper knee" and silently ignored —
+          SonoBat sometimes fills this field with the knee value when no
+          upper knee is detected.
         * ``PrcntKneeDur`` and ``PrcntMaxAmpDur`` are in (0, 100).
-        * ``FFwd*dB`` frequencies are ≤ ``FreqMaxPwr`` (post-peak, descending).
-        * ``FBak*dB`` frequencies are ≥ ``FreqMaxPwr`` (pre-peak, ascending).
-        * dB-threshold frequencies are monotone:
-          ``FFwd5dB ≥ FFwd15dB ≥ FFwd32dB`` and
-          ``FBak5dB ≤ FBak15dB ≤ FBak32dB``.
+
+        Note on FFwd*/FBak* measures
+        ----------------------------
+        These are **not** validated against ``FreqMaxPwr``.  For narrow-band
+        or nearly-flat calls the amplitude may never drop the required number
+        of dB within the call body, so SonoBat extrapolates the trend beyond
+        the call endpoints.  The resulting frequencies can therefore lie
+        outside ``[LowFreq, HiFreq]`` and bear no simple ordering relationship
+        with ``FreqMaxPwr``.  They are used only as hints for shaping the
+        amplitude decay and are accepted as-is.
 
         :raises ChirpMeasureError: On any violation.
         """
@@ -227,15 +238,14 @@ class ChirpGenerator:
             raise ChirpMeasureError("\n".join(err))
 
         # Convenience locals
-        hi    = self._get(s, 'HiFreq')
-        fc    = self._get(s, 'Fc')
-        knee  = self._get(s, 'FreqKnee')
-        bw    = self._get(s, 'Bndwdth')
-        lo    = self._get(s, 'LowFreq')
-        ukn   = self._get(s, 'UpprKnFreq')
-        fmaxp = self._get(s, 'FreqMaxPwr')
-        kpct  = self._get(s, 'PrcntKneeDur')
-        apct  = self._get(s, 'PrcntMaxAmpDur')
+        hi   = self._get(s, 'HiFreq')
+        fc   = self._get(s, 'Fc')
+        knee = self._get(s, 'FreqKnee')
+        bw   = self._get(s, 'Bndwdth')
+        lo   = self._get(s, 'LowFreq')
+        ukn  = self._get(s, 'UpprKnFreq')
+        kpct = self._get(s, 'PrcntKneeDur')
+        apct = self._get(s, 'PrcntMaxAmpDur')
 
         # --- Bandwidth consistency ---
         if lo is not None:
@@ -247,64 +257,25 @@ class ChirpGenerator:
                     f"(tolerance ±{self._FREQ_TOL} kHz)."
                 )
 
-        # --- Frequency ordering ---
+        # --- Frequency ordering of structural landmarks ---
         if not (fc < knee < hi):
             err.append(
                 f"FreqKnee={knee:.2f} must be strictly between "
                 f"Fc={fc:.2f} and HiFreq={hi:.2f} kHz."
             )
 
-        if ukn is not None and not (knee < ukn < hi):
-            err.append(
-                f"UpprKnFreq={ukn:.2f} must be strictly between "
-                f"FreqKnee={knee:.2f} and HiFreq={hi:.2f} kHz."
-            )
+        # UpprKnFreq equal to FreqKnee → SonoBat sentinel for "no upper knee";
+        # only validate when it is meaningfully distinct.
+        if ukn is not None and ukn > knee + self._FREQ_TOL:
+            if not (ukn < hi):
+                err.append(
+                    f"UpprKnFreq={ukn:.2f} must be below HiFreq={hi:.2f} kHz."
+                )
 
         # --- Percentage bounds ---
         for label, val in [('PrcntKneeDur', kpct), ('PrcntMaxAmpDur', apct)]:
             if not (0.0 < val < 100.0):
                 err.append(f"{label}={val:.2f} must be in the open interval (0, 100).")
-
-        # --- FFwd dB-threshold frequencies (post-peak → descending freq) ---
-        fwd5  = self._get(s, 'FFwd5dB')
-        fwd15 = self._get(s, 'FFwd15dB')
-        fwd32 = self._get(s, 'FFwd32dB')
-
-        for label, val in [('FFwd5dB', fwd5), ('FFwd15dB', fwd15), ('FFwd32dB', fwd32)]:
-            if val is not None and val > fmaxp + self._FREQ_TOL:
-                err.append(
-                    f"{label}={val:.2f} kHz is above FreqMaxPwr={fmaxp:.2f} kHz. "
-                    f"FFwd values are post-peak and must be ≤ FreqMaxPwr."
-                )
-
-        if fwd5 is not None and fwd15 is not None and fwd5 < fwd15 - self._FREQ_TOL:
-            err.append(
-                f"FFwd5dB={fwd5:.2f} < FFwd15dB={fwd15:.2f}: "
-                f"deeper dB drops must reach lower frequencies (FFwd5 ≥ FFwd15)."
-            )
-        if fwd15 is not None and fwd32 is not None and fwd15 < fwd32 - self._FREQ_TOL:
-            err.append(
-                f"FFwd15dB={fwd15:.2f} < FFwd32dB={fwd32:.2f}: "
-                f"deeper dB drops must reach lower frequencies (FFwd15 ≥ FFwd32)."
-            )
-
-        # --- FBak dB-threshold frequencies (pre-peak → ascending freq) ---
-        bak5  = self._get(s, 'FBak5dB')
-        bak32 = self._get(s, 'FBak32dB')
-
-        for label, val in [('FBak5dB', bak5), ('FBak32dB', bak32)]:
-            if val is not None and val < fmaxp - self._FREQ_TOL:
-                err.append(
-                    f"{label}={val:.2f} kHz is below FreqMaxPwr={fmaxp:.2f} kHz. "
-                    f"FBak values are pre-peak and must be ≥ FreqMaxPwr."
-                )
-
-        if bak5 is not None and bak32 is not None and bak5 > bak32 + self._FREQ_TOL:
-            err.append(
-                f"FBak5dB={bak5:.2f} > FBak32dB={bak32:.2f}: "
-                f"deeper dB drops must reach higher (earlier) frequencies "
-                f"(FBak5 ≤ FBak32)."
-            )
 
         if err:
             raise ChirpMeasureError("\n".join(err))
@@ -354,6 +325,10 @@ class ChirpGenerator:
         knee_pct = self._get(s, 'PrcntKneeDur')
         dur_ms   = self._get(s, 'CallDuration')
         ukn_f    = self._get(s, 'UpprKnFreq')   # None if absent
+        # Treat UpprKnFreq == FreqKnee as SonoBat's sentinel for 'no upper
+        # knee detected'; suppress it so we fall back to a two-segment trend.
+        if ukn_f is not None and abs(ukn_f - knee_f) <= self._FREQ_TOL:
+            ukn_f = None
 
         n = int(round(dur_ms * 1e-3 * self.sample_rate))
         self.t_ms = np.linspace(0.0, dur_ms, n, endpoint=False)
@@ -687,36 +662,75 @@ class ChirpGenerator:
         if p is not None:
             plt.savefig(p, dpi=150, bbox_inches='tight',
                         facecolor=fig.get_facecolor())
-        plt.close(fig)
-        return p
+            plt.close(fig)
+        else:
+            plt.show(block=True)
+        return p.resolve() if p is not None else None
 
     # ------------------------------------------------------------------ #
     #  Public: wav file                                                   #
     # ------------------------------------------------------------------ #
 
-    def wav(self, outfile: Optional[str] = None) -> Optional[Path]:
+    # 10× is the bat-acoustics convention (SonoBat's own "play TE sound"
+    # uses this factor), shifting a 25–100 kHz call into the 2.5–10 kHz
+    # range that is squarely audible to humans.
+    _TIME_EXPAND_FACTOR = 10
+
+    def wav(self, outfile: Optional[str] = None,
+            time_expand: bool = False) -> Optional[Path]:
         """
         Write the synthesised waveform as a 16-bit PCM ``.wav`` file.
 
-        :param outfile: Output path (must end in ``.wav``).  Parent
-                        directories are created as needed.  When *None*
-                        nothing is written and ``None`` is returned.
-        :return: ``Path`` of the saved file, or ``None`` if *outfile* is None.
+        When *time_expand* is ``True`` the file is written at
+        ``sample_rate / TIME_EXPAND_FACTOR`` (default: 50 000 Hz instead of
+        500 000 Hz).  The PCM samples are unchanged; only the header sample
+        rate is reduced, so playback takes 10× longer and every frequency is
+        shifted down by 10×, transposing a 25–100 kHz bat chirp into the
+        2.5–10 kHz range audible to humans.  This matches the convention used
+        by SonoBat's own "play TE sound" function.
+
+        When *outfile* is given and *time_expand* is ``True``, **both** files
+        are written: the real-time ``.wav`` at *outfile* and a 10× slowed
+        copy at ``<stem>_slowed.wav`` beside it.  The real-time path is
+        returned.
+
+        When *outfile* is ``None`` and *time_expand* is ``True``, only the
+        slowed file is written, auto-named ``chirp_slowed.wav`` in the
+        current directory.
+
+        :param outfile:     Output path (must end in ``.wav``).  Parent
+                            directories are created as needed.
+        :param time_expand: If ``True``, also write a 10× time-expanded
+                            file playable through ordinary speakers.
+        :return: ``Path`` of the saved file, or ``None`` if *outfile* is
+                 ``None`` and *time_expand* is ``False``.
         :raises ValueError: If *outfile* does not end in ``.wav``.
         """
-        if outfile is None:
+        if outfile is not None:
+            p = Path(outfile)
+            if p.suffix.lower() != '.wav':
+                raise ValueError(
+                    f"wav() requires a '.wav' output path, got '{p.suffix}'."
+                )
+        elif time_expand:
+            p = Path('chirp_slowed.wav')
+        else:
             return None
 
-        p = Path(outfile)
-        if p.suffix.lower() != '.wav':
-            raise ValueError(
-                f"wav() requires a '.wav' output path, got '{p.suffix}'."
-            )
         p.parent.mkdir(parents=True, exist_ok=True)
-
         pcm = (self.waveform * 32767.0).astype(np.int16)
-        wavfile.write(str(p), self.sample_rate, pcm)
-        return p
+        slowed_rate = max(1, self.sample_rate // self._TIME_EXPAND_FACTOR)
+
+        if time_expand:
+            slowed_p = p.with_stem(p.stem + '_slowed') if outfile is not None else p
+            wavfile.write(str(slowed_p), slowed_rate, pcm)
+            if outfile is not None:
+                wavfile.write(str(p), self.sample_rate, pcm)
+                return p
+            return slowed_p.resolve()
+        else:
+            wavfile.write(str(p), self.sample_rate, pcm)
+            return p.resolve()
 
     # ------------------------------------------------------------------ #
     #  Convenience                                                        #
@@ -736,51 +750,79 @@ class ChirpGenerator:
 
 
 # ---------------------------------------------------------------------------
-# Demo
+# CLI
 # ---------------------------------------------------------------------------
 
+def parse_args():
+    desc = "Pages through a .csv or .feather file of chirp measure rows"
+    parser = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]),
+                                     formatter_class=argparse.RawTextHelpFormatter,
+                                     description=desc)
+
+    parser.add_argument('measures_file',
+                        help="path to .csv or .feather file of bat measures")
+
+    parser.add_argument('-o', '--outdir',
+                        help=("optional directory where to write .wav, spectrogram .png, "
+                              "and spectrogram .feather files for each row"),
+                        default=None)
+
+    args = parser.parse_args()
+    infile = Path(args.measures_file)
+    if not infile.exists():
+        print(f"Infile {args.measures_file} not found")
+        sys.exit(1)
+    if infile.suffix not in ('.csv', '.tsv', '.feather'):
+        print(f"Infile must be a .csv, .tsv, or .feather file, not {infile.suffix}")
+        sys.exit(1)
+
+    if args.outdir is not None:
+        outdir_p = Path(args.outdir)
+        try:
+            outdir_p.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"Could not create outdir {args.outdir}: {e}")
+            sys.exit(1)
+    else:
+        outdir_p = None
+
+    return infile, outdir_p
+
+
+def main():
+    infile, outdir = parse_args()
+    df = Utils.read_df_file(infile)
+    for i in range(len(df)):
+        row = df.iloc[i]
+        try:
+            generator = ChirpGenerator(row)
+        except ChirpMeasureError as e:
+            print(f"Row {i}: skipping — {e}")
+            continue
+
+        spectro_png_file = None
+        spectro_df_file  = None
+        spectro_wav_file = None
+
+        if outdir is not None:
+            spectro_png_file = outdir / f'spectro_{i}.png'
+            spectro_df_file  = outdir / f'spectro_{i}.csv'
+            spectro_wav_file = outdir / f'audio_{i}.wav'
+
+        spectro_out = generator.spectrogram_png(spectro_png_file)
+        spectro_df  = generator.spectrogram_df(spectro_df_file)
+        wav_out     = generator.wav(spectro_wav_file, time_expand=True)
+
+        answer = input("Enter for next chirp, 'q' to stop: ")
+        if answer.strip().lower() == 'q':
+            break
+
+    if outdir is not None:
+        print(f"Spectrogram shape: {generator.spectrogram.shape}  "
+              f"({len(generator.spectrogram.index)} freq bins × "
+              f"{len(generator.spectrogram.columns)} time bins)")
+        print(f"Files written to {outdir}")
+
+
 if __name__ == '__main__':
-    # Eptesicus fuscus – calibrated to the Dye Creek Ranch SonoBat screenshot
-    demo = pd.Series({
-        'CallDuration':   16.0,
-        'Fc':             26.0,
-        'HiFreq':        112.0,
-        'LowFreq':        22.0,
-        'StartF':        112.0,
-        'Bndwdth':        90.0,
-        'FreqMaxPwr':     28.0,
-        'PrcntMaxAmpDur': 55.0,
-        'FreqKnee':       45.0,
-        'PrcntKneeDur':   18.0,
-        'UpprKnFreq':     78.0,
-        'FreqCtr':        35.0,
-        'HiFtoKnAmp':    115.0,
-        'HiFtoKnExp':     -0.18,
-        'KnToFcAmp':      47.0,
-        'KnToFcExp':      -0.025,
-        'HiFtoFcAmp':    115.0,
-        'HiFtoFcExp':     -0.055,
-        'AmpK@start':      6.0,
-        'Amp1stQrtl':     60.0,
-        'Amp2ndQrtl':    240.0,
-        'Amp3rdQrtl':    310.0,
-        'Amp4thQrtl':    130.0,
-        'FFwd5dB':        27.0,
-        'FFwd15dB':       25.0,
-        'FFwd32dB':       23.0,
-        'FBak5dB':        32.0,
-        'FBak32dB':       40.0,
-        'Bndw32dB':       17.0,
-    })
-
-    gen = ChirpGenerator(demo, sample_rate=500_000)
-    print(gen)
-
-    gen.wav(outfile='/mnt/user-data/outputs/chirp.wav')
-    gen.spectrogram_png(outfile='/mnt/user-data/outputs/chirp_spec.png')
-    gen.spectrogram_df(outfile='/mnt/user-data/outputs/chirp_spec.feather')
-
-    print(f"Spectrogram shape: {gen.spectrogram.shape}  "
-          f"({len(gen.spectrogram.index)} freq bins × "
-          f"{len(gen.spectrogram.columns)} time bins)")
-    print("Done.")
+    main()
