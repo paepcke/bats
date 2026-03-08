@@ -5,7 +5,7 @@
 # @Date:   2026-03-07 16:37:48
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/chirp_detection/wav_file_scrubber.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-07 19:04:12
+# @Last Modified time: 2026-03-08 11:28:00
 #
 # **********************************************************
 """
@@ -88,12 +88,11 @@ except ImportError:
 import numpy as np
 import scipy.io.wavfile as wavfile
 import scipy.signal as signal
-try:
-    from enum import StrEnum          # Python 3.11+
-except ImportError:
-    from strenum import StrEnum       # pip install strenum
+from enum import StrEnum          # Python 3.11+
 
-log = logging.getLogger(__name__)
+from logging_service import LoggingService
+
+log = LoggingService()
 
 # ---------------------------------------------------------------------------
 # StrEnum: rejection reasons
@@ -761,6 +760,7 @@ class WavScrubber:
                                 against worker processes that hang on corrupt
                                 files.  ``None`` disables the timeout.
         """
+
         self.wav_paths      = [Path(p) for p in wav_paths]
         self.min_pulses     = min_pulses
         self.max_ipi_cv     = max_ipi_cv
@@ -1006,7 +1006,7 @@ class WavScrubber:
                     except Exception:
                         pass  # skip malformed rows
         except Exception as exc:
-            log.warning("WavScrubber: could not read checkpoint '%s': %s",
+            log.warn("WavScrubber: could not read checkpoint '%s': %s",
                         csv_path, exc)
         return result
 
