@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 sys.path.append("..") # To view other packages in src
 from idiom_identifier import IdiomIdentifier, IdiomIdentifierVisualizer
+from subseq_counter import SubseqCounter
 
 # Adjust font sizes:
 # Set global sizes
@@ -89,15 +90,12 @@ def main(args):
                                        truth_files=truth_files, 
                                        dataset_path=dataset_path,
                                        measure=args.measure, low_conf_percentile=args.low_conf_percentile, 
-                                       prediction_offset=args.prediction_offset, sigma=args.sigma, 
-                                       sample_size_1=args.sample_size_1, seq_length_1=args.seq_length_1, 
-                                       sample_size_2=args.sample_size_2, seq_length_2=args.seq_length_2,
-                                       subseq_n=args.subseq_n, k_most_common=args.k_most_common,
+                                       prediction_offset=args.prediction_offset, sigma=args.sigma,
                                        no_amp=args.no_amp, reduc_method=args.reduc_method, cluster_method=args.cluster_method,
                                        min_k=args.min_cluster_k, max_k = args.max_cluster_k, 
                                        calculate_k = args.calculate_k, k=args.cluster_k)
     idiom_identifier = idiom_identifier_pipeline(idiom_identifier, results_path)
-    
+
     # Useful statistics on the data:
     prediction_ensemble_measures = idiom_identifier.prediction_ensemble_measures
     file_id_counts = Counter([file_id for (file_id, chirp_idx) in idiom_identifier.peak_files])
@@ -108,10 +106,13 @@ def main(args):
     # print the number of rows in prediction_ensemble_measures where peak_detected is True
     print(prediction_ensemble_measures[prediction_ensemble_measures['peak_detected'] == True].shape[0], "chirps are peak detected")
 
-    # Figure: 
+    # FIGURES: 8.1 and 8.2
     # Identify the most common transitions
-    most_common_transitions = idiom_identifier.identify_most_common_subsequences()
-    print(most_common_transitions)
+    subseq_counter = SubseqCounter(idiom_identifier.significant_idiom_sequence_clusters)
+    most_common_transitions = subseq_counter.identify_most_common_subsequences(length=args.subseq_n, 
+                                                                               k_most_common=args.subseq_k,
+                                                                               calc_prob=args.subseq_calc_prob)
+    print(most_common_transitions.iloc[:10, [0, 1, 3]])
 
     # ALL FIGURES:
     print("Generating figures...")    
@@ -128,6 +129,7 @@ def parse_arguments():
     parser.add_argument("--results_folder", type=str, help="Path to the folder where results will be saved",
                         default="./analysis_results")
     IdiomIdentifier.add_cli(parser)
+    SubseqCounter.add_cli(parser)
     return parser.parse_args()
 
 if __name__ == "__main__":

@@ -91,9 +91,7 @@ class IdiomIdentifier():
         Start and end indices for each detected idiom sequence.
     """
     def __init__(self, prediction_files=None, truth_files=None, dataset_path=None,
-                 measure="radius_mean", low_conf_percentile=90, prediction_offset=4, sigma=1, 
-                 sample_size_1=1000, seq_length_1=3, sample_size_2=400, seq_length_2=5,
-                 subseq_n=2, k_most_common=10,
+                 measure="radius_mean", low_conf_percentile=90, prediction_offset=4, sigma=1,
                  **kwargs):
         """
         Initialize the IdiomIdentifier.
@@ -120,14 +118,6 @@ class IdiomIdentifier():
         self.low_conf_percentile = low_conf_percentile
         self.prediction_offset = prediction_offset
         self.sigma = sigma
-
-        self.sample_size_1 = sample_size_1
-        self.seq_length_1 = seq_length_1
-        self.sample_size_2 = sample_size_2
-        self.seq_length_2 = seq_length_2
-
-        self.subseq_n = subseq_n
-        self.k_most_common = k_most_common
 
         self.prediction_ensemble_measures = None
         self.ground_truth = None
@@ -594,76 +584,6 @@ class IdiomIdentifier():
         self.peak_df = peak_df
         return significant_peak_ids, significant_idiom_sequences, significant_idiom_sequence_clusters
 
-    def identify_most_common_subsequences(self):
-        """
-        Identify common cluster transition patterns within idiom sequences.
-
-        This method analyzes the cluster label sequences of significant idioms
-        and counts the most frequent subsequences of a fixed length. These
-        subsequences represent recurring patterns of chirp types that may
-        correspond to common behavioral motifs.
-
-        Returns
-        -------
-        list[tuple]
-            The most common cluster subsequences and their frequencies.
-        """
-        # FIGURES: 8.1 and 8.2
-        idiom_clusters_temp = []
-        for seq in self.significant_idiom_sequence_clusters:
-            idiom_clusters_temp.extend(seq)
-        idiom_cluster_counts = Counter(idiom_clusters_temp)
-
-        # find the most common 3-length label sequences in significant_idiom_sequence_clusters
-        sequence_counts = most_common_subsequences(self.significant_idiom_sequence_clusters, 
-                                                   self.subseq_n, k = self.k_most_common, subseq_type="all")
-        sequence_counts = most_common_subsequences(self.significant_idiom_sequence_clusters, 
-                                                   self.subseq_n, subseq_type="all")
-        prefix_counts = most_common_subsequences(self.significant_idiom_sequence_clusters, 
-                                                 self.subseq_n, k = self.k_most_common, subseq_type="prefix")
-        suffix_counts = most_common_subsequences(self.significant_idiom_sequence_clusters, 
-                                                 self.subseq_n, k = self.k_most_common, subseq_type="suffix")
-        subseqs = pd.DataFrame(sequence_counts, columns=['Subseq', 'Count'])
-        prefixs = pd.DataFrame(prefix_counts, columns=['Prefix', 'Count'])
-        suffixs = pd.DataFrame(suffix_counts, columns=['Suffix', 'Count'])
-
-        res = pd.concat([subseqs, prefixs, suffixs], axis=1)
-
-        res = subseqs.copy()
-        res['Start Cluster Count'] = res.apply(lambda x: idiom_cluster_counts[x['Subseq'][0]], axis=1)
-        res['Transition Probability'] = res.apply(lambda x: x['Count'] / idiom_cluster_counts[x['Subseq'][0]], axis=1)
-        res = res.sort_values('Transition Probability', ascending=False).reset_index(drop=True)
-        res.insert(0, "Rank", range(1, len(res) + 1))
-        res.drop(columns=['Count', 'Start Cluster Count'], inplace=True)
-        res["Transition Probability"] = res["Transition Probability"].round(3)
-        return res
-
-    def evaluate_idiom_similarity(self):
-        """
-        Evaluate similarity between detected idiom sequences.
-
-        This method compares cluster-label sequences associated with significant
-        idioms to quantify how similar different idioms are to one another.
-        Similarity is computed using sequence-based distance metrics applied
-        to the cluster transition patterns within each idiom.
-
-        The resulting similarity measures can be used to identify recurring
-        behavioral motifs or groups of idioms with similar chirp structures.
-        """
-        
-        # Approach 1: 
-        # get a distribution of idiom volumes by randomly sampling sequences of chirps
-        compare_idiom_similarity_by_volume(self.whole_idiom_sequences, 
-                                           self.unscaled_ground_truth, 
-                                           self.sample_size_1, 
-                                           self.seq_length_1)
-        # Approach 2:
-        # get a random sample of idiom sequences; within each sequence, calculate pairwise distances (euclidean) between chirps
-        compare_idiom_similarity_by_pairwise_distance(self.whole_idiom_sequences, 
-                                                      self.unscaled_ground_truth, 
-                                                      self.sample_size_2, 
-                                                      self.seq_length_2)
-
     def output_results(self, results_path):
         """
         Save idiom analysis results to disk.
@@ -738,16 +658,6 @@ class IdiomIdentifier():
         parser.add_argument("--low_conf_percentile", type=int, default=90)
         parser.add_argument("--prediction_offset", type=int, default=4)
         parser.add_argument("--sigma", type=int, default=1)
-
-        parser.add_argument("--sample_size_1", type=int, default=1000)
-        parser.add_argument("--seq_length_1", type=int, default=3)
-        parser.add_argument("--sample_size_2", type=int, default=400)
-        parser.add_argument("--seq_length_2", type=int, default=5)
-
-        parser.add_argument("--subseq_n", type=int, default=2)
-        parser.add_argument("--k_most_common", type=int, default=10)
-
-        # parser.add_argument("--subseq_type", type=str, default="all")
 
 class IdiomIdentifierVisualizer():
     """
