@@ -25,39 +25,27 @@ from chirp_clusterer import ChirpClusterer
 
 # recall that the measures are:
 # tightness, radius_mean, density, average_error_per_point, error_density, euclidean_distance
-MEASURE = "radius_mean"
-LOW_CONFIDENCE_PERCENTILE = 90
-PREDICTION_OFFSET = 4
-SIGMA = 1
 
-NO_AMP = 0 # set to 0 to keep all amp features, 1 to remove [Amp1stQrtl, Amp2ndQrtl, Amp3rdQrtl, Amp4thQrtl], 2 to remove all amp features
-MIN_CLUSTER_K = 1
-MAX_CLUSTER_K = 50
-CALCULATE_K = False
-
-CLUSTER_METHOD = "Agglomerative"
-USE_UMAP = True
-
-SAMPLE_SIZE_1 = 1000
-SEQ_LENGTH_1 = 3
-SAMPLE_SIZE_2 = 400
-SEQ_LENGTH_2 = 5
-
-SUBSEQ_N = 2
-K_MOST_COMMON = 10
-
-ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "FBak20dB", "LowFreq", "Bndw20dB", 
-                "CallsPerSec", "EndSlope", "SteepestSlope", "StartSlope", "Bndw15dB", "HiFtoUpprKnSlp", "HiFtoKnSlope", 
-                "DominantSlope", "Bndw5dB", "PreFc500", "PreFc1000", "PreFc3000", "KneeToFcSlope", "TotalSlope", 
-                "PreFc250", "CallDuration", "CummNmlzdSlp", "DurOf32dB", "SlopeAtFc", "LdgToFcSlp", "DurOf20dB", "DurOf15dB", 
-                "TimeFromMaxToFc", "KnToFcDur", "HiFtoFcExpAmp", "AmpKurtosis", "LowestSlope", "KnToFcDmp", "HiFtoKnExpAmp", 
-                "DurOf5dB", "KnToFcExpAmp", "RelPwr3rdTo1st", "LnExpB_StartAmp", "Filter", "HiFtoKnDmp", "LnExpB_EndAmp", 
-                "HiFtoFcDmp", "AmpSkew", "LedgeDuration", "KneeToFcResidue", "PreFc3000Residue", "AmpGausR2", "PreFc1000Residue", 
-                "Amp1stMean", "LdgToFcExp", "FcMinusEndF", "Amp4thMean", "HiFtoUpprKnExp", "HiFtoKnExp", "KnToFcExp", "UpprKnToKnExp", 
-                "Kn-FcCurviness", "Amp2ndMean", "Quality", "HiFtoFcExp", "LnExpA_EndAmp", "RelPwr2ndTo1st", "LnExpA_StartAmp", 
-                "HiFminusStartF", "Amp3rdMean", "PreFc500Residue", "Kn-FcCurvinessTrndSlp", "PreFc250Residue", "AmpVariance", "AmpMoment", 
-                "meanKn-FcCurviness", "MinAccpQuality", "AmpEndLn60ExpC", "AmpStartLn60ExpC", "Preemphasis", "MaxSegLnght" ,"Max#CallsConsidered"]
-ignore_cols += ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 'Preemphasis', 'MaxSegLnght', "ParentDir", "file_id", "chirp_idx", "split"]
+IGNORE_COLS = ["FreqLedge", "AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", 
+               "EndF", "FBak20dB", "LowFreq", "Bndw20dB", "CallsPerSec", 
+               "EndSlope", "SteepestSlope", "StartSlope", "Bndw15dB", "HiFtoUpprKnSlp", 
+               "HiFtoKnSlope", "DominantSlope", "Bndw5dB", "PreFc500", "PreFc1000", 
+               "PreFc3000", "KneeToFcSlope", "TotalSlope", "PreFc250", "CallDuration", 
+               "CummNmlzdSlp", "DurOf32dB", "SlopeAtFc", "LdgToFcSlp", "DurOf20dB", 
+               "DurOf15dB", "TimeFromMaxToFc", "KnToFcDur", "HiFtoFcExpAmp", "AmpKurtosis", 
+               "LowestSlope", "KnToFcDmp", "HiFtoKnExpAmp", "DurOf5dB", "KnToFcExpAmp", 
+               "RelPwr3rdTo1st", "LnExpB_StartAmp", "Filter", "HiFtoKnDmp", "LnExpB_EndAmp", 
+                "HiFtoFcDmp", "AmpSkew", "LedgeDuration", "KneeToFcResidue", "PreFc3000Residue", 
+                "AmpGausR2", "PreFc1000Residue", "Amp1stMean", "LdgToFcExp", "FcMinusEndF", 
+                "Amp4thMean", "HiFtoUpprKnExp", "HiFtoKnExp", "KnToFcExp", "UpprKnToKnExp", 
+                "Kn-FcCurviness", "Amp2ndMean", "Quality", "HiFtoFcExp", "LnExpA_EndAmp", 
+                "RelPwr2ndTo1st", "LnExpA_StartAmp", "HiFminusStartF", "Amp3rdMean", "PreFc500Residue", 
+                "Kn-FcCurvinessTrndSlp", "PreFc250Residue", "AmpVariance", "AmpMoment", "meanKn-FcCurviness", 
+                "MinAccpQuality", "AmpEndLn60ExpC", "AmpStartLn60ExpC", "Preemphasis", "MaxSegLnght", 
+                "Max#CallsConsidered"] + \
+                ["Filename", "NextDirUp", 'Path', 'Version', 'Filter', 
+                 'Preemphasis', 'MaxSegLnght', "ParentDir", "file_id", "chirp_idx", 
+                 "split"]
 
 class IdiomIdentifier():
     """
@@ -102,7 +90,11 @@ class IdiomIdentifier():
     whole_idiom_sequences_np : list[tuple]
         Start and end indices for each detected idiom sequence.
     """
-    def __init__(self, prediction_files=None, truth_files=None, dataset_path=None):
+    def __init__(self, prediction_files=None, truth_files=None, dataset_path=None,
+                 measure="radius_mean", low_conf_percentile=90, prediction_offset=4, sigma=1, 
+                 sample_size_1=1000, seq_length_1=3, sample_size_2=400, seq_length_2=5,
+                 subseq_n=2, k_most_common=10,
+                 **kwargs):
         """
         Initialize the IdiomIdentifier.
 
@@ -124,9 +116,24 @@ class IdiomIdentifier():
         self.scaler_path = f"{dataset_path}/split_scaler.pkl"
         self.filename_to_id_path = f"{dataset_path}/split_filename_to_id.csv"
 
+        self.measure = measure
+        self.low_conf_percentile = low_conf_percentile
+        self.prediction_offset = prediction_offset
+        self.sigma = sigma
+
+        self.sample_size_1 = sample_size_1
+        self.seq_length_1 = seq_length_1
+        self.sample_size_2 = sample_size_2
+        self.seq_length_2 = seq_length_2
+
+        self.subseq_n = subseq_n
+        self.k_most_common = k_most_common
+
         self.prediction_ensemble_measures = None
         self.ground_truth = None
         self.unscaled_ground_truth = None
+
+        self.clusterer = ChirpClusterer(**kwargs)
 
     def calculate_prediction_measures(self):
         """
@@ -171,9 +178,9 @@ class IdiomIdentifier():
         threshold are marked as low-confidence predictions.
         """
         # find a "low confidence threshold" and get the indices of the low confidence samples
-        low_confidence_threshold = np.percentile(self.prediction_ensemble_measures[MEASURE], LOW_CONFIDENCE_PERCENTILE)
-        # low_confidence_indices = prediction_ensemble_measures.index[prediction_ensemble_measures[MEASURE] >= low_confidence_threshold].tolist()
-        self.prediction_ensemble_measures["low_confidence"] = self.prediction_ensemble_measures[MEASURE] >= low_confidence_threshold
+        low_confidence_threshold = np.percentile(self.prediction_ensemble_measures[self.measure], self.low_conf_percentile)
+        # low_confidence_indices = prediction_ensemble_measures.index[prediction_ensemble_measures[self.measure] >= low_confidence_threshold].tolist()
+        self.prediction_ensemble_measures["low_confidence"] = self.prediction_ensemble_measures[self.measure] >= low_confidence_threshold
 
     def detect_peaks(self):
         """
@@ -194,11 +201,11 @@ class IdiomIdentifier():
         """
         peak_files = []
         for file_id in tqdm(self.prediction_ensemble_measures['file_id'].unique()):
-            peak_chirps = detect_uncertainty_peaks(file_id, self.prediction_ensemble_measures, MEASURE, sigma=SIGMA)
+            peak_chirps = detect_uncertainty_peaks(file_id, self.prediction_ensemble_measures, self.measure, sigma=self.sigma)
             if peak_chirps is not None and not peak_chirps.empty:
                 # print(f"file_id={file_id} has peaks at chirp index: {(peak_chirps['frame_number'] + 4).tolist()}")
                 for frame_number in peak_chirps['frame_number']:
-                    peak_files.append((file_id, frame_number + PREDICTION_OFFSET))
+                    peak_files.append((file_id, frame_number + self.prediction_offset))
         self._calculate_peak_metrics(peak_files)
         
         # peak_indices = [(self.prediction_ensemble_measures.index[(self.prediction_ensemble_measures['file_id'] == file_id) & (self.prediction_ensemble_measures['chirp_idx'] == chirp_idx)][0]) for (file_id, chirp_idx) in peak_files]
@@ -350,7 +357,7 @@ class IdiomIdentifier():
             dataset_kwargs = {
                 "root_path": self.dataset_path,
                 "prefix": "split",
-                "ignore_cols": ignore_cols,
+                "ignore_cols": IGNORE_COLS,
                 "time_col_name": "TimeIndex",
                 "val_split": 0.05,
                 "test_split": 0.05,
@@ -460,9 +467,10 @@ class IdiomIdentifier():
             Cluster labels corresponding to filtered coordinates.
         """
         chirp_data = self.full_chirp_df_scaled.loc[:, 'PrecedingIntrvl':'AmpK@start'].to_numpy()
-        clusterer = ChirpClusterer(chirp_data, NO_AMP, USE_UMAP, CLUSTER_METHOD, MIN_CLUSTER_K, MAX_CLUSTER_K, CALCULATE_K, 7)
-        clusterer.prepare_data()
-        linked, chirp_data_embedded_df, chirp_labels, filtered_chirp_data_2d, filtered_chirp_labels = clusterer.cluster_data()
+        self.clusterer.chirp_attributes = self.full_chirp_df_scaled
+        self.clusterer.chirp_data = chirp_data
+        self.clusterer.prepare_data()
+        linked, chirp_data_embedded_df, chirp_labels, filtered_chirp_data_2d, filtered_chirp_labels = self.clusterer.cluster_data()
         self.linked = linked
         self.chirp_data_embedded_df = chirp_data_embedded_df
         self.chirp_labels = chirp_labels
@@ -523,8 +531,8 @@ class IdiomIdentifier():
             DataFrame containing information about detected peaks.
         """
         # peak_df = prediction_ensemble_measures[(prediction_ensemble_measures['peak_detected'] > 0) &
-        #                                       (prediction_ensemble_measures["distance_to_next_peak"] > 0)][["file_id", "chirp_idx", MEASURE]].copy()
-        # peak_df = identify_significant_peaks_by_range(peak_df, prediction_ensemble_measures, MEASURE, SIGMA)
+        #                                       (prediction_ensemble_measures["distance_to_next_peak"] > 0)][["file_id", "chirp_idx", self.measure]].copy()
+        # peak_df = identify_significant_peaks_by_range(peak_df, prediction_ensemble_measures, self.measure, self.sigma)
         # significant_peak_ids = []
         # for i in range(len(peak_df)):
         #     significant_peak_idxs = identify_significant_peaks(peak_df, i, 'normalized_surrounding_seq', "seq_uncertainty_range",
@@ -539,8 +547,8 @@ class IdiomIdentifier():
         # significant_peak_ids = list(set(significant_peak_ids))
         
         peak_df = self.prediction_ensemble_measures[(self.prediction_ensemble_measures['peak_detected'] > 0) &
-                                            (self.prediction_ensemble_measures["distance_to_next_peak"] > 0)][["file_id", "chirp_idx", MEASURE]].copy()
-        peak_df = identify_significant_peaks_by_prominence(peak_df, self.prediction_ensemble_measures, MEASURE, SIGMA)
+                                            (self.prediction_ensemble_measures["distance_to_next_peak"] > 0)][["file_id", "chirp_idx", self.measure]].copy()
+        peak_df = identify_significant_peaks_by_prominence(peak_df, self.prediction_ensemble_measures, self.measure, self.sigma)
 
         significant_peak_ids = [idx for idx in peak_df[peak_df["prominence_to_range"] > peak_df["prominence_to_range"].median()].index]
 
@@ -608,13 +616,13 @@ class IdiomIdentifier():
 
         # find the most common 3-length label sequences in significant_idiom_sequence_clusters
         sequence_counts = most_common_subsequences(self.significant_idiom_sequence_clusters, 
-                                                   SUBSEQ_N, k = K_MOST_COMMON, subseq_type="all")
+                                                   self.subseq_n, k = self.k_most_common, subseq_type="all")
         sequence_counts = most_common_subsequences(self.significant_idiom_sequence_clusters, 
-                                                   SUBSEQ_N, subseq_type="all")
+                                                   self.subseq_n, subseq_type="all")
         prefix_counts = most_common_subsequences(self.significant_idiom_sequence_clusters, 
-                                                 SUBSEQ_N, k = K_MOST_COMMON, subseq_type="prefix")
+                                                 self.subseq_n, k = self.k_most_common, subseq_type="prefix")
         suffix_counts = most_common_subsequences(self.significant_idiom_sequence_clusters, 
-                                                 SUBSEQ_N, k = K_MOST_COMMON, subseq_type="suffix")
+                                                 self.subseq_n, k = self.k_most_common, subseq_type="suffix")
         subseqs = pd.DataFrame(sequence_counts, columns=['Subseq', 'Count'])
         prefixs = pd.DataFrame(prefix_counts, columns=['Prefix', 'Count'])
         suffixs = pd.DataFrame(suffix_counts, columns=['Suffix', 'Count'])
@@ -645,11 +653,16 @@ class IdiomIdentifier():
         
         # Approach 1: 
         # get a distribution of idiom volumes by randomly sampling sequences of chirps
-        compare_idiom_similarity_by_volume(self.whole_idiom_sequences, self.unscaled_ground_truth, SAMPLE_SIZE_1, SEQ_LENGTH_1)
-
+        compare_idiom_similarity_by_volume(self.whole_idiom_sequences, 
+                                           self.unscaled_ground_truth, 
+                                           self.sample_size_1, 
+                                           self.seq_length_1)
         # Approach 2:
         # get a random sample of idiom sequences; within each sequence, calculate pairwise distances (euclidean) between chirps
-        compare_idiom_similarity_by_pairwise_distance(self.whole_idiom_sequences, self.unscaled_ground_truth, SAMPLE_SIZE_2, SEQ_LENGTH_2)
+        compare_idiom_similarity_by_pairwise_distance(self.whole_idiom_sequences, 
+                                                      self.unscaled_ground_truth, 
+                                                      self.sample_size_2, 
+                                                      self.seq_length_2)
 
     def output_results(self, results_path):
         """
@@ -717,6 +730,24 @@ class IdiomIdentifier():
         self.prediction_ensemble_measures.to_csv(f"{results_path}/chirp_prediction_confidence_measures.csv", index=False)
         self.full_chirp_df.to_csv(f"{results_path}/all_chirp_measures.csv", index=False)
         self.full_chirp_df_scaled.to_csv(f"{results_path}/all_chirp_measures_scaled_robust.csv", index=False)
+
+    @classmethod
+    def add_cli(cls, parser):
+        ChirpClusterer.add_cli(parser)
+        parser.add_argument("--measure", type=str, default="radius_mean")
+        parser.add_argument("--low_conf_percentile", type=int, default=90)
+        parser.add_argument("--prediction_offset", type=int, default=4)
+        parser.add_argument("--sigma", type=int, default=1)
+
+        parser.add_argument("--sample_size_1", type=int, default=1000)
+        parser.add_argument("--seq_length_1", type=int, default=3)
+        parser.add_argument("--sample_size_2", type=int, default=400)
+        parser.add_argument("--seq_length_2", type=int, default=5)
+
+        parser.add_argument("--subseq_n", type=int, default=2)
+        parser.add_argument("--k_most_common", type=int, default=10)
+
+        # parser.add_argument("--subseq_type", type=str, default="all")
 
 class IdiomIdentifierVisualizer():
     """
@@ -797,20 +828,20 @@ class IdiomIdentifierVisualizer():
         predictions.
 
         The resulting figure is saved to:
-            figs/histogram_<MEASURE>.png
+            figs/histogram_<self.idiom_identifier.measure>.png
         """
         # Figure 1: histogram of our chosen uncertainty measure: radius_mean
-        # print(np.percentile(self.prediction_ensemble_measures[MEASURE], 0), 
-        #    np.percentile(self.prediction_ensemble_measures[MEASURE], 25), 
-        #    np.percentile(self.prediction_ensemble_measures[MEASURE], 50), 
-        #    np.percentile(self.prediction_ensemble_measures[MEASURE], 75), 
-        #    np.percentile(self.prediction_ensemble_measures[MEASURE], 100))
+        # print(np.percentile(self.prediction_ensemble_measures[self.idiom_identifier.measure], 0), 
+        #    np.percentile(self.prediction_ensemble_measures[self.idiom_identifier.measure], 25), 
+        #    np.percentile(self.prediction_ensemble_measures[self.idiom_identifier.measure], 50), 
+        #    np.percentile(self.prediction_ensemble_measures[self.idiom_identifier.measure], 75), 
+        #    np.percentile(self.prediction_ensemble_measures[self.idiom_identifier.measure], 100))
         plt.figure(figsize=(8, 6))
-        plt.hist(self.idiom_identifier.prediction_ensemble_measures[MEASURE], bins=50)
-        plt.title(f'Histogram of {MEASURE}')
-        plt.xlabel(f'{MEASURE}')
+        plt.hist(self.idiom_identifier.prediction_ensemble_measures[self.idiom_identifier.measure], bins=50)
+        plt.title(f'Histogram of {self.idiom_identifier.measure}')
+        plt.xlabel(f'{self.idiom_identifier.measure}')
         plt.ylabel('Count')
-        plt.savefig(f"{self.results_path}/figs/histogram_{MEASURE}.png")
+        plt.savefig(f"{self.results_path}/figs/histogram_{self.idiom_identifier.measure}.png")
         plt.show()
 
     def plot_smoothed_uncertainty_histogram(self):
@@ -830,7 +861,7 @@ class IdiomIdentifierVisualizer():
         uncertainty fluctuations.
 
         The resulting figure is saved to:
-            figs/histogram_<MEASURE>_smoothed.png
+            figs/histogram_<self.idiom_identifier.measure>_smoothed.png
         """
         # Figure 2: histogram of smoothed uncertainty ranges
         # Find which files have a large range by comparing each sequence's range with the total population of ranges
@@ -838,9 +869,9 @@ class IdiomIdentifierVisualizer():
         uncertainty_ranges_smoothed = []
         for file_id in tqdm(self.idiom_identifier.prediction_ensemble_measures['file_id'].unique()):
             sel = self.idiom_identifier.prediction_ensemble_measures[self.idiom_identifier.prediction_ensemble_measures['file_id'] == file_id]
-            uncertainty_range = sel[MEASURE].max() - sel[MEASURE].min()
+            uncertainty_range = sel[self.idiom_identifier.measure].max() - sel[self.idiom_identifier.measure].min()
             uncertainty_ranges.append(uncertainty_range)
-            smoothed = gaussian_filter(sel[MEASURE], sigma=SIGMA, order=0, mode='reflect')
+            smoothed = gaussian_filter(sel[self.idiom_identifier.measure], sigma=self.idiom_identifier.sigma, order=0, mode='reflect')
             uncertainty_range_smoothed = smoothed.max() - smoothed.min()
             uncertainty_ranges_smoothed.append(uncertainty_range_smoothed)
         # add a column in prediction_ensemble_measures for whether or not a ttest_1samp for each uncertainty_range is significantly larger than the sample
@@ -854,7 +885,7 @@ class IdiomIdentifierVisualizer():
         plt.title("Histogram of Smoothed Uncertainty Ranges")
         plt.xlabel("Smoothed Uncertainty Range")
         plt.ylabel("Count")
-        plt.savefig(f"{self.results_path}/figs/histogram_{MEASURE}_smoothed.png")
+        plt.savefig(f"{self.results_path}/figs/histogram_{self.idiom_identifier.measure}_smoothed.png")
         plt.show()
 
     def plot_uncertainty_plots(self):
@@ -874,7 +905,11 @@ class IdiomIdentifierVisualizer():
         plt.figure(figsize=(8, 6))
         for file_id in tqdm(self.idiom_identifier.prediction_ensemble_measures['file_id'].unique()):
             if file_id in [fid for (fid, frame_number) in self.idiom_identifier.peak_files]:
-                plot_smoothed_uncertainty(file_id, self.idiom_identifier.prediction_ensemble_measures, MEASURE, sigma=SIGMA, show=False)
+                plot_smoothed_uncertainty(file_id, 
+                                          self.idiom_identifier.prediction_ensemble_measures, 
+                                          self.idiom_identifier.measure, 
+                                          sigma=self.idiom_identifier.sigma, 
+                                          show=False)
         plt.title("Uncertainty plots")
         plt.savefig(f"{self.results_path}/figs/uncertainty_plots.png")
         plt.show()
@@ -952,7 +987,7 @@ class IdiomIdentifierVisualizer():
         plt.figure(figsize=(8, 6))
         plt.xticks(np.arange(self.idiom_identifier.chirp_labels.min(), self.idiom_identifier.chirp_labels.max() + 1))
         plt.hist(self.idiom_identifier.chirp_labels, bins=np.arange(self.idiom_identifier.chirp_labels.min(), self.idiom_identifier.chirp_labels.max() + 2) - 0.5)
-        plt.title(f"Histogram of {CLUSTER_METHOD} Cluster Labels")
+        plt.title(f"Histogram of {self.idiom_identifier.clusterer.cluster_method} Cluster Labels")
         plt.xlabel("Cluster Label")
         plt.ylabel("Count")
         plt.savefig(f"{self.results_path}/figs/histogram_clusters.png")
@@ -976,8 +1011,8 @@ class IdiomIdentifierVisualizer():
                               self.idiom_identifier.filtered_chirp_data_2d[:, 1], 
                               s=5)
         plt.title(f"All Chirps Distribution")
-        plt.xlabel(f"{'UMAP' if USE_UMAP else 'PCA'} Component 1")
-        plt.ylabel(f"{'UMAP' if USE_UMAP else 'PCA'} Component 2")
+        plt.xlabel(f"{self.idiom_identifier.clusterer.reduc_method.upper()} Component 1")
+        plt.ylabel(f"{self.idiom_identifier.clusterer.reduc_method.upper()} Component 2")
         plt.savefig(f"{self.results_path}/figs/scatter_all_chirps.png")
 
     def plot_clustered_chirp_scatter(self):
@@ -1000,10 +1035,10 @@ class IdiomIdentifierVisualizer():
                               self.idiom_identifier.filtered_chirp_data_2d[:, 1], 
                               c=self.idiom_identifier.filtered_chirp_labels, cmap=colormap, s=5, 
                               vmin=min(self.idiom_identifier.chirp_labels), vmax=max(self.idiom_identifier.chirp_labels))
-        plt.title(f"{CLUSTER_METHOD} Clustering: All Chirps")# ({'UMAP' if USE_UMAP else 'PCA'}-reduced to 2D)")
+        plt.title(f"{self.idiom_identifier.clusterer.cluster_method} Clustering: All Chirps")# ({'UMAP' if USE_UMAP else 'PCA'}-reduced to 2D)")
         plt.colorbar(scatter, label="Cluster")
-        plt.xlabel(f"{'UMAP' if USE_UMAP else 'PCA'} Component 1")
-        plt.ylabel(f"{'UMAP' if USE_UMAP else 'PCA'} Component 2")
+        plt.xlabel(f"{self.idiom_identifier.clusterer.reduc_method.upper()} Component 1")
+        plt.ylabel(f"{self.idiom_identifier.clusterer.reduc_method.upper()} Component 2")
         plt.savefig(f"{self.results_path}/figs/scatter_all_chirps_clustered.png")
 
     def plot_chirp_dendrogram(self):
@@ -1093,10 +1128,10 @@ class IdiomIdentifierVisualizer():
                                 c=significant_peak_chirp_clusters, 
                                 cmap=colormap, edgecolors="black", s=50, marker="*", 
                                 vmin=min(self.idiom_identifier.chirp_labels), vmax=max(self.idiom_identifier.chirp_labels))
-        plt.title(f"{CLUSTER_METHOD} Clustering: Chirps and Peaks")# ({'UMAP' if USE_UMAP else 'PCA'}-reduced to 2D)")
+        plt.title(f"{self.idiom_identifier.clusterer.cluster_method} Clustering: Chirps and Peaks")# ({'UMAP' if USE_UMAP else 'PCA'}-reduced to 2D)")
         plt.colorbar(scatter, label="Cluster")
-        plt.xlabel(f"{'UMAP' if USE_UMAP else 'PCA'} Component 1")
-        plt.ylabel(f"{'UMAP' if USE_UMAP else 'PCA'} Component 2")
+        plt.xlabel(f"{self.idiom_identifier.clusterer.reduc_method.upper()} Component 1")
+        plt.ylabel(f"{self.idiom_identifier.clusterer.reduc_method.upper()} Component 2")
         legend_symbols = matplotlib.lines.Line2D([0], [0], marker='*', color='w', label='Significant Peak', markerfacecolor='black', markersize=15)
         plt.legend([legend_symbols], ["Peak Chirp"])
         plt.savefig(f"{self.results_path}/figs/scatter_chirps_and_peaks.png")
@@ -1152,8 +1187,8 @@ class IdiomIdentifierVisualizer():
         nx.draw_networkx_edges(G, pos, edgelist=edges, width=[w * 0.1 for w in weights], alpha=0.7, hide_ticks=False)
         nx.draw_networkx_labels(G, pos, font_size=10, hide_ticks=False)
         plt.title("Cluster Transitions in Idiom Sequences")
-        plt.xlabel(f"{'UMAP' if USE_UMAP else 'PCA'} Component 1")
-        plt.ylabel(f"{'UMAP' if USE_UMAP else 'PCA'} Component 2")
+        plt.xlabel(f"{self.idiom_identifier.clusterer.reduc_method.upper()} Component 1")
+        plt.ylabel(f"{self.idiom_identifier.clusterer.reduc_method.upper()} Component 2")
         plt.savefig(f"{self.results_path}/figs/scatter_chirps_and_transitions.png")
 
     def plot_chirp_v_peak_cluster_histogram(self):

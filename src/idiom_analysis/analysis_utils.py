@@ -1,25 +1,25 @@
 # -*- coding: utf-8 -*-
 # @Author: Andrew Chen
 
+from collections import Counter
 import numpy as np
 import pandas as pd
+from scipy import special
+from scipy.ndimage import gaussian_filter
+from scipy.signal import peak_prominences
+from scipy.spatial.distance import pdist, cdist, euclidean
+from scipy.stats import ttest_ind, normaltest
+from scipy.cluster.hierarchy import fcluster
 import matplotlib.pyplot as plt
+from sklearn import cluster
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, QuantileTransformer
 from tqdm import tqdm
 import joblib
-from scipy import special
-from scipy.signal import peak_prominences
-from scipy.spatial.distance import pdist, cdist, euclidean
-from scipy.stats import ttest_ind
 from gap_statistic import OptimalK
 from kneed import KneeLocator
-from scipy.cluster.hierarchy import fcluster
 from hdbscan import HDBSCAN
-from sklearn import cluster
-from collections import Counter
-from scipy.ndimage import gaussian_filter
+
 from peak_detection.data_series_analyzer import DataSeriesAnalyzer
-from scipy.stats import normaltest
 
 def scale(df, scaler, cols_to_keep=[]):
     """
@@ -364,7 +364,7 @@ def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), metrics=[], 
     if "euclidean_distance" in metrics:
         ax.plot(x, sel["euclidean_distance"] / 5, marker="o", linestyle="-", color="C5")
     ax.set_xlabel("chirp_idx")
-    ax.set_ylabel("tightness")
+    ax.set_ylabel("uncertainty")
 
     # ensure x-axis ticks are integer indices (avoid fractional chirp_idx labels)
     x_min = int(np.floor(x.min()))
@@ -380,7 +380,7 @@ def plot_uncertainty_by_file(file_id, df, ax=None, figsize=(12, 8), metrics=[], 
     ax.set_xticks(ticks)
     ax.set_xticklabels([str(int(t)) for t in ticks])
 
-    ax.set_title(f"tightness vs chirp_idx (file_id={file_id})")
+    ax.set_title(f"uncertainty vs chirp_idx (file_id={file_id})")
     ax.grid(True, linestyle="--", alpha=0.6)
 
     # label the three plotted series (they were plotted above in order) and show legend

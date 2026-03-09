@@ -24,7 +24,7 @@ class ChirpClusterer():
 
     Attributes
     ----------
-    chirp_attributes : pandas.DataFrame or numpy.ndarray
+    chirp_data : pandas.DataFrame or numpy.ndarray
         Original matrix of chirp feature vectors where rows correspond
         to chirps and columns correspond to acoustic features.
 
@@ -50,7 +50,7 @@ class ChirpClusterer():
 
     """
 
-    def __init__(self, chirp_attributes, no_amp=0, use_umap=True, cluster_method="Agglomerative", 
+    def __init__(self, no_amp=0, reduc_method="umap", cluster_method="Agglomerative", 
                  min_k = 1, max_k=50, calculate_k=True, k=8):
         """
         Initialize the ChirpClusterer.
@@ -63,7 +63,7 @@ class ChirpClusterer():
 
         Parameters
         ----------
-        chirp_attributes : pandas.DataFrame or numpy.ndarray
+        chirp_data : pandas.DataFrame or numpy.ndarray
             Matrix of chirp feature vectors where each row corresponds to a chirp
             and each column represents an extracted acoustic feature.
 
@@ -73,10 +73,8 @@ class ChirpClusterer():
             - 1: remove quartile amplitude features (Amp1stQrtl–Amp4thQrtl)
             - 2: remove all features containing "Amp" in their name.
 
-        use_umap : bool, optional
-            Whether to perform dimensionality reduction using UMAP before clustering.
-            If False, clustering is performed directly on the original feature space
-            (or PCA for visualization).
+        reduc_method: str, optional
+
 
         cluster_method : str, optional
             Name of the clustering algorithm used by the helper function
@@ -97,14 +95,22 @@ class ChirpClusterer():
         k : int, optional
             Fixed number of clusters to use when `calculate_k` is False.
         """
-        self.chirp_attributes = chirp_attributes
+        self.chirp_data = None
+        self.chirp_attributes = None
         self.no_amp = no_amp
-        self.use_umap = use_umap
+        self.reduc_method = reduc_method
         self.cluster_method = cluster_method
         self.min_k = min_k
         self.max_k = max_k
         self.calculate_k = calculate_k
         self.k = k
+        print(f"""
+Made a ChirpClusterer with:
+no_amp {self.no_amp}
+reduc_method {self.reduc_method}
+min_k {self.min_k}
+calculate_k {self.calculate_k}
+""")
 
     def prepare_data(self):
         """
@@ -128,17 +134,17 @@ class ChirpClusterer():
         """
         if self.no_amp == 1:
             amp_indices = [i - 1 for i, col in enumerate(self.chirp_attributes.columns) if col in ["Amp1stQrtl", "Amp2ndQrtl", "Amp3rdQrtl", "Amp4thQrtl"]]
-            self.chirp_attributes = np.delete(self.chirp_attributes, amp_indices, axis=1)
+            self.chirp_data = np.delete(self.chirp_data, amp_indices, axis=1)
         elif self.no_amp == 2:
             amp_indices = [i - 1 for i, col in enumerate(self.chirp_attributes.columns) if "Amp" in col]
-            self.chirp_attributes = np.delete(self.chirp_attributes, amp_indices, axis=1)
+            self.chirp_data = np.delete(self.chirp_data, amp_indices, axis=1)
 
         chirp_data_embedded = umap.UMAP(
             n_neighbors=15,
             min_dist=0.1,
             n_components=2,
             random_state=42
-        ).fit_transform(self.chirp_attributes)
+        ).fit_transform(self.chirp_data)
 
         chirp_data_embedded_df = pd.DataFrame(chirp_data_embedded, columns=['UMAP1', 'UMAP2'])
         self.chirp_data_embedded = chirp_data_embedded
@@ -203,8 +209,8 @@ class ChirpClusterer():
 
         num_clusters = int(n_clusters["elbow_method"])
 
-        cluster_data_input = self.chirp_data_embedded if self.use_umap else self.chirp_attributes
-        chirp_labels = cluster_chirps(cluster_data_input, self.cluster_method, self.use_umap, num_clusters)
+        cluster_data_input = self.chirp_data_embedded if self.reduc_method == "umap" else self.chirp_data
+        chirp_labels = cluster_chirps(cluster_data_input, self.cluster_method, self.reduc_method == "umap", num_clusters)
 
         # This is perhaps a separate clustering method, but visualized using a dendrogram
         print("Calculating dendrogram...")
@@ -216,9 +222,9 @@ class ChirpClusterer():
         chirp_labels = dendrogram_clusters
 
         chirp_data_2d = self.chirp_data_embedded
-        if not self.use_umap: # use PCA instead of UMAP
+        if self.reduc_method == "pca": # use PCA instead of UMAP
             pca = PCA(n_components=2)
-            chirp_data_2d = pca.fit_transform(self.chirp_attributes)
+            chirp_data_2d = pca.fit_transform(self.chirp_data)
         # filter out noise points (label == -1)
         filtered_chirp_data_2d = chirp_data_2d[chirp_labels != -1]
         filtered_chirp_labels = chirp_labels[chirp_labels != -1]
@@ -226,3 +232,13 @@ class ChirpClusterer():
         self.filtered_chirp_data_2d = filtered_chirp_data_2d
         self.filtered_chirp_labels = filtered_chirp_labels
         return self.linked, self.chirp_data_embedded_df, chirp_labels, filtered_chirp_data_2d, filtered_chirp_labels
+
+    @classmethod
+    def add_cli(cls, parser):
+        parser.add_argument("--no_amp", type=int, default=0)
+        parser.add_argument("--min_cluster_k", type=int, default=1)
+        parser.add_argument("--max_cluster_k", type=int, default=50)
+        parser.add_argument("--cluster_method", type=str, default="Agglomerative")
+        parser.add_argument("--reduc_method", type=str, default="umap")
+        parser.add_argument("--calculate_k", action="store_true")
+        parser.add_argument("--cluster_k", type=int, default=8)

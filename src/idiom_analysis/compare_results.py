@@ -49,7 +49,12 @@ def main(args):
         os.mkdir(f"{results_path}/figs")
 
     # Run the idiom comparison pipeline on the two sets of data
-    idiom_comparer = IdiomComparer(results_1, results_2, exp_1_name, exp_2_name)
+    idiom_comparer = IdiomComparer(results_1, results_2, exp_1_name, exp_2_name, 
+                                   k_most_common=args.k_most_common, subseq_type=args.subseq_type,
+                                   no_amp=args.no_amp, reduc_method=args.reduc_method, cluster_method=args.cluster_method,
+                                   min_k=args.min_cluster_k, max_k = args.max_cluster_k, 
+                                   calculate_k = args.calculate_k, k=args.cluster_k
+                                   )
     idiom_comparer = idiom_comparer_pipeline(idiom_comparer, results_path)
 
     print("Calculating most common subsequences...")
@@ -63,7 +68,7 @@ def main(args):
 
     # Stepping away from comparison for a second, this section allows us to describe the characteristics of a given cluster
     profile_ignore_columns = ["index", "OriginalIndex", "file_id", "chirp_idx", "original_df", "cluster"]
-    CLUSTER_TO_PROFILE = 7
+    CLUSTER_TO_PROFILE = 1
     cluster_profile = describe_cluster(idiom_comparer.idiom_chirp_attributes, 
                                        CLUSTER_TO_PROFILE, 
                                        normalize=False, 
@@ -83,6 +88,7 @@ def parse_arguments():
     parser.add_argument("--exp_1_name", type=str, default="Barn", help="Name of the first experiment (for labeling purposes)")
     parser.add_argument("--exp_2_name", type=str, default="Lake", help="Name of the second experiment (for labeling purposes)")
     parser.add_argument("--results_folder", type=str, default="./analysis_results/comparisons", help="Folder to save comparison results and figures")
+    IdiomComparer.add_cli(parser)
     return parser.parse_args()
 
 if __name__ == "__main__":

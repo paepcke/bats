@@ -15,17 +15,6 @@ sys.path.append("..")
 from analysis_utils import *
 from chirp_clusterer import ChirpClusterer
 
-NO_AMP = 0 # set to 0 to keep all amp features, 1 to remove [Amp1stQrtl, Amp2ndQrtl, Amp3rdQrtl, Amp4thQrtl], 2 to remove all amp features
-
-MIN_CLUSTER_K = 1
-MAX_CLUSTER_K = 50
-
-CLUSTER_METHOD = "Agglomerative"
-USE_UMAP = True
-
-K_MOST_COMMON = 10
-SUBSEQ_TYPE = "all"
-
 class IdiomComparer():
     """
     Compare idiom structures between two experimental datasets.
@@ -66,11 +55,15 @@ class IdiomComparer():
     idiom_label_sequences : pandas.DataFrame
         Sequences of cluster labels representing idioms for each file.
     """
-    def __init__(self, results_1, results_2, exp_1_name="exp_1", exp_2_name="exp_2"):
+    def __init__(self, results_1, results_2, exp_1_name="exp_1", exp_2_name="exp_2", 
+                 k_most_common=10, subseq_type="all", **kwargs):
         self.results_1 = results_1
         self.results_2 = results_2
         self.exp_1_name = exp_1_name
         self.exp_2_name = exp_2_name
+        self.k_most_common = k_most_common
+        self.subseq_type = subseq_type
+        self.clusterer = ChirpClusterer(**kwargs)
 
     def combine_inputs(self):
         """
@@ -181,9 +174,11 @@ class IdiomComparer():
                 Dataframe containing sequences of cluster labels for each idiom.
         """
         idiom_chirp_data = self.idiom_chirp_attributes.loc[:, 'PrecedingIntrvl':'AmpK@start'].to_numpy()
-        clusterer = ChirpClusterer(idiom_chirp_data, NO_AMP, USE_UMAP, CLUSTER_METHOD, MIN_CLUSTER_K, MAX_CLUSTER_K, calculate_k=True)
-        clusterer.prepare_data()
-        linked, idiom_chirp_attributes_embedded_df, chirp_labels, filtered_chirp_data_2d, filtered_chirp_labels = clusterer.cluster_data()
+        self.clusterer.chirp_attributes = self.idiom_chirp_attributes
+        self.clusterer.chirp_data = idiom_chirp_data
+        self.clusterer.prepare_data()
+        linked, idiom_chirp_attributes_embedded_df, chirp_labels, filtered_chirp_data_2d, filtered_chirp_labels = self.clusterer.cluster_data()
+        
         self.linked = linked
         idiom_chirp_attributes_embedded = idiom_chirp_attributes_embedded_df.to_numpy()
         self.idiom_chirp_attributes_embedded = idiom_chirp_attributes_embedded
@@ -221,19 +216,19 @@ class IdiomComparer():
         # find the most common cluster across both experiments
         subseq_all = most_common_subsequences(idiom_label_sequences['cluster'].values, 
                                 SUBSEQ_LENGTH, 
-                                subseq_type=SUBSEQ_TYPE, 
-                                k=K_MOST_COMMON)
+                                subseq_type=self.subseq_type, 
+                                k=self.k_most_common)
         subseq_exp1 = most_common_subsequences(idiom_label_sequences.loc[idiom_label_sequences["original_df"] == 1]['cluster'].values, 
                                 SUBSEQ_LENGTH, 
-                                subseq_type=SUBSEQ_TYPE,
-                                k=K_MOST_COMMON)
+                                subseq_type=self.subseq_type, 
+                                k=self.k_most_common)
         subseq_exp2 = most_common_subsequences(idiom_label_sequences.loc[idiom_label_sequences["original_df"] == 2]['cluster'].values, 
                                 SUBSEQ_LENGTH, 
-                                subseq_type=SUBSEQ_TYPE,
-                                k=K_MOST_COMMON)
-        subseq_all = pd.DataFrame(subseq_all, columns=[f'{"Subseq" if SUBSEQ_TYPE == "all" else SUBSEQ_TYPE} (all)', 'Count'])
-        subseq_exp1 = pd.DataFrame(subseq_exp1, columns=[f'{"Subseq" if SUBSEQ_TYPE == "all" else SUBSEQ_TYPE} ({self.exp_1_name})', 'Count'])
-        subseq_exp2 = pd.DataFrame(subseq_exp2, columns=[f'{"Subseq" if SUBSEQ_TYPE == "all" else SUBSEQ_TYPE} ({self.exp_2_name})', 'Count'])
+                                subseq_type=self.subseq_type, 
+                                k=self.k_most_common)
+        subseq_all = pd.DataFrame(subseq_all, columns=[f'{"Subseq" if self.subseq_type == "all" else self.subseq_type} (all)', 'Count'])
+        subseq_exp1 = pd.DataFrame(subseq_exp1, columns=[f'{"Subseq" if self.subseq_type == "all" else self.subseq_type} ({self.exp_1_name})', 'Count'])
+        subseq_exp2 = pd.DataFrame(subseq_exp2, columns=[f'{"Subseq" if self.subseq_type == "all" else self.subseq_type} ({self.exp_2_name})', 'Count'])
         res = pd.concat([subseq_all, subseq_exp1, subseq_exp2], axis=1)
         res.insert(0, "Rank", range(1, len(res) + 1))
         return res
@@ -281,22 +276,22 @@ class IdiomComparer():
         SUBSEQ_LENGTH = 2
         subseq_all = most_common_subsequences(idiom_label_sequences['cluster'].values, 
                                 SUBSEQ_LENGTH, 
-                                subseq_type=SUBSEQ_TYPE, 
-                                k=K_MOST_COMMON)
+                                subseq_type=self.subseq_type, 
+                                k=self.k_most_common)
         subseq_exp1 = most_common_subsequences(idiom_label_sequences.loc[idiom_label_sequences["original_df"] == 1]['cluster'].values, 
                                 SUBSEQ_LENGTH, 
-                                subseq_type=SUBSEQ_TYPE,
-                                k=K_MOST_COMMON)
+                                subseq_type=self.subseq_type, 
+                                k=self.k_most_common)
         subseq_exp2 = most_common_subsequences(idiom_label_sequences.loc[idiom_label_sequences["original_df"] == 2]['cluster'].values, 
                                 SUBSEQ_LENGTH, 
-                                subseq_type=SUBSEQ_TYPE,
-                                k=K_MOST_COMMON)
+                                subseq_type=self.subseq_type, 
+                                k=self.k_most_common)
 
         # total_subseq_count_all = sum(most_common_subsequences(idiom_label_sequences['cluster'].values, SUBSEQ_LENGTH, subseq_type=SUBSEQ_TYPE).values())
         # total_subseq_count_exp1 = sum(most_common_subsequences(idiom_label_sequences.loc[idiom_label_sequences["original_df"] == 1]['cluster'].values, SUBSEQ_LENGTH, subseq_type=SUBSEQ_TYPE).values())
         # total_subseq_count_exp2 = sum(most_common_subsequences(idiom_label_sequences.loc[idiom_label_sequences["original_df"] == 2]['cluster'].values, SUBSEQ_LENGTH, subseq_type=SUBSEQ_TYPE).values())
 
-        subseq_all = pd.DataFrame(subseq_all, columns=[f'{"Subseq" if SUBSEQ_TYPE == "all" else SUBSEQ_TYPE} (all)', 'Count'])
+        subseq_all = pd.DataFrame(subseq_all, columns=[f'{"Subseq" if self.subseq_type == "all" else self.subseq_type} (all)', 'Count'])
         subseq_all_proportion = subseq_all.copy()
         subseq_all_proportion['Start Cluster Count'] = subseq_all_proportion.apply(lambda x: idiom_cluster_counts_all[x['Subseq (all)'][0]], axis=1)
         subseq_all_proportion['Transition Probability'] = subseq_all_proportion.apply(lambda x: x['Count'] / idiom_cluster_counts_all[x['Subseq (all)'][0]], axis=1)
@@ -304,7 +299,7 @@ class IdiomComparer():
         subseq_all_proportion = subseq_all_proportion.sort_values('Transition Probability', ascending=False).reset_index(drop=True)
         subseq_all_proportion["Transition Probability"] = subseq_all_proportion["Transition Probability"].round(3)
 
-        subseq_exp1 = pd.DataFrame(subseq_exp1, columns=[f'{"Subseq" if SUBSEQ_TYPE == "all" else SUBSEQ_TYPE} ({self.exp_1_name})', 'Count'])
+        subseq_exp1 = pd.DataFrame(subseq_exp1, columns=[f'{"Subseq" if self.subseq_type == "all" else self.subseq_type} ({self.exp_1_name})', 'Count'])
         subseq_exp1_proportion = subseq_exp1.copy()
         subseq_exp1_proportion['Start Cluster Count'] = subseq_exp1_proportion.apply(lambda x: idiom_cluster_counts_1[x[f'Subseq ({self.exp_1_name})'][0]], axis=1)
         subseq_exp1_proportion['Transition Probability'] = subseq_exp1_proportion.apply(lambda x: x['Count'] / idiom_cluster_counts_1[x[f'Subseq ({self.exp_1_name})'][0]], axis=1)
@@ -312,7 +307,7 @@ class IdiomComparer():
         subseq_exp1_proportion = subseq_exp1_proportion.sort_values('Transition Probability', ascending=False).reset_index(drop=True)
         subseq_exp1_proportion["Transition Probability"] = subseq_exp1_proportion["Transition Probability"].round(3)
 
-        subseq_exp2 = pd.DataFrame(subseq_exp2, columns=[f'{"Subseq" if SUBSEQ_TYPE == "all" else SUBSEQ_TYPE} ({self.exp_2_name})', 'Count'])
+        subseq_exp2 = pd.DataFrame(subseq_exp2, columns=[f'{"Subseq" if self.subseq_type == "all" else self.subseq_type} ({self.exp_2_name})', 'Count'])
         subseq_exp2_proportion = subseq_exp2.copy()
         # subseq_exp2_proportion['Proportion'] = subseq_exp2_proportion['Count'] / total_subseq_count_exp2
         subseq_exp2_proportion['Start Cluster Count'] = subseq_exp2_proportion.apply(lambda x: idiom_cluster_counts_2[x[f'Subseq ({self.exp_2_name})'][0]], axis=1)
@@ -331,6 +326,14 @@ class IdiomComparer():
                 ['Rank','Subseq','Proportion', 'Subseq','Proportion', 'Subseq','Proportion']]
         res_proportion.columns=header
         return res_proportion
+
+    @classmethod
+    def add_cli(cls, parser):
+        ChirpClusterer.add_cli(parser)
+
+        parser.add_argument("--k_most_common", type=int, default=10)
+        parser.add_argument("--subseq_type", type=str, default="all")
+        
 
 
 class IdiomComparerVisualizer():
