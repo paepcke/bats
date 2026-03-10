@@ -1,15 +1,102 @@
+# -*- coding: utf-8 -*-
+# @Author: Andrew Chen
+
 from collections import Counter
 import pandas as pd    
 
 from analysis_utils import *
 
 class SubseqCounter():
+    """
+    Analyze and compare common subsequences within idiom cluster sequences.
+
+    This class provides utilities for identifying frequently occurring
+    subsequences (e.g., cluster transitions) within sequences of cluster
+    labels representing idioms. It can compute the most common subsequences
+    within a single set of sequences or compare subsequence statistics
+    between two experimental datasets.
+
+    Transition probabilities are estimated by normalizing subsequence counts
+    by the total number of occurrences of the starting cluster in the
+    corresponding sequences.
+
+    Parameters
+    ----------
+    sequences : list[list[int]] or pandas.DataFrame
+        Collection of cluster label sequences representing idioms.
+        For comparison tasks this is typically a DataFrame containing
+        columns such as ``cluster`` (the sequence) and ``original_df``
+        indicating the experiment source.
+
+    exp_1_name : str, optional
+        Label used to identify the first experiment in comparison outputs.
+
+    exp_2_name : str, optional
+        Label used to identify the second experiment in comparison outputs.
+
+    Attributes
+    ----------
+    sequences : list[list[int]] or pandas.DataFrame
+        Input idiom cluster sequences.
+
+    exp_1_name : str or None
+        Name of the first experiment.
+
+    exp_2_name : str or None
+        Name of the second experiment.
+    """
     def __init__(self, sequences, exp_1_name=None, exp_2_name=None):
+        """
+        Initialize the SubseqCounter.
+
+        Parameters
+        ----------
+        sequences : list[list[int]] or pandas.DataFrame
+            Collection of cluster label sequences representing idioms.
+
+        exp_1_name : str, optional
+            Name of the first experiment for comparison tasks.
+
+        exp_2_name : str, optional
+            Name of the second experiment for comparison tasks.
+        """
         self.sequences = sequences
         self.exp_1_name = exp_1_name
         self.exp_2_name = exp_2_name
 
     def _format_subseq_df(self, sequence_counts, col_name, base_rate_fn, round_n):
+        """
+        Format subsequence counts and compute transition probabilities.
+
+        This helper method converts a list of subsequences and their counts
+        into a structured DataFrame. It also computes transition probabilities
+        by dividing the subsequence count by the total number of occurrences
+        of the subsequence's starting cluster.
+
+        Parameters
+        ----------
+        sequence_counts : list[tuple]
+            List of subsequences and their counts, typically returned by
+            ``most_common_subsequences``.
+
+        col_name : str
+            Name of the column containing the subsequence values
+            (e.g., "Subseq", "Prefix", or "Suffix").
+
+        base_rate_fn : callable
+            Function used to determine the total count of the starting cluster
+            for computing transition probabilities.
+
+        round_n : int
+            Number of decimal places used when rounding the transition
+            probability values.
+
+        Returns
+        -------
+        pandas.DataFrame
+            DataFrame containing subsequences, counts, and transition
+            probabilities sorted by probability.
+        """
         subseqs = pd.DataFrame(sequence_counts, columns=[col_name, 'Count'])
         subseqs['Start Cluster Count'] = subseqs.apply(base_rate_fn, axis=1)
         subseqs['Transition Probability'] = subseqs.apply(lambda x: x['Count'] / x["Start Cluster Count"], axis=1)
@@ -20,17 +107,39 @@ class SubseqCounter():
 
     def identify_most_common_subsequences(self, length=2, k_most_common=None, calc_prob=True, round_n=3):
         """
-        Identify common cluster transition patterns within idiom sequences.
+        Identify the most common subsequences within idiom cluster sequences.
 
-        This method analyzes the cluster label sequences of significant idioms
-        and counts the most frequent subsequences of a fixed length. These
-        subsequences represent recurring patterns of chirp types that may
-        correspond to common behavioral motifs.
+        This method analyzes the cluster label sequences of idioms and counts
+        frequently occurring subsequences of a specified length. Subsequence
+        statistics are calculated for three categories:
+
+        - All subsequences within idiom sequences
+        - Prefix subsequences (beginning of idioms)
+        - Suffix subsequences (end of idioms)
+
+        Transition probabilities are computed by normalizing subsequence
+        counts by the total occurrences of the starting cluster.
+
+        Parameters
+        ----------
+        length : int, default=2
+            Length of the subsequences to analyze.
+
+        k_most_common : int or None, optional
+            Number of most frequent subsequences to return. If None,
+            all subsequences are included.
+
+        calc_prob : bool, default=True
+            Whether to compute transition probabilities.
+
+        round_n : int, default=3
+            Number of decimal places used when rounding probabilities.
 
         Returns
         -------
-        list[tuple]
-            The most common cluster subsequences and their frequencies.
+        pandas.DataFrame
+            DataFrame containing ranked subsequences along with their counts
+            and transition probabilities for all, prefix, and suffix patterns.
         """
         idiom_clusters_temp = []
         prefix_clusters_temp = []
@@ -62,31 +171,43 @@ class SubseqCounter():
 
     def compare_most_common_subsequences(self, length=2, k_most_common=None, subseq_type="all", calc_prob=True, round_n=3):
         """
-        Identify the most common cluster-to-cluster transitions within idioms.
+        Compare the most common subsequences between two experiments.
 
-        Transition subsequences of length two are extracted from idiom cluster
-        sequences and counted to determine how frequently one cluster is
-        followed by another. Transition probabilities are also calculated by
-        normalizing counts by the total occurrences of the starting cluster.
-
-        Statistics are reported for:
+        This method identifies frequently occurring cluster subsequences
+        within idioms and compares their statistics across two datasets.
+        Subsequence counts and transition probabilities are computed for:
 
         - all idioms combined
-        - experiment 1
-        - experiment 2
+        - idioms from experiment 1
+        - idioms from experiment 2
+
+        The resulting table allows direct comparison of cluster transition
+        patterns between experiments.
 
         Parameters
         ----------
-        idiom_label_sequences : pandas.DataFrame
-            Dataframe containing idiom cluster label sequences grouped by file.
-        length: int
-            number of chirp in each subsequence
-            
+        length : int, default=2
+            Length of the subsequences to analyze.
+
+        k_most_common : int or None, optional
+            Number of most common subsequences to include. If None,
+            all subsequences are returned.
+
+        subseq_type : {"all", "prefix", "suffix"}, default="all"
+            Type of subsequences to extract.
+
+        calc_prob : bool, default=True
+            Whether to compute transition probabilities.
+
+        round_n : int, default=3
+            Number of decimal places used when rounding probabilities.
+
         Returns
         -------
         pandas.DataFrame
-            A formatted dataframe showing the most common cluster subsequences
-            and their estimated transition probabilities.
+            A formatted table containing ranked subsequences and their
+            counts and transition probabilities for the combined dataset
+            and each individual experiment.
         """
         idiom_clusters_temp = []
         idiom_clusters_temp_1 = []
@@ -116,38 +237,11 @@ class SubseqCounter():
                                 k=k_most_common)
 
         subseq_all = self._format_subseq_df(subseq_all, "Subseq", lambda x: idiom_cluster_counts_all[x['Subseq'][0]], round_n)
-        # subseq_all = pd.DataFrame(subseq_all, columns=[f'{"Subseq" if subseq_type == "all" else subseq_type} (all)', 'Count'])
-        # subseq_all_proportion = subseq_all.copy()
-        # subseq_all_proportion['Start Cluster Count'] = subseq_all_proportion.apply(lambda x: idiom_cluster_counts_all[x['Subseq (all)'][0]], axis=1)
-        # subseq_all_proportion['Transition Probability'] = subseq_all_proportion.apply(lambda x: x['Count'] / idiom_cluster_counts_all[x['Subseq (all)'][0]], axis=1)
-        # subseq_all_proportion.drop(['Start Cluster Count'], axis=1, inplace=True)
-        # subseq_all_proportion = subseq_all_proportion.sort_values('Transition Probability', ascending=False).reset_index(drop=True)
-        # subseq_all_proportion["Transition Probability"] = subseq_all_proportion["Transition Probability"].round(round_n)
-
         subseq_exp1 = self._format_subseq_df(subseq_exp1, "Subseq", lambda x: idiom_cluster_counts_1[x['Subseq'][0]], round_n)
-        # subseq_exp1 = pd.DataFrame(subseq_exp1, columns=[f'{"Subseq" if subseq_type == "all" else subseq_type} ({self.exp_1_name})', 'Count'])
-        # subseq_exp1_proportion = subseq_exp1.copy()
-        # subseq_exp1_proportion['Start Cluster Count'] = subseq_exp1_proportion.apply(lambda x: idiom_cluster_counts_1[x[f'Subseq ({self.exp_1_name})'][0]], axis=1)
-        # subseq_exp1_proportion['Transition Probability'] = subseq_exp1_proportion.apply(lambda x: x['Count'] / idiom_cluster_counts_1[x[f'Subseq ({self.exp_1_name})'][0]], axis=1)
-        # subseq_exp1_proportion.drop(["Count", 'Start Cluster Count'], axis=1, inplace=True)
-        # subseq_exp1_proportion = subseq_exp1_proportion.sort_values('Transition Probability', ascending=False).reset_index(drop=True)
-        # subseq_exp1_proportion["Transition Probability"] = subseq_exp1_proportion["Transition Probability"].round(round_n)
-
         subseq_exp2 = self._format_subseq_df(subseq_exp2, "Subseq", lambda x: idiom_cluster_counts_2[x['Subseq'][0]], round_n)
-        # subseq_exp2 = pd.DataFrame(subseq_exp2, columns=[f'{"Subseq" if subseq_type == "all" else subseq_type} ({self.exp_2_name})', 'Count'])
-        # subseq_exp2_proportion = subseq_exp2.copy()
-        # subseq_exp2_proportion['Start Cluster Count'] = subseq_exp2_proportion.apply(lambda x: idiom_cluster_counts_2[x[f'Subseq ({self.exp_2_name})'][0]], axis=1)
-        # subseq_exp2_proportion['Transition Probability'] = subseq_exp2_proportion.apply(lambda x: x['Count'] / idiom_cluster_counts_2[x[f'Subseq ({self.exp_2_name})'][0]], axis=1)
-        # subseq_exp2_proportion.drop(["Count", 'Start Cluster Count'], axis=1, inplace=True)
-        # subseq_exp2_proportion = subseq_exp2_proportion.sort_values('Transition Probability', ascending=False).reset_index(drop=True)
-        # subseq_exp2_proportion["Transition Probability"] = subseq_exp2_proportion["Transition Probability"].round(round_n)
-
+        
         res = pd.concat([subseq_all, subseq_exp1, subseq_exp2], axis=1)
-        # res.insert(0, "Rank", range(1, len(res) + 1))
-        # res_proportion = pd.concat([subseq_all_proportion, subseq_exp1_proportion, subseq_exp2_proportion], axis=1)
         res.insert(0, "Rank", range(1, len(res) + 1))
-        # res_proportion.rename(columns = {f'Subseq ({self.exp_1_name})': f'{self.exp_1_name} Subseq', 
-        #                                  f'Subseq ({self.exp_2_name})': f'{self.exp_2_name} Subseq'}, inplace=True)
         header=[['','All','','',f'{self.exp_1_name}','','',f'{self.exp_2_name}','',''], 
                 ['Rank','Subseq','Count','Proportion','Subseq','Count','Proportion','Subseq','Count','Proportion']]
         res.columns=header
@@ -155,6 +249,19 @@ class SubseqCounter():
 
     @classmethod
     def add_cli(cls, parser):
+        """
+        Add command-line arguments for subsequence analysis.
+
+        This method registers CLI arguments used to configure subsequence
+        analysis when running scripts from the command line.
+
+        Parameters
+        ----------
+        parser : argparse.ArgumentParser
+            Argument parser to which the subsequence analysis options
+            will be added.
+        """
         parser.add_argument("--subseq_n", type=int, default=2)
         parser.add_argument("--subseq_k", type=int, default=None)
+        parser.add_argument("--subseq_type", type=str, default="all")
         parser.add_argument("--subseq_calc_prob", type=int, default=None)

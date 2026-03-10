@@ -78,6 +78,9 @@ class IdiomIdentifier():
     unscaled_ground_truth : pandas.DataFrame
         Ground-truth data after reversing feature scaling.
 
+    clusterer : ChirpClusterer
+        Object to cluster chirps.
+
     peak_files : list[tuple]
         List of detected peaks represented as `(file_id, chirp_idx)` pairs.
 
@@ -107,6 +110,18 @@ class IdiomIdentifier():
         dataset_path : str, optional
             Path to the dataset directory containing scaling information
             and filename-to-ID mappings.
+
+        measure : str, optional
+            Measure of uncertainty to be used.
+
+        low_conf_percentile : int, optional
+            Percentile at which to declare low confidence (not used in pipeline).
+
+        prediction_offset : int, optional
+            Index of first chirp in test set sequence, i.e. size of first context.
+        
+        sigma : int, optional
+            Sigma parameter for Gaussian smoothing.
         """
         self.prediction_files = prediction_files
         self.truth_files = truth_files
@@ -653,6 +668,18 @@ class IdiomIdentifier():
 
     @classmethod
     def add_cli(cls, parser):
+        """
+        Add command-line arguments for subsequence analysis.
+
+        This method registers CLI arguments used to configure subsequence
+        analysis when running scripts from the command line.
+
+        Parameters
+        ----------
+        parser : argparse.ArgumentParser
+            Argument parser to which the subsequence analysis options
+            will be added.
+        """
         ChirpClusterer.add_cli(parser)
         parser.add_argument("--measure", type=str, default="radius_mean")
         parser.add_argument("--low_conf_percentile", type=int, default=90)

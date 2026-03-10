@@ -104,13 +104,6 @@ class ChirpClusterer():
         self.max_k = max_k
         self.calculate_k = calculate_k
         self.k = k
-        print(f"""
-Made a ChirpClusterer with:
-no_amp {self.no_amp}
-reduc_method {self.reduc_method}
-min_k {self.min_k}
-calculate_k {self.calculate_k}
-""")
 
     def prepare_data(self):
         """
@@ -235,6 +228,18 @@ calculate_k {self.calculate_k}
 
     @classmethod
     def add_cli(cls, parser):
+        """
+        Add command-line arguments for subsequence analysis.
+
+        This method registers CLI arguments used to configure subsequence
+        analysis when running scripts from the command line.
+
+        Parameters
+        ----------
+        parser : argparse.ArgumentParser
+            Argument parser to which the subsequence analysis options
+            will be added.
+        """
         parser.add_argument("--no_amp", type=int, default=0)
         parser.add_argument("--min_cluster_k", type=int, default=1)
         parser.add_argument("--max_cluster_k", type=int, default=50)

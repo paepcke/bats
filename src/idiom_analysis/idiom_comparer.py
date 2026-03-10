@@ -27,7 +27,7 @@ class IdiomComparer():
     It is primarily used to analyze differences in idiom composition and
     transition patterns between two experimental conditions.
 
-    Parameters
+    Attributes
     ----------
     results_1 : str
         Path to the first experiment's analysis results directory.
@@ -39,9 +39,8 @@ class IdiomComparer():
     exp_2_name : str, optional
         Name used to label the second experiment in plots and outputs.
         Default is "exp_2".
-
-    Attributes
-    ----------
+    clusterer : ChirpClusterer
+        Object to cluster chirps.
     combined_chirp_attributes : pandas.DataFrame
         Combined chirp feature dataset from both experiments.
     idiom_boundaries_attributes : pandas.DataFrame
@@ -56,13 +55,28 @@ class IdiomComparer():
         Sequences of cluster labels representing idioms for each file.
     """
     def __init__(self, results_1, results_2, exp_1_name="exp_1", exp_2_name="exp_2", 
-                 k_most_common=10, subseq_type="all", **kwargs):
+                 **kwargs):
+        """
+        Initialize the IdiomComparer
+
+        Parameters
+        ----------
+        results_1 : str, optional
+            Path to first set of prediction files produced by model inference.
+
+        results_2 : str, optional
+            Path to second set of prediction files produced by model inference.
+
+        exp_1_name : str, optional
+            Name of dataset corresponding to first set of predictions.
+
+        exp_2_name : str, optional
+            Name of dataset corresponding to second set of predictions.
+        """
         self.results_1 = results_1
         self.results_2 = results_2
         self.exp_1_name = exp_1_name
         self.exp_2_name = exp_2_name
-        self.k_most_common = k_most_common
-        self.subseq_type = subseq_type
         self.clusterer = ChirpClusterer(**kwargs)
 
     def combine_inputs(self):
@@ -192,11 +206,20 @@ class IdiomComparer():
 
     @classmethod
     def add_cli(cls, parser):
+        """
+        Add command-line arguments for subsequence analysis.
+
+        This method registers CLI arguments used to configure subsequence
+        analysis when running scripts from the command line.
+
+        Parameters
+        ----------
+        parser : argparse.ArgumentParser
+            Argument parser to which the subsequence analysis options
+            will be added.
+        """
         ChirpClusterer.add_cli(parser)
 
-        parser.add_argument("--k_most_common", type=int, default=10)
-        parser.add_argument("--subseq_type", type=str, default="all")
-        
 
 
 class IdiomComparerVisualizer():
