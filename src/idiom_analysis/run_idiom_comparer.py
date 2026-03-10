@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 sys.path.append("..")
 from analysis_utils import *
 from idiom_comparer import IdiomComparer, IdiomComparerVisualizer
+from subseq_counter import SubseqCounter
 
 # Adjust font sizes:
 # Set global sizes
@@ -58,12 +59,12 @@ def main(args):
     idiom_comparer = idiom_comparer_pipeline(idiom_comparer, results_path)
 
     print("Calculating most common subsequences...")
+    subseq_counter = SubseqCounter(idiom_comparer.idiom_label_sequences, exp_1_name, exp_2_name)
     # FIGURE: 12.2
-    top_clusters = idiom_comparer.most_common_cluster(idiom_comparer.idiom_label_sequences)
+    top_clusters = subseq_counter.compare_most_common_subsequences(length=1, k_most_common=args.k_most_common)
     print(top_clusters)
-
     # FIGURE: 12.3
-    top_transitions = idiom_comparer.most_common_transitions(idiom_comparer.idiom_label_sequences)
+    top_transitions = subseq_counter.compare_most_common_subsequences(length=2, k_most_common=args.k_most_common)
     print(top_transitions)
 
     # Stepping away from comparison for a second, this section allows us to describe the characteristics of a given cluster

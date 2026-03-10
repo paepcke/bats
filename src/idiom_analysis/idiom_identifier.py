@@ -159,7 +159,7 @@ class IdiomIdentifier():
         self.min_file_id = self.prediction_ensemble_measures['file_id'].min()
         self.max_file_id = self.prediction_ensemble_measures['file_id'].max()
 
-    def _calculate_low_confidence_measure(self):
+    def calculate_low_confidence_measure(self):
         """
         Identify low-confidence predictions.
 
