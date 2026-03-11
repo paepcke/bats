@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 # @Author: Andrew Chen
 
-import sys
 import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram
@@ -13,10 +12,8 @@ from sklearn.preprocessing import RobustScaler
 from tqdm import tqdm
 import networkx as nx
 
-sys.path.append('../../bats_transformer/spacetimeformer')
 import spacetimeformer as stf
-sys.path.append('../../bats_transformer/data')
-from bats_dataset import BatsCSVDataset
+from bats_dataset.bats_dataset import BatsCSVDataset
 
 from analysis_utils import IdiomUtils
 from chirp_clusterer import ChirpClusterer

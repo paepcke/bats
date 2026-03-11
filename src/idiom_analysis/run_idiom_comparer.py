@@ -6,7 +6,6 @@ import sys
 import argparse
 import matplotlib.pyplot as plt
 
-sys.path.append("..")
 from analysis_utils import IdiomUtils
 from idiom_comparer import IdiomComparer, IdiomComparerVisualizer
 from subseq_counter import SubseqCounter
