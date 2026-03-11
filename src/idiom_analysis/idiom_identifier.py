@@ -2,7 +2,6 @@
 # @Author: Andrew Chen
 
 import sys
-from collections import Counter
 import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram
@@ -14,13 +13,12 @@ from sklearn.preprocessing import RobustScaler
 from tqdm import tqdm
 import networkx as nx
 
-sys.path.append("..")
 sys.path.append('../../bats_transformer/spacetimeformer')
 import spacetimeformer as stf
 sys.path.append('../../bats_transformer/data')
-from bats_dataset import *
+from bats_dataset import BatsCSVDataset
 
-from analysis_utils import *  
+from analysis_utils import IdiomUtils
 from chirp_clusterer import ChirpClusterer
 
 # recall that the measures are:
@@ -163,9 +161,9 @@ class IdiomIdentifier():
         assert self.prediction_files and self.truth_files and self.scaler_path, \
             "IdiomIdentifier is not properly instantiated"
         
-        self.ground_truth, self.prediction_ensemble_measures = calculate_ensemble_measures(self.prediction_files, 
+        self.ground_truth, self.prediction_ensemble_measures = IdiomUtils.calculate_ensemble_measures(self.prediction_files, 
                                                                                            self.truth_files)
-        self.unscaled_ground_truth = unscale(self.ground_truth, self.scaler_path, cols_to_keep=["file_id", "chirp_idx"])
+        self.unscaled_ground_truth = IdiomUtils.unscale(self.ground_truth, self.scaler_path, cols_to_keep=["file_id", "chirp_idx"])
         self.prediction_ensemble_measures.sort_values(by=["file_id", "chirp_idx"], inplace=True)
         self.prediction_ensemble_measures.reset_index(drop=True, inplace=True)
             
@@ -206,7 +204,7 @@ class IdiomIdentifier():
         """
         peak_files = []
         for file_id in tqdm(self.prediction_ensemble_measures['file_id'].unique()):
-            peak_chirps = detect_uncertainty_peaks(file_id, self.prediction_ensemble_measures, self.measure, sigma=self.sigma)
+            peak_chirps = IdiomUtils.detect_uncertainty_peaks(file_id, self.prediction_ensemble_measures, self.measure, sigma=self.sigma)
             if peak_chirps is not None and not peak_chirps.empty:
                 # print(f"file_id={file_id} has peaks at chirp index: {(peak_chirps['frame_number'] + 4).tolist()}")
                 for frame_number in peak_chirps['frame_number']:
@@ -413,14 +411,14 @@ class IdiomIdentifier():
             contexts_df = pd.DataFrame(contexts.reshape(contexts.shape[0] * 4, -1), columns=column_names[:-2])
             contexts_df["file_id"] = [i for i in range(self.min_file_id, self.max_file_id + 1) for _ in range(4)]
             contexts_df["chirp_idx"] = [i for i in range(4)] * num_files
-            unscaled_contexts_df = unscale(contexts_df, self.scaler_path, cols_to_keep=[])
+            unscaled_contexts_df = IdiomUtils.unscale(contexts_df, self.scaler_path, cols_to_keep=[])
             unscaled_contexts_df["file_id"] = [i for i in range(self.min_file_id, self.max_file_id + 1) for _ in range(4)]
             unscaled_contexts_df["chirp_idx"] = [i for i in range(4)] * num_files
 
         scaled_full_chirp_df = pd.concat([contexts_df, self.ground_truth], axis=0).sort_values(['file_id', 'chirp_idx'])
         full_chirp_df = pd.concat([unscaled_contexts_df, self.unscaled_ground_truth], axis=0).sort_values(['file_id', 'chirp_idx'])
         robust_scaler = RobustScaler()
-        full_chirp_df_robust_scaled = scale(full_chirp_df, robust_scaler, cols_to_keep=["file_id", "chirp_idx"])
+        full_chirp_df_robust_scaled = IdiomUtils.scale(full_chirp_df, robust_scaler, cols_to_keep=["file_id", "chirp_idx"])
         self.full_chirp_df = full_chirp_df
         self.full_chirp_df_scaled = full_chirp_df_robust_scaled
         return full_chirp_df, full_chirp_df_robust_scaled
@@ -553,7 +551,7 @@ class IdiomIdentifier():
         
         peak_df = self.prediction_ensemble_measures[(self.prediction_ensemble_measures['peak_detected'] > 0) &
                                             (self.prediction_ensemble_measures["distance_to_next_peak"] > 0)][["file_id", "chirp_idx", self.measure]].copy()
-        peak_df = identify_significant_peaks_by_prominence(peak_df, self.prediction_ensemble_measures, self.measure, self.sigma)
+        peak_df = IdiomUtils.identify_significant_peaks_by_prominence(peak_df, self.prediction_ensemble_measures, self.measure, self.sigma)
 
         significant_peak_ids = [idx for idx in peak_df[peak_df["prominence_to_range"] > peak_df["prominence_to_range"].median()].index]
 
@@ -842,7 +840,7 @@ class IdiomIdentifierVisualizer():
         plt.figure(figsize=(8, 6))
         for file_id in tqdm(self.idiom_identifier.prediction_ensemble_measures['file_id'].unique()):
             if file_id in [fid for (fid, frame_number) in self.idiom_identifier.peak_files]:
-                plot_smoothed_uncertainty(file_id, 
+                IdiomUtils.plot_smoothed_uncertainty(file_id, 
                                           self.idiom_identifier.prediction_ensemble_measures, 
                                           self.idiom_identifier.measure, 
                                           sigma=self.idiom_identifier.sigma, 

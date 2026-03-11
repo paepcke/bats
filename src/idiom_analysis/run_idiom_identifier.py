@@ -115,8 +115,7 @@ def main(args):
     print(most_common_transitions.iloc[:10, [0, 1, 3]])
 
     # ALL FIGURES:
-    print("Generating figures...")    
-    # idiom_identifier.generate_figures(results_path)
+    print("Generating figures...")
     visualizer = IdiomIdentifierVisualizer(idiom_identifier, results_path)
     visualizer.generate_figures()
 

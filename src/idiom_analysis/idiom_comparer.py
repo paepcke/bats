@@ -11,8 +11,8 @@ from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 import umap
 
-sys.path.append("..")
-from analysis_utils import *
+# sys.path.append("..")
+# from analysis_utils import IdiomUtils
 from chirp_clusterer import ChirpClusterer
 
 class IdiomComparer():
