@@ -5,7 +5,7 @@
 # @Date:   2026-03-09 14:41:30
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/organize_quintus_wav_files.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-10 12:35:43
+# @Last Modified time: 2026-03-10 15:06:31
 #
 # **********************************************************
 
@@ -36,12 +36,16 @@ import argparse
 from pathlib import Path
 from typing import Iterator, List, Tuple, Dict, Optional, Generator
 
+from logging_service import LoggingService
+
 # ------------------------ Class DBManager --------------------
 
 class DBManager:
     """Handles SQLite schema creation and optimized batch insertions."""
 
     def __init__(self, db_path: str):
+        self.log = LoggingService()
+        
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
         self._setup_schema()
@@ -97,7 +101,7 @@ class DBManager:
             with self.conn:
                 self.conn.executemany(query, batch)
         except sqlite3.Error as e:
-            print(f"Error during batch insert: {e}")
+            self.log.err(f"Error during batch insert: {e}")
 
     def close(self):
         self.conn.close()
@@ -107,8 +111,15 @@ class DBManager:
 class FileCrawler:
     """Traverses the file system and parses metadata from paths."""
 
-    def __init__(self, root_dir: str):
+    def __init__(self, root_dir: str, batch_size: int = 10000, verbosity: int = -1):
         self.root_dir = str(Path(root_dir).resolve())
+        self.verbosity = verbosity
+        self.batch_size = batch_size
+        self.log = LoggingService()
+
+    #------------------------------------
+    # stream_wildlife_files
+    #-------------------
 
     def stream_wildlife_files(self, 
                               batch_size: int = 10000
@@ -209,17 +220,35 @@ class FileCrawler:
 class DataConcentrator:
     """Orchestrates the crawling and DB insertion process."""
 
-    def __init__(self, root_dir: str, db_path: str):
-        self.crawler = FileCrawler(root_dir)
+    #------------------------------------
+    # Constructor
+    #-------------------
+
+    def __init__(self, 
+                 root_dir: str, 
+                 db_path: str,
+                 batch_size: int = 10000,
+                 verbosity: int = -1
+                 ):
+        self.verbosity = verbosity
+        self.batch_size = batch_size
+        self.log = LoggingService()
+        self.crawler = FileCrawler(root_dir, verbosity)
         self.db = DBManager(db_path)
 
+    #------------------------------------
+    # run
+    #-------------------
+    
     def run(self):
         """Executes the full scan and population of the database."""
-        print(f"Scanning {self.crawler.root_dir}...")
+        if self.verbosity > -1:
+            self.log.info(f"Scanning {self.crawler.root_dir}...")
         total_count = 0
 
+        old_count_multiple = 0
         batch: list[tuple[str,str,str]]
-        for batch_dir, batch in self.crawler.stream_wildlife_files():
+        for batch_dir, batch in self.crawler.stream_wildlife_files(batch_size=self.batch_size):
             db_payload = []
             for (fname, site_name, date,  species) in batch:
                 loc_id = self.db.get_or_create_location(batch_dir, site_name)
@@ -227,17 +256,40 @@ class DataConcentrator:
             
             self.db.insert_samples_batch(db_payload)
             total_count += len(db_payload)
-            print(f"Indexed {total_count} files...")
 
-        print(f"Finished. Total files indexed: {total_count}")
+            # Should be report?            
+            if self.verbosity > -1:
+                new_count_multiple = total_count // self.verbosity
+                if new_count_multiple > old_count_multiple:
+                    self.log.info(f"Indexed {total_count} files...")
+                    old_count_multiple = new_count_multiple
+
+        if self.verbosity > -1:
+            self.log.info(f"Finished. Total files indexed: {total_count}")
+
         self.db.close()
 
+# ------------------- Main Section ------------------
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Index bat chirps into SQLite.")
     parser.add_argument("root", help="Root directory containing .wav files")
     parser.add_argument("--db", default="bat_data.db", help="Output SQLite database name")
+    parser.add_argument('-b', '--batch_size', 
+                        type=int,
+                        default=10000, 
+                        help="number of files to collect for insertion into db in one transaction")
+    parser.add_argument('-v', '--verbose', 
+                        nargs='?',
+                        type=int,
+                        default=-1,  # Value if flag is absent
+                        const=50000, # Value if flag present w/o a number
+                        help=("Print progress every n .wav files. \n" 
+                              "    If flag present, but no value: every 50000; \n" 
+                              "    If flag present and value <n>; then every <n>; \n"
+                              "    if flag absent: no progress report")
+    )
     args = parser.parse_args()
 
-    concentrator = DataConcentrator(args.root, args.db)
+    concentrator = DataConcentrator(args.root, args.db, batch_size=args.batch_size, verbosity=args.verbose)
     concentrator.run()

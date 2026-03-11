@@ -273,12 +273,14 @@
             "name": "Python: File DB generation",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/src/sonobat_utils/organize_quintus_wav_files.py",
+            "program": "${workspaceFolder}/src/sonobat_utils/create_wav_file_db.py",
             "subProcess": false,
             "console": "integratedTerminal",
             "args": [
                 "${env:HOME}/tmp/jasperridge",
-                "--db", "${env:HOME}/tmp/bats_data.db"
+                "--db", "${env:HOME}/tmp/bats_data.db",
+                "--verbose", "4",
+                "--batch_size", "3"
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
