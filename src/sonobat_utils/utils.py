@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-20 08:53:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-24 09:37:58
+# @Last Modified time: 2026-03-06 17:25:36
 
 # =====================================================================
 # Class Utilities
@@ -41,8 +41,9 @@ class Utils:
             raise FileNotFoundError(f"File {fpath} not found")
         if fpath.suffix == '.feather':
             df = pd.read_feather(fpath)
-        elif fpath.suffix == '.csv':
-            df = pd.read_csv(fpath)
+        elif fpath.suffix in ['.csv', '.tsv']:
+            fld_sep = '\t' if fpath.suffix == '.tsv' else ','
+            df = pd.read_csv(fpath, sep=fld_sep)
             # If df was saved as df.to_csv() without
             # an addtional index=False arg, we'll have
             # a first column named 'Unnamed: 0'. Remove
