@@ -5,7 +5,7 @@
 # @Date:   2026-03-09 14:41:30
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/organize_quintus_wav_files.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-10 15:06:31
+# @Last Modified time: 2026-03-11 10:08:06
 #
 # **********************************************************
 
@@ -265,7 +265,7 @@ class DataConcentrator:
                     old_count_multiple = new_count_multiple
 
         if self.verbosity > -1:
-            self.log.info(f"Finished. Total files indexed: {total_count}")
+            self.log.info(f"Finished. Total files indexed: {total_count} into {self.db.db_path}")
 
         self.db.close()
 

@@ -5,9 +5,9 @@
 # @Date:   2026-03-08 16:27:19
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/chirp_detection/chirp_measures_extraction.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-08 16:31:37
+# @Last Modified time: 2026-03-11 12:13:57
 #
-# **********************************************************
+# **********************************************************#
 
 """
 chirp_measures_extraction.py
@@ -21,7 +21,7 @@ Chunks are the 2-second segments produced by :class:`~wav_chopper.WavChopper`.
 
 Output columns
 --------------
-``file_id``, ``TimeInFile``, ``PrecedingIntrvl``,
+``file_id``, ``chirp_idx``, ``is_last``, ``species``, ``TimeInFile``, ``PrecedingIntrvl``,
 ``HiFreq``, ``Bndwdth``, ``FreqMaxPwr``, ``PrcntMaxAmpDur``,
 ``FreqKnee``, ``PrcntKneeDur``, ``StartF``, ``UpprKnFreq``,
 ``HiFtoUpprKnAmp``, ``HiFtoKnAmp``, ``HiFtoFcAmp``,
@@ -34,6 +34,13 @@ Output columns
 
 Notes
 -----
+* ``chirp_idx`` is a 0-origin counter of chirps within one recording file,
+  assigned in ascending ``TimeInFile`` order.  It is computed as a
+  post-processing pass after all workers complete.
+* ``is_last`` is ``1`` for the final chirp in each recording file, ``0``
+  otherwise.  Stored as integer so ``pd.read_csv(...,
+  dtype={'is_last': bool})`` round-trips to a boolean column without
+  ambiguity.
 * ``TimeInFile`` is the chirp onset in milliseconds measured from the start of
   the **original full recording**, computed as the chunk's own ``_t{offset}ms``
   plus the within-chunk onset.
@@ -104,6 +111,9 @@ log = LoggingService()
 
 COLUMNS: List[str] = [
     'file_id',
+    'chirp_idx',
+    'is_last',
+    'species',
     'TimeInFile',
     'PrecedingIntrvl',
     'HiFreq',
@@ -533,7 +543,14 @@ def _measures_from_chirp(
 
     def _freq_at_db_drop(db: float, direction: str) -> float:
         """
-        Find frequency where spectrum drops *db* dB from peak.
+        Find frequency where spectrum drops *db* dB from peak, using linear
+        interpolation between the two bins that straddle the threshold.
+
+        Uses the full bat-band spectrum column at the peak-power frame rather
+        than only the slice to one side of the peak bin.  This handles
+        narrow-band chirps (e.g. *Laci* quasi-CF calls) where the peak bin
+        sits at the edge of the chirp's frequency extent and the one-sided
+        slice would be empty.
 
         :param db:        Drop in dB (positive value).
         :param direction: ``'fwd'`` = toward lower frequencies (forward in
@@ -546,23 +563,41 @@ def _measures_from_chirp(
         pk_idx    = int(np.argmax(spec_at_fc))
         if direction == 'fwd':
             # Search below peak index (lower frequencies)
-            region = spec_at_fc[:pk_idx]
-            if len(region) == 0:
-                return NaN
-            # Find last index still above threshold
+            if pk_idx == 0:
+                # Peak is at lowest bat-band bin — no room to drop; use that freq
+                return float(freqs_bat[0]) / 1000.0
+            region       = spec_at_fc[:pk_idx]
+            region_freqs = freqs_bat[:pk_idx]
             above = np.where(region >= threshold)[0]
             if len(above) == 0:
                 return float(freqs_bat[0]) / 1000.0
-            return float(freqs_bat[above[0]]) / 1000.0
+            last_above = above[-1]
+            if last_above + 1 >= len(region):
+                return float(region_freqs[last_above]) / 1000.0
+            f0, f1 = float(region_freqs[last_above]), float(region_freqs[last_above + 1])
+            p0, p1 = float(region[last_above]),        float(region[last_above + 1])
+            if p0 == p1:
+                return f0 / 1000.0
+            t = (threshold - p0) / (p1 - p0)
+            return (f0 + t * (f1 - f0)) / 1000.0
         else:
             # Search above peak index (higher frequencies)
-            region = spec_at_fc[pk_idx + 1:]
-            if len(region) == 0:
-                return NaN
+            if pk_idx >= len(spec_at_fc) - 1:
+                return float(freqs_bat[-1]) / 1000.0
+            region       = spec_at_fc[pk_idx + 1:]
+            region_freqs = freqs_bat[pk_idx + 1:]
             above = np.where(region >= threshold)[0]
             if len(above) == 0:
                 return float(freqs_bat[-1]) / 1000.0
-            return float(freqs_bat[pk_idx + 1 + above[-1]]) / 1000.0
+            first_above = above[0]
+            if first_above == 0:
+                return float(region_freqs[0]) / 1000.0
+            f0, f1 = float(region_freqs[first_above - 1]), float(region_freqs[first_above])
+            p0, p1 = float(region[first_above - 1]),        float(region[first_above])
+            if p0 == p1:
+                return f1 / 1000.0
+            t = (threshold - p0) / (p1 - p0)
+            return (f0 + t * (f1 - f0)) / 1000.0
 
     ffwd32 = _freq_at_db_drop(32.0, 'fwd')
     ffwd20 = _freq_at_db_drop(20.0, 'fwd')
@@ -605,9 +640,12 @@ def _measures_from_chirp(
         amp_q1 = amp_q2 = amp_q3 = amp_q4 = amp_k_start = NaN
 
     # ── Slope measures (ridge in kHz vs time in ms) ────────────────────────
-    # Convert ridge to kHz for slope units of kHz/ms.
-    ridge_khz  = ridge_hz / 1000.0
-    times_ms   = (times_chirp - onset_s) * 1000.0   # relative to chirp onset
+    # Use the smoothed ridge so that shallow-sweep species (e.g. Laci, Tabr)
+    # whose raw ridge is a coarse staircase of STFT bins don't produce NaN
+    # from searchsorted monotonicity failures.  For steep-sweep species the
+    # smoothed and raw ridges are nearly identical (sub-bin difference).
+    ridge_smooth_khz = ridge_smooth / 1000.0
+    times_ms         = (times_chirp - onset_s) * 1000.0   # relative to chirp onset
 
     def _slope_and_exp_in_range(
         delta_khz_start: float,
@@ -615,8 +653,12 @@ def _measures_from_chirp(
     ) -> Tuple[float, float]:
         """
         Compute the linear slope (kHz/ms) and exponential decay constant
-        over the portion of the ridge that covers a specified frequency drop
-        relative to HiFreq.
+        over the portion of the smoothed ridge that covers a specified
+        frequency drop relative to HiFreq.
+
+        Uses the Savitzky-Golay-smoothed ridge rather than the raw ridge to
+        avoid ``searchsorted`` failures on shallow-sweep chirps where the raw
+        ridge is a staircase of coarse STFT bins rather than a smooth curve.
 
         The segment starts where the ridge first drops below
         ``hi_freq_khz - delta_khz_start`` and ends where it first drops below
@@ -626,19 +668,33 @@ def _measures_from_chirp(
         :param delta_khz_end:   kHz below HiFreq at which the segment ends.
         :return: ``(slope_kHz_per_ms, exp_decay_constant)`` or ``(NaN, NaN)``.
         """
-        hi_khz  = hi_freq_hz / 1000.0
+        # Use the smoothed ridge's own hi/lo for threshold consistency.
+        hi_khz  = float(ridge_smooth_khz.max())
+        lo_khz  = float(ridge_smooth_khz.min())
         f_start = hi_khz - delta_khz_start
         f_end   = hi_khz - delta_khz_end
-        if f_end >= hi_khz or f_start <= f_end:
+        # Clamp f_end to the actual lo so narrow-band species still get an
+        # estimate over whatever range is available.
+        f_end   = max(f_end, lo_khz)
+        if f_start <= f_end or f_start <= lo_khz:
             return NaN, NaN
-        # Find time indices where ridge crosses these thresholds.
-        # Going forward in time the ridge decreases in frequency.
-        i_start = np.searchsorted(-ridge_khz, -f_start, side='left')
-        i_end   = np.searchsorted(-ridge_khz, -f_end,   side='left')
-        if i_start >= i_end or i_end > n_t:
+        # Locate the segment of the ridge that lies between f_start and f_end
+        # using nearest-value lookup rather than searchsorted.  searchsorted
+        # requires a monotone-decreasing ridge, which fails for non-monotone
+        # or ascending calls (e.g. Coto, some Tabr).  Instead we find the
+        # frame closest to f_start and the frame closest to f_end, then take
+        # the time-ordered slice between them.
+        i_peak   = int(np.argmax(ridge_smooth_khz))   # frame at hi_khz
+        i_f_start = int(np.argmin(np.abs(ridge_smooth_khz - f_start)))
+        i_f_end   = int(np.argmin(np.abs(ridge_smooth_khz - f_end)))
+        i_lo, i_hi = (min(i_f_start, i_f_end), max(i_f_start, i_f_end))
+        # Ensure the peak lies within or adjacent to the segment — if the
+        # ridge is non-monotone and both f_start and f_end are on the same
+        # side of the peak, the segment is ill-defined; skip it.
+        if i_hi <= i_lo:
             return NaN, NaN
-        seg_t = times_ms[i_start:i_end]
-        seg_f = ridge_khz[i_start:i_end]
+        seg_t = times_ms[i_lo:i_hi + 1]
+        seg_f = ridge_smooth_khz[i_lo:i_hi + 1]
         if len(seg_t) < 2:
             return NaN, NaN
         # Linear slope via least-squares
@@ -705,6 +761,7 @@ def _measures_from_chirp(
 def _extract_one(
     chunk_path: Path,
     window_ms:  float,
+    species:    Optional[str] = None,
 ) -> Tuple[List[Dict[str, object]], FileRecord]:
     """
     Load a chunk ``.wav``, detect chirps, and compute all measures.
@@ -713,6 +770,8 @@ def _extract_one(
 
     :param chunk_path: Path to the chunk ``.wav`` file.
     :param window_ms:  STFT window duration (ms).
+    :param species:    Four-letter species code from DB lookup, or ``None``
+                       when the source is a plain path/directory input.
     :return:           ``(rows, FileRecord)`` where *rows* is a list of dicts
                        (one per chirp) ready for DataFrame construction.
     """
@@ -815,6 +874,7 @@ def _extract_one(
             window_ms      = window_ms,
         )
         row['file_id'] = file_id
+        row['species'] = species  # None → empty CSV cell for path/dir inputs
         rows.append(row)
         prev_offset_s = offset_s
 
@@ -856,21 +916,27 @@ class MeasureExtractor:
 
     def __init__(
         self,
-        chunk_paths:    Sequence[str | Path],
+        inputs:         Sequence[str | Path],
         out_csv:        str | Path,
+        recursive:      bool            = False,
         n_workers:      Optional[int]   = None,
         show_progress:  bool            = True,
         worker_timeout: Optional[float] = 120.0,
     ) -> None:
         """
-        :param chunk_paths:    Source chunk paths.
+        :param inputs:         Source items — any mix of ``.wav`` files,
+                               directories, or ``.db`` SQLite databases built
+                               by ``create_wav_file_db.py``.
         :param out_csv:        Output CSV path.
+        :param recursive:      Descend into subdirectories when a directory
+                               is given.
         :param n_workers:      Worker count (``None`` = cpu_count − 4; ``0`` = all).
         :param show_progress:  Show tqdm progress bar.
         :param worker_timeout: Per-file timeout in seconds.
         """
-        self.chunk_paths = [Path(p) for p in chunk_paths]
+        self.inputs      = [Path(p) for p in inputs]
         self.out_csv     = Path(out_csv)
+        self.recursive   = recursive
 
         if n_workers is None:
             self.n_workers = max(1, (os.cpu_count() or 1) - 4)
@@ -881,6 +947,78 @@ class MeasureExtractor:
 
         self.show_progress  = show_progress
         self.worker_timeout = worker_timeout
+
+    # ------------------------------------------------------------------ #
+    #  Path iterator                                                       #
+    # ------------------------------------------------------------------ #
+
+    def _iter_paths(self):
+        """
+        Yield ``(path, species)`` tuples from all inputs.
+
+        Dispatch rules:
+
+        * ``.db`` file  — query the SQLite database produced by
+          ``create_wav_file_db.py``; yields ``(full_path, species_code)``
+          for every row.
+        * directory     — glob ``*.wav`` (recursive if ``self.recursive``);
+          yields ``(path, None)``.
+        * ``.wav`` file — yields ``(path, None)`` directly.
+        * anything else — logs a warning and skips.
+
+        Duplicate paths (across all input types) are suppressed via a
+        ``seen`` set.
+
+        :yields: ``(Path, str | None)`` tuples.
+        """
+        import sqlite3
+
+        seen: set[Path] = set()
+
+        def _emit(p: Path, sp):
+            rp = p.resolve()
+            if rp not in seen:
+                seen.add(rp)
+                return rp, sp
+            return None, None
+
+        for inp in self.inputs:
+            if inp.suffix.lower() == '.db':
+                if not inp.exists():
+                    log.warn(f'DB file not found, skipping: {inp}')
+                    continue
+                try:
+                    conn = sqlite3.connect(str(inp))
+                    cur  = conn.execute(
+                        'SELECT l.folder_path, s.filename, s.species_code '
+                        'FROM Samples s JOIN Locations l ON s.location_id = l.id'
+                    )
+                    for folder_path, filename, species_code in cur:
+                        full = Path(folder_path) / filename
+                        p, sp = _emit(full, species_code or None)
+                        if p is not None:
+                            yield p, sp
+                    conn.close()
+                except Exception as exc:
+                    log.warn(f'Cannot read DB {inp}: {exc}')
+
+            elif inp.is_dir():
+                glob_fn = inp.rglob if self.recursive else inp.glob
+                for wav in sorted(glob_fn('*.wav')):
+                    p, sp = _emit(wav, None)
+                    if p is not None:
+                        yield p, sp
+
+            elif inp.suffix.lower() == '.wav':
+                if not inp.exists():
+                    log.warn(f'.wav file not found, skipping: {inp}')
+                    continue
+                p, sp = _emit(inp, None)
+                if p is not None:
+                    yield p, sp
+
+            else:
+                log.warn(f'Unrecognised input type, skipping: {inp}')
 
     # ------------------------------------------------------------------ #
     #  Entry point                                                         #
@@ -897,13 +1035,15 @@ class MeasureExtractor:
         """
         self.out_csv.parent.mkdir(parents=True, exist_ok=True)
 
-        total      = len(self.chunk_paths)
+        path_iter  = self._iter_paths()
         window_ms  = self._STFT_WINDOW_MS
         file_recs: List[FileRecord] = []
         n_rows     = 0
 
+        # tqdm needs a total — not known upfront when DB is involved, so
+        # leave total=None (shows a spinner rather than a percentage bar).
         if self.show_progress and _TQDM_AVAILABLE:
-            pbar = _tqdm(total=total, unit='chunk', desc='Extracting')
+            pbar = _tqdm(total=None, unit='chunk', desc='Extracting')
         else:
             pbar = None
 
@@ -915,12 +1055,12 @@ class MeasureExtractor:
 
             window   = self.n_workers * 4
             fut_map: Dict = {}
-            it = iter(self.chunk_paths)
+            it = path_iter
 
             with ProcessPoolExecutor(max_workers=self.n_workers) as pool:
                 # Seed window
-                for path in it:
-                    fut = pool.submit(_extract_one, path, window_ms)
+                for path, species in it:
+                    fut = pool.submit(_extract_one, path, window_ms, species)
                     fut_map[fut] = path
                     if len(fut_map) >= window:
                         break
@@ -942,7 +1082,7 @@ class MeasureExtractor:
                                     status = ExtractionStatus.UNREADABLE,
                                     detail = f'worker timeout after {self.worker_timeout}s',
                                 ))
-                                if pbar:
+                                if pbar is not None:
                                     pbar.update(1)
                         fut_map.clear()
                         break
@@ -969,17 +1109,33 @@ class MeasureExtractor:
                         n_rows   += len(rows)
                         file_recs.append(frec)
                         csv_fh.flush()
-                        if pbar:
+                        if pbar is not None:
                             pbar.update(1)
 
                         # Refill window
-                        for next_path in it:
-                            fut2 = pool.submit(_extract_one, next_path, window_ms)
+                        for next_path, next_species in it:
+                            fut2 = pool.submit(_extract_one, next_path, window_ms, next_species)
                             fut_map[fut2] = next_path
                             break
 
-        if pbar:
+        if pbar is not None:
             pbar.close()
+
+        # ── Post-processing: assign chirp_idx and is_last ──────────────────
+        # These require the full sequence per file_id, so they can only be
+        # computed after all workers have returned.  is_last is written as
+        # 1/0 so pd.read_csv(..., dtype={'is_last': bool}) round-trips cleanly.
+        if n_rows > 0:
+            import pandas as pd
+            df = pd.read_csv(self.out_csv)
+            df.sort_values(['file_id', 'TimeInFile'], inplace=True)
+            df['chirp_idx'] = df.groupby('file_id').cumcount()
+            df['is_last']   = (~df.duplicated(subset='file_id', keep='last')).astype(int)
+            # Re-order columns so chirp_idx and is_last sit right after file_id
+            other_cols = [c for c in df.columns
+                          if c not in ('file_id', 'chirp_idx', 'is_last', 'species')]
+            df = df[['file_id', 'chirp_idx', 'is_last', 'species'] + other_cols]
+            df.to_csv(self.out_csv, index=False)
 
         return ExtractionResult(
             file_records = file_recs,
@@ -996,15 +1152,18 @@ def _parse_args():
     """
     Parse command-line arguments.
 
-    :return: ``(args, paths)`` tuple.
+    :return: ``args`` namespace (``args.inputs`` is a list of raw Path objects).
     """
     import argparse
 
     parser = argparse.ArgumentParser(
         prog='chirp_measures_extraction',
         description=(
-            'Extract acoustic measures from chopped bat .wav chunks.\n\n'
-            'Input: chunks produced by wav_chopper.py\n'
+            'Extract acoustic measures from bat .wav files.\n\n'
+            'Inputs can be any mix of:\n'
+            '  • individual .wav files\n'
+            '  • directories (searched for .wav files; use -r to recurse)\n'
+            '  • .db SQLite databases built by create_wav_file_db.py\n'
             'Output: CSV with one row per detected chirp'
         ),
         formatter_class=argparse.RawTextHelpFormatter,
@@ -1013,7 +1172,7 @@ def _parse_args():
         'input',
         nargs='+',
         help=(
-            'one or more .wav chunk files, shell globs, or directories.\n'
+            'one or more .wav files, directories, or .db SQLite databases.\n'
             'Directories are searched at top level only; use -r to recurse.'
         ),
     )
@@ -1040,40 +1199,36 @@ def _parse_args():
     )
     args = parser.parse_args()
 
-    recurse = args.recursive
-    seen:  set[Path]  = set()
-    paths: list[Path] = []
+    # Validate inputs exist; warn on unrecognised extensions but still pass
+    # them through so _iter_paths() can emit its own warning with full context.
+    inputs: list[Path] = []
     for item in args.input:
         p = Path(item)
-        if p.is_dir():
-            glob_fn = p.rglob if recurse else p.glob
-            for w in sorted(glob_fn('*.wav')):
-                if w not in seen:
-                    seen.add(w)
-                    paths.append(w)
-        elif p.suffix.lower() == '.wav':
-            if p not in seen:
-                seen.add(p)
-                paths.append(p)
-        else:
-            print(f"Warning: skipping non-WAV input '{item}'", file=sys.stderr)
+        suffix = p.suffix.lower()
+        if not p.exists() and suffix not in ('.wav', '.db'):
+            print(f"Warning: '{item}' does not exist and is not a recognised type — skipping",
+                  file=sys.stderr)
+            continue
+        inputs.append(p)
 
-    if not paths:
-        parser.error('No .wav files found in the given inputs.')
+    if not inputs:
+        parser.error('No valid inputs found.')
 
-    return args, paths
+    args.inputs = inputs
+    return args
 
 
 def main() -> None:
     """
     CLI entry point: extract measures and write CSV.
     """
-    args, paths = _parse_args()
-    print(f'MeasureExtractor: {len(paths)} chunks  →  {args.out_csv}')
+    args = _parse_args()
+    log.info(f'MeasureExtractor: {len(args.inputs)} input(s)  →  {args.out_csv}')
 
     extractor = MeasureExtractor(
-        chunk_paths    = paths,
+        inputs         = args.inputs,
         out_csv        = args.out_csv,
+        recursive      = args.recursive,
         n_workers      = args.workers,
         show_progress  = True,
         worker_timeout = args.timeout,
