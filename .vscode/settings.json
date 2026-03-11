@@ -11,12 +11,12 @@
         "./src"
     ],
     "terminal.integrated.env.windows": {
-        "PYTHONPATH": "./src"
+        "PYTHONPATH": "${workspaceFolder}/src;${workspaceFolder}/bats_transformer/spacetimeformer"
     },
     "terminal.integrated.env.linux": {
         "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}/bats_transformer/spacetimeformer"
     },
     "terminal.integrated.env.osx": {
-        "PYTHONPATH": "./src"
+        "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}/bats_transformer/spacetimeformer"
     }
 }

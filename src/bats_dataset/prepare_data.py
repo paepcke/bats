@@ -1,6 +1,3 @@
-import sys
-sys.path.append('../src')
-
 import argparse
 import pandas as pd
 import numpy as np
