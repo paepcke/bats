@@ -4,5 +4,19 @@
 
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda",
-    "python-envs.pythonProjects": []
+    "python-envs.pythonProjects": [],
+    "python.analysis.extraPaths": [
+        "./bats_transformer/spacetimeformer",
+        "./bats_transformer/data",
+        "./src"
+    ],
+    "terminal.integrated.env.windows": {
+        "PYTHONPATH": "${workspaceFolder}/src;${workspaceFolder}/bats_transformer/spacetimeformer"
+    },
+    "terminal.integrated.env.linux": {
+        "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}/bats_transformer/spacetimeformer"
+    },
+    "terminal.integrated.env.osx": {
+        "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}/bats_transformer/spacetimeformer"
+    }
 }

@@ -2,12 +2,10 @@
 # @Author: Andrew Chen
 
 import os
-import sys
 import argparse
 from collections import Counter
 import matplotlib.pyplot as plt
 
-sys.path.append("..") # To view other packages in src
 from idiom_identifier import IdiomIdentifier, IdiomIdentifierVisualizer
 from subseq_counter import SubseqCounter
 
@@ -115,19 +113,18 @@ def main(args):
     print(most_common_transitions.iloc[:10, [0, 1, 3]])
 
     # ALL FIGURES:
-    print("Generating figures...")    
-    # idiom_identifier.generate_figures(results_path)
+    print("Generating figures...")
     visualizer = IdiomIdentifierVisualizer(idiom_identifier, results_path)
     visualizer.generate_figures()
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Analyze idioms in chirp data/predictions")
     parser.add_argument("--output_folder", type=str, help="Path to the output folder containing the data to analyze",
-                        default="../../bats_transformer/outputs/2022_barn_2secs_myca_quantile_1_16")
+                        default="/home/ayc227/bats/bats_transformer/outputs/2022_barn_2secs_myca_quantile_1_16")
     parser.add_argument("--dataset_path", type=str, help="Path to the dataset csv file containing the chirp attributes",
-                        default="../../bats_transformer/data/2022_barn_2secs_myca/splits")
+                        default="/home/ayc227/bats/bats_transformer/data/2022_barn_2secs_myca/splits")
     parser.add_argument("--results_folder", type=str, help="Path to the folder where results will be saved",
-                        default="./analysis_results")
+                        default="/home/ayc227/bats/src/idiom_analysis/analysis_results")
     IdiomIdentifier.add_cli(parser)
     SubseqCounter.add_cli(parser)
     return parser.parse_args()

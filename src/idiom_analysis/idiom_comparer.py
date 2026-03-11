@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 # @Author: Andrew Chen
 
-import sys
 import numpy as np
 import pandas as pd
 from scipy.spatial import ConvexHull
@@ -11,8 +10,6 @@ from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 import umap
 
-sys.path.append("..")
-from analysis_utils import *
 from chirp_clusterer import ChirpClusterer
 
 class IdiomComparer():

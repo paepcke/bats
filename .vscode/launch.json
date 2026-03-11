@@ -29,6 +29,21 @@
             "justMyCode": false
         },
         {
+            "name": "Python: create chirp animation",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/chirp_animation.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--infile", "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_augmented_scaled_min_max.csv", 
+                "--file_id", "16694.0",
+                "--measures", "StartF", "UpprKnFreq", "1st10kHzSlp",
+                "--outfile", "${workspaceFolder}/src/result_analysis/data/Animations/chirp_seq_16693.mp4",
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        },
+        {
             "name": "Python: Cytoscape Lake prep Debug",
             "type": "debugpy",
             "request": "launch",
@@ -85,13 +100,14 @@
                 "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_augmented.csv", 
                 "vizcurve",
                 "--clustered",
-                "--cols", "HiFreq", "Bndwdth"
+                "--cols", "HiFreq", "Bndwdth",
+                "--block",
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
         },
         {
-            "name": "Python: Normality shapiro-wilk check clustered",
+            "name": "Python: Normality shapiro-wilk check clustered (two test cols)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/src/result_analysis/bat_measures_normality.py",
@@ -101,6 +117,21 @@
                 "shapiro",
                 "--clustered",
                 "--cols", "HiFreq", "Bndwdth"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Normality shapiro-wilk check clustered: All columns and clusters",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/bat_measures_normality.py",
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_augmented.csv", 
+                "shapiro",
+                "--numerics",
+                "--clustered",
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
@@ -127,8 +158,7 @@
             "console": "integratedTerminal",
             "args": [
                 "--normality_in_clusters",
-                "${workspaceFolder}/src/result_analysis/data/bats_measures_normality_all.csv", 
-                "--outdir", "${workspaceFolder}/src/result_analysis/data/AnalysisViz"
+                "${workspaceFolder}/src/result_analysis/data/barn_results/bats_measures_normality_all.csv", 
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
@@ -171,11 +201,13 @@
             "subProcess": false,
             "console": "integratedTerminal",
             "args": [
-                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_scaled_robust.csv",
-                "${workspaceFolder}/src/result_analysis/data/barn_results/meas_towards_clusters_cluster_profiles.csv",
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_augmented_scaled_robust.csv",
+                "${workspaceFolder}/src/result_analysis/data/barn_results/non-idiom/meas_towards_clusters_cluster_profiles.csv",
                 "--illustrations", "histograms",
-                "--measure", "HiFtoKnAmp",
-                "--clusters", "0", "1", "3"
+                "--measure", "FreqKnee",
+                "--clusters", "0", "6",
+                "--block",
+                "--outdir", "${workspaceFolder}/src/result_analysis/data/AnalysisViz/all_scaled_robust/"
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
@@ -298,7 +330,25 @@
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
+        },
+        {
+            "name": "Python: CLI interactive group normality and charts",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/result_analysis/normality_test_interactive_cli.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/result_analysis/data/andrewChen/analysis_results/2022_barn_2secs_myca_quantile_1_16/all_chirp_measures_augmented.csv",
+                "cluster",
+                "0",
+                "FreqCtr",
+                "--outdir", "${workspaceFolder}/src/result_analysis/data/AnalysisViz/all_raw"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
         }
+
     ],
     "debug.defaultConfiguration": "Python: Test Explorer (unittests)"
 }

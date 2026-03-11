@@ -6,8 +6,7 @@ import sys
 import argparse
 import matplotlib.pyplot as plt
 
-sys.path.append("..")
-from analysis_utils import *
+from analysis_utils import IdiomUtils
 from idiom_comparer import IdiomComparer, IdiomComparerVisualizer
 from subseq_counter import SubseqCounter
 
@@ -69,7 +68,7 @@ def main(args):
     # Stepping away from comparison for a second, this section allows us to describe the characteristics of a given cluster
     profile_ignore_columns = ["index", "OriginalIndex", "file_id", "chirp_idx", "original_df", "cluster"]
     CLUSTER_TO_PROFILE = 1
-    cluster_profile = describe_cluster(idiom_comparer.idiom_chirp_attributes, 
+    cluster_profile = IdiomUtils.describe_cluster(idiom_comparer.idiom_chirp_attributes, 
                                        CLUSTER_TO_PROFILE, 
                                        normalize=False, 
                                        ignore_columns=profile_ignore_columns)

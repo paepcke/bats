@@ -4,7 +4,7 @@
 from collections import Counter
 import pandas as pd    
 
-from analysis_utils import *
+from analysis_utils import IdiomUtils
 
 class SubseqCounter():
     """
@@ -153,11 +153,11 @@ class SubseqCounter():
         suffix_cluster_counts = Counter(suffix_clusters_temp)
 
         # find the most common 3-length label sequences in significant_idiom_sequence_clusters
-        sequence_counts = most_common_subsequences(self.sequences, 
+        sequence_counts = IdiomUtils.most_common_subsequences(self.sequences, 
                                                    length, k = k_most_common, subseq_type="all")
-        prefix_counts = most_common_subsequences(self.sequences, 
+        prefix_counts = IdiomUtils.most_common_subsequences(self.sequences, 
                                                  length, k = k_most_common, subseq_type="prefix")
-        suffix_counts = most_common_subsequences(self.sequences, 
+        suffix_counts = IdiomUtils.most_common_subsequences(self.sequences, 
                                                  length, k = k_most_common, subseq_type="suffix")
         
         subseqs = self._format_subseq_df(sequence_counts, "Subseq", lambda x: idiom_cluster_counts[x['Subseq'][0]], round_n)
@@ -223,15 +223,15 @@ class SubseqCounter():
         idiom_cluster_counts_2 = Counter(idiom_clusters_temp_2)
 
         # find most common transitions
-        subseq_all = most_common_subsequences(self.sequences['cluster'].values, 
+        subseq_all = IdiomUtils.most_common_subsequences(self.sequences['cluster'].values, 
                                 length, 
                                 subseq_type=subseq_type, 
                                 k=k_most_common)
-        subseq_exp1 = most_common_subsequences(self.sequences.loc[self.sequences["original_df"] == 1]['cluster'].values, 
+        subseq_exp1 = IdiomUtils.most_common_subsequences(self.sequences.loc[self.sequences["original_df"] == 1]['cluster'].values, 
                                 length, 
                                 subseq_type=subseq_type, 
                                 k=k_most_common)
-        subseq_exp2 = most_common_subsequences(self.sequences.loc[self.sequences["original_df"] == 2]['cluster'].values, 
+        subseq_exp2 = IdiomUtils.most_common_subsequences(self.sequences.loc[self.sequences["original_df"] == 2]['cluster'].values, 
                                 length, 
                                 subseq_type=subseq_type, 
                                 k=k_most_common)

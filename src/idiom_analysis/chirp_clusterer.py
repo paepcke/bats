@@ -6,7 +6,8 @@ import pandas as pd
 from scipy.cluster.hierarchy import linkage, fcluster
 from sklearn.decomposition import PCA
 import umap
-from analysis_utils import *  
+
+from analysis_utils import IdiomUtils
 
 class ChirpClusterer():
     """
@@ -196,14 +197,14 @@ class ChirpClusterer():
         # FIGURE: 5.1
 
         if self.calculate_k:
-            n_clusters = find_ideal_cluster_k(self.chirp_data_embedded, self.min_k, self.max_k, plot=False)
+            n_clusters = IdiomUtils.find_ideal_cluster_k(self.chirp_data_embedded, self.min_k, self.max_k, plot=False)
         else:
             n_clusters = {"elbow_method": self.k}
 
         num_clusters = int(n_clusters["elbow_method"])
 
         cluster_data_input = self.chirp_data_embedded if self.reduc_method == "umap" else self.chirp_data
-        chirp_labels = cluster_chirps(cluster_data_input, self.cluster_method, self.reduc_method == "umap", num_clusters)
+        chirp_labels = IdiomUtils.cluster_chirps(cluster_data_input, self.cluster_method, self.reduc_method == "umap", num_clusters)
 
         # This is perhaps a separate clustering method, but visualized using a dendrogram
         print("Calculating dendrogram...")
