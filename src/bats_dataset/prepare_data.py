@@ -12,9 +12,9 @@ import os
 import gc
 
 # Sample use:
-# python data/prepare_data.py -i ../audio/audio_07_22/original -o data/july_daytime_2022/splits/split -s 10 -f -m 5 -d
-# python data/prepare_data.py -i ../audio/audio_07_22/chopped -o data/july_daytime_chunked_quantile/splits/split -s 10 -f -m 5 --scaler quantile
-# python data/prepare_data.py -i ../audio/audio_07_22/chopped -o data/july_daytime_filter_epfu/splits/split -s 10 -f -m 5 --scaler quantile --species Epfu
+# python src/bats_dataset/prepare_data.py -i ../audio/audio_07_22/original -o data/july_daytime_2022/splits/split -s 10 -f -m 5 -d
+# python src/bats_dataset/prepare_data.py -i ../audio/audio_07_22/chopped -o data/july_daytime_chunked_quantile/splits/split -s 10 -f -m 5 --scaler quantile
+# python src/bats_dataset/prepare_data.py -i ../audio/audio_07_22/chopped -o data/july_daytime_filter_epfu/splits/split -s 10 -f -m 5 --scaler quantile --species Epfu
 
 '''
 Add the command line interface arguments to specify the input data path, 
@@ -23,18 +23,17 @@ output data path, and the number of splits.
 def add_cli(parser):
     parser.add_argument('-i', '--input_data_path', type=str, 
                         default='/qnap/bats/jasperridge/barn1/grouped_audio', 
-                        help='input file')
-    
+                        help='Folder containing subfolders with SonoBatch Parameters files')
     parser.add_argument('-o', '--output_data_path', type=str, 
-                        default='./data', help='output file')
-    
-    parser.add_argument('-s', '--splits', type = int, default = 1)
+                        default='./data', help='Folder for dataset and metadata')
+    parser.add_argument('-s', '--splits', type = int, default = 1, help='Number of splits to shard dataset')
     parser.add_argument('-f', '--use_feather', action='store_true', 
-                        help='use feather format')
-    parser.add_argument('-m', '--minimum_length', type = int, default = 5)
-    parser.add_argument('-d', '--daytime', action='store_true')
-    parser.add_argument('--species', type=str)
-    parser.add_argument('--scaler', type=str, default='standard')
+                        help='Use .feather format (instead of .csv)')
+    parser.add_argument('-m', '--minimum_length', type = int, default = 5, help='Minimum sequence length to accept')
+    parser.add_argument('-d', '--daytime', action='store_true', 
+                        help='Only keep files starting before sunset (instead of all files)')
+    parser.add_argument('--species', type=str, help='Filter audio files by four-letter species code')
+    parser.add_argument('--scaler', type=str, default='standard', help='Which scaler to use to normalize data')
     return parser
 
 '''
@@ -87,7 +86,7 @@ args = add_cli(argparse.ArgumentParser()).parse_args()
 minimum_length = args.minimum_length
 
 # Ensure that the output directory exists:
-out_dir = os.path.dirname(args.output_data_path)
+out_dir = args.output_data_path
 if not os.path.exists(out_dir):
     print(f"Creating output dir {out_dir}...")
     os.makedirs(out_dir)
@@ -121,7 +120,7 @@ pd.DataFrame([
     {"parameter": "max_length", "value": max_length},
     {"parameter": "min_length", "value": minimum_length},
     {"parameter": "num_files", "value": num_files}
-]).to_csv(args.output_data_path + "_config.csv", index=False)
+]).to_csv(args.output_data_path + "/split_config.csv", index=False)
 
 
 
@@ -134,7 +133,7 @@ print("Done.")
 print("Creating mapping from filename to a unique id... ", end="", flush=True)
 df["file_id"] = pd.factorize(df["Filename"])[0]
 filename_to_id = df.groupby("Filename")["file_id"].first().reset_index()
-filename_to_id.to_csv(args.output_data_path + "_filename_to_id.csv", index=False)   
+filename_to_id.to_csv(args.output_data_path + "/split_filename_to_id.csv", index=False)   
 print("Done.")
 
 
@@ -149,18 +148,18 @@ file_id_to_chirps["cum_samples"] = file_id_to_chirps["n_samples"].cumsum()
 # analysis downstream to outdir/timestamp.txt:
 
 timestamp      = Utils.file_timestamp()
-out_dir        = os.path.dirname(args.output_data_path)
+out_dir        = args.output_data_path
 timestamp_path = os.path.join(out_dir, 'timestamp.txt')
 with open(timestamp_path, 'w') as fd:
     fd.write(timestamp)
         
 if(args.splits == 1):
     print("Writing CSV file to file... ", end="", flush=True)
-    df.to_csv(args.output_data_path)
+    df.to_csv(args.output_data_path + "/split.csv")
     #write out truth values to a file
     truth_values = df
     truth_values["cntxt_sz"] = truth_values.chirp_idx 
-    truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
+    truth_values.to_csv(args.output_data_path + "/split_truth_values.csv", index=False)
     print("Done.")
 
 else:
@@ -201,8 +200,8 @@ else:
     
 
     #storing off the scaler
-    joblib.dump(scaler, args.output_data_path + "_scaler.pkl")
-    print("Done. Scaler saved to ", args.output_data_path + "_scaler.pkl")
+    joblib.dump(scaler, args.output_data_path + "/split_scaler.pkl")
+    print("Done. Scaler saved to ", args.output_data_path + "/split_scaler.pkl")
 
     #writing to splits
     print("Writing to splits= ", args.splits, " files...")
@@ -220,16 +219,16 @@ else:
 
     for split, split_df in df.groupby("split"):
         if args.use_feather:
-            split_df.reset_index(drop = True).to_feather(args.output_data_path + str(split) + ".feather")
+            split_df.reset_index(drop = True).to_feather(args.output_data_path + "/split" + str(split) + ".feather")
         else:
-            split_df.to_csv(args.output_data_path + str(split) + ".csv", index = False)
+            split_df.to_csv(args.output_data_path + "/split" + str(split) + ".csv", index = False)
     
     split_to_chirps = file_id_to_chirps.groupby("split")["n_samples"].sum().reset_index()
     if args.use_feather:
-        split_to_chirps["Filename"] = split_to_chirps["split"].apply(lambda x: os.path.abspath(args.output_data_path + str(x) + ".feather"))
+        split_to_chirps["Filename"] = split_to_chirps["split"].apply(lambda x: os.path.abspath(args.output_data_path + "/split" + str(x) + ".feather"))
     else:
-        split_to_chirps["Filename"] = split_to_chirps["split"].apply(lambda x: os.path.abspath(args.output_data_path + str(x) + ".csv"))
-    split_to_chirps.to_csv(args.output_data_path + "_mapping.csv")
+        split_to_chirps["Filename"] = split_to_chirps["split"].apply(lambda x: os.path.abspath(args.output_data_path + "/split" + str(x) + ".csv"))
+    split_to_chirps.to_csv(args.output_data_path + "/split_mapping.csv")
 
 
     print("Done.")
@@ -237,6 +236,6 @@ else:
     truth_values["cntxt_sz"] = truth_values["chirp_idx"]
 
     if(args.use_feather):
-        truth_values.reset_index().to_feather(args.output_data_path + "_truth_values.feather")
+        truth_values.reset_index().to_feather(args.output_data_path + "/split_truth_values.feather")
     else:
-        truth_values.to_csv(args.output_data_path + "_truth_values.csv", index=False)
+        truth_values.to_csv(args.output_data_path + "/split_truth_values.csv", index=False)
