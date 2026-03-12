@@ -356,7 +356,7 @@
             "subProcess": false,
             "console": "integratedTerminal",
             "args": [
-                "${env:HOME}/tmp/20221226_2secs_SonoBatch_v30.2.20250912.csv",
+                "${env:HOME}/tmp/20220907_2secs_SonoBatch_v30.2.20250912.txt",
                 "--out-csv", "${env:HOME}/tmp/sono_batch_combination.csv"
             ],
             "cwd": "${workspaceFolder}/src",
