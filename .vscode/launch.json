@@ -347,6 +347,20 @@
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
+        },
+        {
+            "name": "Python: Combine SonoBat SonoBatch files",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/sono_batch_processing.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${env:HOME}/tmp/20221226_2secs_SonoBatch_v30.2.20250912.csv",
+                "--out-csv", "${env:HOME}/tmp/sono_batch_combination.csv"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
         }
 
     ],

@@ -5,7 +5,7 @@
 # @Date:   2026-03-08 16:27:19
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/chirp_detection/chirp_measures_extraction.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-11 12:13:57
+# @Last Modified time: 2026-03-11 15:12:03
 #
 # **********************************************************#
 
@@ -231,27 +231,45 @@ class ExtractionResult:
         """
         Return a human-readable summary string.
 
+        Unreadable-file details are emitted via :data:`log` at WARN level
+        rather than included inline, to keep the summary concise even when
+        thousands of empty/corrupt files are present.
+
         :return: Multi-line summary.
         """
-        n_files   = len(self.file_records)
-        n_ok      = sum(1 for r in self.file_records if r.status == ExtractionStatus.OK)
-        n_empty   = sum(1 for r in self.file_records if r.status == ExtractionStatus.NO_CHIRPS)
-        n_err     = sum(1 for r in self.file_records if r.status == ExtractionStatus.UNREADABLE)
+        n_files = len(self.file_records)
+        n_ok    = sum(1 for r in self.file_records if r.status == ExtractionStatus.OK)
+        n_empty = sum(1 for r in self.file_records if r.status == ExtractionStatus.NO_CHIRPS)
+        n_err   = sum(1 for r in self.file_records if r.status == ExtractionStatus.UNREADABLE)
+
+        # Tally unreadable reasons for the compact breakdown
+        from collections import Counter
+        reason_counts: Counter = Counter()
+        for r in self.file_records:
+            if r.status == ExtractionStatus.UNREADABLE:
+                # Shorten common scipy messages to a readable label
+                detail = r.detail
+                if 'not understood' in detail:
+                    detail = 'bad/empty file format'
+                elif 'No such file' in detail:
+                    detail = 'file not found'
+                reason_counts[detail] += 1
+                log.warn(f'Unreadable: {r.path}  — {r.detail}')
+
         lines = [
             'MeasureExtractor results',
-            f'  Chunk files processed : {n_files}',
-            f'  Files with chirps     : {n_ok}',
-            f'  Files with no chirps  : {n_empty}',
-            f'  Unreadable files      : {n_err}',
-            f'  Total chirp rows      : {self.n_rows}',
+            f'  Files processed       : {n_files:,}',
+            f'  Files with chirps     : {n_ok:,}',
+            f'  Files with no chirps  : {n_empty:,}',
+            f'  Unreadable files      : {n_err:,}',
         ]
+        if reason_counts:
+            lines.append('  Failure reasons:')
+            for reason, cnt in reason_counts.most_common():
+                lines.append(f'    {cnt:,}x  {reason}')
+        lines.append(f'  Total chirp rows      : {self.n_rows:,}')
         if self.out_csv:
             lines.append(f'  Output CSV            : {self.out_csv}')
-        if n_err:
-            lines.append('\nUnreadable files:')
-            for r in self.file_records:
-                if r.status == ExtractionStatus.UNREADABLE:
-                    lines.append(f'  {r.path}  — {r.detail}')
         return '\n'.join(lines)
 
 
@@ -779,7 +797,10 @@ def _extract_one(
 
     # ── 1. Load ────────────────────────────────────────────────────────────
     try:
-        sr_header, data = wavfile.read(str(chunk_path))
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            _warnings.simplefilter('ignore')
+            sr_header, data = wavfile.read(str(chunk_path))
     except Exception as exc:
         rec.status = ExtractionStatus.UNREADABLE
         rec.detail = str(exc)
@@ -919,6 +940,7 @@ class MeasureExtractor:
         inputs:         Sequence[str | Path],
         out_csv:        str | Path,
         recursive:      bool            = False,
+        done_stems:     Optional[set]   = None,
         n_workers:      Optional[int]   = None,
         show_progress:  bool            = True,
         worker_timeout: Optional[float] = 120.0,
@@ -930,6 +952,10 @@ class MeasureExtractor:
         :param out_csv:        Output CSV path.
         :param recursive:      Descend into subdirectories when a directory
                                is given.
+        :param done_stems:     Set of ``file_id`` stems already present in
+                               previously-written measure CSVs.  Paths whose
+                               stem matches an entry are skipped.  Build this
+                               set with :meth:`load_done_stems`.
         :param n_workers:      Worker count (``None`` = cpu_count − 4; ``0`` = all).
         :param show_progress:  Show tqdm progress bar.
         :param worker_timeout: Per-file timeout in seconds.
@@ -937,6 +963,7 @@ class MeasureExtractor:
         self.inputs      = [Path(p) for p in inputs]
         self.out_csv     = Path(out_csv)
         self.recursive   = recursive
+        self.done_stems  = done_stems or set()
 
         if n_workers is None:
             self.n_workers = max(1, (os.cpu_count() or 1) - 4)
@@ -947,6 +974,38 @@ class MeasureExtractor:
 
         self.show_progress  = show_progress
         self.worker_timeout = worker_timeout
+
+    # ------------------------------------------------------------------ #
+    #  Done-stems helper                                                   #
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def load_done_stems(cls, csv_paths: Sequence[str | Path]) -> set:
+        """
+        Read one or more previously-written measure CSVs and return the set
+        of ``file_id`` values they contain.
+
+        These stems are used by :meth:`_iter_paths` to skip files that have
+        already been processed, enabling incremental runs over large datasets.
+
+        :param csv_paths: Paths to existing measure CSV files.
+        :return:          Set of ``file_id`` strings.
+        """
+        import pandas as pd
+        stems: set = set()
+        for p in csv_paths:
+            p = Path(p)
+            if not p.exists():
+                log.warn(f'--done-csv file not found, skipping: {p}')
+                continue
+            try:
+                df = pd.read_csv(p, usecols=['file_id'])
+                stems.update(df['file_id'].dropna().unique().tolist())
+                log.info(f'Loaded {len(df):,} done rows from {p}')
+            except Exception as exc:
+                log.warn(f'Could not read done-csv {p}: {exc}')
+        log.info(f'Total already-done file_ids: {len(stems):,}')
+        return stems
 
     # ------------------------------------------------------------------ #
     #  Path iterator                                                       #
@@ -977,10 +1036,12 @@ class MeasureExtractor:
 
         def _emit(p: Path, sp):
             rp = p.resolve()
-            if rp not in seen:
-                seen.add(rp)
-                return rp, sp
-            return None, None
+            if rp in seen:
+                return None, None
+            seen.add(rp)
+            if rp.stem in self.done_stems:
+                return None, None   # already processed in a prior run
+            return rp, sp
 
         for inp in self.inputs:
             if inp.suffix.lower() == '.db':
@@ -1197,6 +1258,17 @@ def _parse_args():
         metavar='SECS',
         help='per-file worker timeout in seconds (default: 120)',
     )
+    parser.add_argument(
+        '--done-csv',
+        nargs='+',
+        default=[],
+        metavar='CSV',
+        help=(
+            'one or more previously-written measure CSVs.\n'
+            'Files whose stem (file_id) already appears in any of these\n'
+            'CSVs are skipped, enabling incremental runs.'
+        ),
+    )
     args = parser.parse_args()
 
     # Validate inputs exist; warn on unrecognised extensions but still pass
@@ -1225,16 +1297,19 @@ def main() -> None:
     args = _parse_args()
     log.info(f'MeasureExtractor: {len(args.inputs)} input(s)  →  {args.out_csv}')
 
+    done_stems = MeasureExtractor.load_done_stems(args.done_csv) if args.done_csv else set()
+
     extractor = MeasureExtractor(
         inputs         = args.inputs,
         out_csv        = args.out_csv,
         recursive      = args.recursive,
+        done_stems     = done_stems,
         n_workers      = args.workers,
         show_progress  = True,
         worker_timeout = args.timeout,
     )
     result = extractor.run()
-    print(result.summary())
+    log.info(result.summary())
     sys.exit(0 if result.n_rows > 0 else 1)
 
 
