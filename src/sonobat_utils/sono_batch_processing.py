@@ -5,7 +5,7 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-12 12:43:30
+# @Last Modified time: 2026-03-12 15:43:42
 #
 # **********************************************************
 
@@ -204,13 +204,13 @@ class SonoBatchCombinator:
     def load_done_stems(cls, csv_paths: Sequence[str | Path]) -> set:
         """
         Read one or more previously-written sequence CSV files and return the 
-        set of filename values they contain.
+        set of file_id values they contain.
         
-        These filenames are used to skip files that have already been processed, 
+        These stems are used to skip files that have already been processed, 
         enabling incremental runs over large datasets.
         
         :param csv_paths: Paths to existing sequence CSV files.
-        :return:          Set of filename strings.
+        :return:          Set of file_id strings.
         """
         stems: set = set()
         for p in csv_paths:
@@ -219,12 +219,12 @@ class SonoBatchCombinator:
                 log.warn(f'--done-csv file not found, skipping: {p}')
                 continue
             try:
-                df = pd.read_csv(p, usecols=['filename'])
-                stems.update(df['filename'].dropna().unique().tolist())
+                df = pd.read_csv(p, usecols=['file_id'])
+                stems.update(df['file_id'].dropna().unique().tolist())
                 log.info(f'Loaded {len(df):,} done rows from {p}')
             except Exception as exc:
                 log.warn(f'Could not read done-csv {p}: {exc}')
-        log.info(f'Total already-done filenames: {len(stems):,}')
+        log.info(f'Total already-done file_ids: {len(stems):,}')
         return stems
 
     # ------------------------------------------------------------------ #
@@ -238,7 +238,7 @@ class SonoBatchCombinator:
         Rules:
         * If input is a .txt file with '_SonoBatch_' in the name → yield it
         * If input is a directory → glob for *SonoBatch*.txt files
-        * Skip files whose base filename is in done_stems
+        * Skip files whose base file_id is in done_stems
         
         :yields: Path objects for SonoBatch files.
         """
@@ -251,12 +251,12 @@ class SonoBatchCombinator:
                     rp = inp.resolve()
                     if rp not in seen:
                         seen.add(rp)
-                        # Extract filename to check done_stems
-                        filename = self._extract_filename_from_sonobatch(rp)
-                        if filename not in self.done_stems:
+                        # Extract file_id to check done_stems
+                        file_id = self._extract_file_id(rp)
+                        if file_id not in self.done_stems:
                             yield rp
                         else:
-                            log.info(f'Skipping already-done filename: {filename}')
+                            log.info(f'Skipping already-done file_id: {file_id}')
                 else:
                     log.warn(f'File does not appear to be a SonoBatch file: {inp}')
                     
@@ -268,25 +268,25 @@ class SonoBatchCombinator:
                     if rp in seen:
                         continue
                     seen.add(rp)
-                    filename = self._extract_filename_from_sonobatch(rp)
-                    if filename not in self.done_stems:
+                    file_id = self._extract_file_id(rp)
+                    if file_id not in self.done_stems:
                         yield rp
                     else:
-                        log.info(f'Skipping already-done filename: {filename}')
+                        log.info(f'Skipping already-done file_id: {file_id}')
             else:
                 log.warn(f'Input does not exist or is not a file/directory: {inp}')
 
     @staticmethod
-    def _extract_filename_from_sonobatch(sonobatch_path: Path) -> str:
+    def _extract_file_id(sonobatch_path: Path) -> str:
         """
-        Extract the base filename from a SonoBatch filename.
+        Extract the base file_id from a SonoBatch filename.
         
         Examples:
             20220907_2secs_SonoBatch_v30.2.20250912.txt → 20220907
             batch1_SonoBatch_v30.txt → batch1
         
         :param sonobatch_path: Path to SonoBatch file
-        :return:               Base filename (everything before _SonoBatch_)
+        :return:               Base file_id (everything before _SonoBatch_)
         """
         name = sonobatch_path.stem
         # Split on _SonoBatch_ and take everything before it
@@ -352,15 +352,15 @@ class SonoBatchCombinator:
             
         df = pd.DataFrame(payloads)
         
-        # Add filename column (extract from Filename column, removing suffixes)
-        # Filename format: lake2_-20221219_213141_2secs
-        # filename should be: lake2_-20221219_213141
-        df['filename'] = df['Filename'].apply(self._extract_filename_from_fragment)
+        # Add file_id column (extract from Filename column)
+        # Filename format: bats-20220907_000040_2secs
+        # file_id should be: bats-20220907
+        df['file_id'] = df['Filename'].apply(self._extract_file_id_from_fragment)
         
-        # Filter out already-done filenames
+        # Filter out already-done file_ids
         if self.done_stems:
             before_count = len(df)
-            df = df[~df['filename'].isin(self.done_stems)]
+            df = df[~df['file_id'].isin(self.done_stems)]
             after_count = len(df)
             if before_count > after_count:
                 log.info(f'Filtered out {before_count - after_count} already-done fragments')
@@ -368,31 +368,31 @@ class SonoBatchCombinator:
         return df
 
     @staticmethod
-    def _extract_filename_from_fragment(fragment_name: str) -> str:
+    def _extract_file_id_from_fragment(fragment_name: str) -> str:
         """
-        Extract the base filename from a fragment filename.
-        
-        Removes suffixes like _2secs or _t{offset}ms to get the original 
-        recording filename.
+        Extract the base file_id from a fragment filename.
         
         Examples:
-            lake2_-20221219_213141_2secs → lake2_-20221219_213141
-            barn1_D20220701T235723m806_t0000000ms → barn1_D20220701T235723m806
+            bats-20220907_000040_2secs → bats-20220907
+            recording_123456_2secs → recording
         
-        :param fragment_name: Fragment filename (without .wav extension)
-        :return:              Base filename (original recording name)
+        :param fragment_name: Fragment filename (without .wav)
+        :return:              Base file_id
         """
         # Remove _2secs suffix if present
         if fragment_name.endswith('_2secs'):
-            return fragment_name[:-6]
+            fragment_name = fragment_name[:-6]
         
-        # Handle _t{offset}ms pattern (e.g., _t0000123ms)
-        if '_t' in fragment_name:
-            # Split on _t and take everything before it
-            return fragment_name.rsplit('_t', 1)[0]
+        # Split on underscore and take first two parts for date-based naming
+        # e.g., bats-20220907_000040 → bats-20220907
+        parts = fragment_name.split('_')
+        if len(parts) >= 2:
+            # Check if second part looks like a timestamp (6 digits)
+            if len(parts[1]) == 6 and parts[1].isdigit():
+                return parts[0]
         
-        # Otherwise return as-is
-        return fragment_name
+        # Otherwise just return the first part
+        return parts[0] if parts else fragment_name
 
     # ------------------------------------------------------------------ #
     #  Coalescing                                                        #
@@ -402,18 +402,17 @@ class SonoBatchCombinator:
         """
         Coalesce fragment-level data into sequence-level species determinations.
         
-        For each filename (original recording), aggregate across all 2-sec fragments 
-        to produce a single species determination.
+        For each file_id (recording), aggregate across all 2-sec fragments to 
+        produce a single species determination.
         
         Strategy:
         - Sum #Maj and #Accp counts across fragments
         - Use most common SppAccp as the sequence-level species
         - Average Prob and AccpQuality
         - Aggregate 1st/2nd/3rd species across fragments
-        - Create numeric file_id via pd.factorize for downstream use
         
         :param fragments_df: DataFrame with one row per fragment
-        :return:             DataFrame with one row per sequence (filename)
+        :return:             DataFrame with one row per sequence (file_id)
         """
         if fragments_df.empty:
             return pd.DataFrame()
@@ -426,7 +425,7 @@ class SonoBatchCombinator:
         
         sequences = []
         
-        for filename, group in fragments_df.groupby('filename'):
+        for file_id, group in fragments_df.groupby('file_id'):
             # Find most common accepted species
             species_counts = group['SppAccp'].value_counts()
             # Remove empty strings
@@ -459,7 +458,7 @@ class SonoBatchCombinator:
             accp_quality_mean = group['AccpQuality'].mean()
             
             sequences.append({
-                'filename': filename,
+                'file_id': file_id,
                 'species_accepted': species_accepted,
                 'species_prob': round(species_prob, 4),
                 'n_maj': n_maj,
@@ -471,17 +470,7 @@ class SonoBatchCombinator:
                 'n_fragments': len(group)
             })
         
-        result_df = pd.DataFrame(sequences)
-        
-        # Create numeric file_id via factorize
-        # This creates a unique integer ID for each unique filename
-        result_df['file_id'] = pd.factorize(result_df['filename'])[0]
-        
-        # Reorder columns to put file_id first, then filename
-        cols = ['file_id', 'filename'] + [c for c in result_df.columns if c not in ['file_id', 'filename']]
-        result_df = result_df[cols]
-        
-        return result_df
+        return pd.DataFrame(sequences)
 
     # ------------------------------------------------------------------ #
     #  Main run method                                                   #
@@ -504,7 +493,7 @@ class SonoBatchCombinator:
             log.warn('No SonoBatch files found to process')
             # Create empty output file with correct columns
             empty_df = pd.DataFrame(columns=[
-                'file_id', 'filename', 'species_accepted', 'species_prob', 'n_maj', 'n_accp',
+                'file_id', 'species_accepted', 'species_prob', 'n_maj', 'n_accp',
                 'species_1st', 'species_2nd', 'species_3rd', 'accp_quality_mean', 
                 'n_fragments'
             ])
@@ -527,7 +516,7 @@ class SonoBatchCombinator:
         if not all_fragments:
             log.warn('No valid data extracted from SonoBatch files')
             empty_df = pd.DataFrame(columns=[
-                'file_id', 'filename', 'species_accepted', 'species_prob', 'n_maj', 'n_accp',
+                'file_id', 'species_accepted', 'species_prob', 'n_maj', 'n_accp',
                 'species_1st', 'species_2nd', 'species_3rd', 'accp_quality_mean',
                 'n_fragments'
             ])
@@ -608,7 +597,7 @@ def parse_args():
         metavar='CSV',
         help=(
             'one or more previously-written SonoBatch CSVs.\n'
-            'Files whose filename already appears in any of these\n'
+            'Files whose file_id already appears in any of these\n'
             'CSVs are skipped, enabling incremental runs.'
         ),
     )
