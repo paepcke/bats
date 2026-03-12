@@ -36,8 +36,8 @@ def idiom_comparer_pipeline(idiom_comparer, results_path):
 
 def main(args):
     # First define the two experiments to be compared:
-    results_1 = args.results_1
-    results_2 = args.results_2
+    exp_1_folder = args.exp_1_folder
+    exp_2_folder = args.exp_2_folder
     exp_1_name = args.exp_1_name
     exp_2_name = args.exp_2_name
     results_folder = args.results_folder
@@ -49,7 +49,7 @@ def main(args):
         os.mkdir(f"{results_path}/figs")
 
     # Run the idiom comparison pipeline on the two sets of data
-    idiom_comparer = IdiomComparer(results_1, results_2, exp_1_name, exp_2_name,
+    idiom_comparer = IdiomComparer(exp_1_folder, exp_2_folder, exp_1_name, exp_2_name,
                                    no_amp=args.no_amp, reduc_method=args.reduc_method, cluster_method=args.cluster_method,
                                    min_k=args.min_cluster_k, max_k = args.max_cluster_k, 
                                    calculate_k = args.calculate_k, k=args.cluster_k
@@ -80,13 +80,13 @@ def main(args):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Compare two sets of idioms")
-    parser.add_argument("--results_1", type=str, help="Path to the first set of analysis results",
-                        default="./analysis_results/2022_barn_2secs_myca_quantile_1_16")
-    parser.add_argument("--results_2", type=str, help="Path to the second set of analysis results",
-                        default="./analysis_results/2022_lake_2secs_myca_quantile_1_28")
+    parser.add_argument("--exp_1_folder", type=str, help="Path to the first set of analysis results",
+                        default="/home/ayc227/bats/src/idiom_analysis/analysis_results/2022_barn_2secs_myca_quantile_1_16")
+    parser.add_argument("--exp_2_folder", type=str, help="Path to the second set of analysis results",
+                        default="/home/ayc227/bats/src/idiom_analysis/analysis_results/2022_lake_2secs_myca_quantile_1_28")
     parser.add_argument("--exp_1_name", type=str, default="Barn", help="Name of the first experiment (for labeling purposes)")
     parser.add_argument("--exp_2_name", type=str, default="Lake", help="Name of the second experiment (for labeling purposes)")
-    parser.add_argument("--results_folder", type=str, default="./analysis_results/comparisons", help="Folder to save comparison results and figures")
+    parser.add_argument("--results_folder", type=str, default="/home/ayc227/bats/src/idiom_analysis/analysis_results/comparisons", help="Folder to save comparison results and figures")
     IdiomComparer.add_cli(parser)
     SubseqCounter.add_cli(parser)
     return parser.parse_args()

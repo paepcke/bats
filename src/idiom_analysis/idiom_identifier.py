@@ -676,10 +676,13 @@ class IdiomIdentifier():
             will be added.
         """
         ChirpClusterer.add_cli(parser)
-        parser.add_argument("--measure", type=str, default="radius_mean")
-        parser.add_argument("--low_conf_percentile", type=int, default=90)
-        parser.add_argument("--prediction_offset", type=int, default=4)
-        parser.add_argument("--sigma", type=int, default=1)
+        parser.add_argument("--measure", type=str, default="radius_mean", 
+                            help="Which uncertainty measure to use: [\"radius_mean\", \"density\", \"tightness\"]")
+        parser.add_argument("--prediction_offset", type=int, default=4, 
+                            help="First chirp index in test set sequences, i.e. minimum context size")
+        parser.add_argument("--sigma", type=int, default=1, help="Sigma value for Gaussian smoothing")
+        parser.add_argument("--low_conf_percentile", type=int, default=90, 
+                            help="Percentile at which to declare low confidence")
 
 class IdiomIdentifierVisualizer():
     """

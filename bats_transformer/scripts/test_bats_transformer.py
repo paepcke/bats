@@ -19,13 +19,18 @@ ignore_cols = ["FreqLedge","AmpK@end", "Fc", "FBak15dB  ", "FBak32dB", "EndF", "
                "meanKn-FcCurviness", "MinAccpQuality", "AmpEndLn60ExpC", "AmpStartLn60ExpC", "Preemphasis", "MaxSegLnght" ,"Max#CallsConsidered" ]
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model_paths", nargs='+', type=str, default = [])
+parser.add_argument("--model_paths", nargs='+', type=str, default = [],
+                    help="Folder containing trained models")
 parser.add_argument("--quantized", action='store_true', help='Whether the model is quantized')
-parser.add_argument("--ignore_cols", nargs='+', type=str, default = ignore_cols)
-parser.add_argument("--out_dir", type=str, default = "/home/vdesai/data/model_outputs/daytime")
-parser.add_argument("--input_data_path", type=str, default='/home/vdesai/data/training_data/daytime/splits')
-parser.add_argument("--shuffle_data", action='store_true', help='Whether to shuffle the data during testing (should match training)')
-parser.add_argument("--gpus", type=str, default = '0')
+parser.add_argument("--ignore_cols", nargs='+', type=str, default = ignore_cols, 
+                    help="Which chirp attributes to remove from data")
+parser.add_argument("--out_dir", type=str, default = "/home/vdesai/data/model_outputs/daytime",
+                    help="Folder to output generated results")
+parser.add_argument("--input_data_path", type=str, default='/home/vdesai/data/training_data/daytime/splits',
+                    help="Folder to dataset containing chirp attributes")
+parser.add_argument("--shuffle_data", action='store_true', 
+                    help='Whether to shuffle the data during testing (should match training)')
+parser.add_argument("--gpus", type=str, default = '0', help="Number of GPUs to use")
 
 args = parser.parse_args()
 

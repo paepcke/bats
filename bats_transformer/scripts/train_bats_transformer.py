@@ -24,9 +24,9 @@ parser.add_argument('--data_path', type=str,
                     default='/home/vdesai/data/training_data/daytime/splits', 
                     help='Path to the data')
 parser.add_argument('--shuffle_data', action='store_true', help='Whether to shuffle the data during training')
-parser.add_argument('--quantize', action="store_true")
-parser.add_argument('--model_path', required = False)
-parser.add_argument('--ignore_cols', nargs='+', type=str, default = ignore_cols)
+parser.add_argument('--quantize', action="store_true", help='Whether to use quantized model (experimental)')
+parser.add_argument('--model_path', required = False, help='Folder to output trained models')
+parser.add_argument('--ignore_cols', nargs='+', type=str, default = ignore_cols, help='Which chirp attributes to remove from data')
 
 args = parser.parse_args()
 
@@ -40,7 +40,7 @@ d_model = 100
 
 for random_seed in args.random_seeds:
     print("Running for random seed ", random_seed)
-    run_train_py(run_name = f"{model_path.split('/')[-1]}_{random_seed}", 
+    run_train_py(run_name = f"model_{random_seed}", 
                 quantize = args.quantize,
                 random_seed = random_seed, Dmodel = d_model, 
                 # Dqk = d_qk, layers = layers, heads = n_heads,
@@ -48,4 +48,4 @@ for random_seed in args.random_seeds:
                 ignore_cols = ignore_cols, 
                 additional_flags = ["--telegram_updates"], 
                 gpus = args.gpu, data_path = args.data_path, 
-                model_path = args.model_path + "_" + str(random_seed) if args.model_path else None)
+                model_path = args.model_path + "/model_" + str(random_seed) if args.model_path else None)

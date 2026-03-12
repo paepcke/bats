@@ -241,10 +241,16 @@ class ChirpClusterer():
             Argument parser to which the subsequence analysis options
             will be added.
         """
-        parser.add_argument("--no_amp", type=int, default=0)
-        parser.add_argument("--min_cluster_k", type=int, default=1)
-        parser.add_argument("--max_cluster_k", type=int, default=50)
-        parser.add_argument("--cluster_method", type=str, default="Agglomerative")
-        parser.add_argument("--reduc_method", type=str, default="umap")
-        parser.add_argument("--calculate_k", action="store_true")
-        parser.add_argument("--cluster_k", type=int, default=8)
+        parser.add_argument("--no_amp", type=int, default=0, help="Whether to include chirp measures involving \"Amp\"")
+        parser.add_argument("--min_cluster_k", type=int, default=1, 
+                            help="Minimum k to consider in determining optimal k")
+        parser.add_argument("--max_cluster_k", type=int, default=50,
+                            help="Maximum k to consider in determining optimal k")
+        parser.add_argument("--reduc_method", type=str, default="umap",
+                            help="Which method to use to reduce data to 2-D visualization: [\"umap\", \"pca\"]")
+        parser.add_argument("--cluster_method", type=str, default="Agglomerative",
+                            help="Which method to use for clustering: [\"Agglomerative\", \"HDBSCAN\"]")
+        parser.add_argument("--calculate_k", action="store_true", 
+                            help="Whether to calculate optimal k (instead of using --cluster_k)")
+        parser.add_argument("--cluster_k", type=int, default=8,
+                            help="Fixed number of clusters (k)")

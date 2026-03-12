@@ -261,7 +261,9 @@ class SubseqCounter():
             Argument parser to which the subsequence analysis options
             will be added.
         """
-        parser.add_argument("--subseq_n", type=int, default=2)
-        parser.add_argument("--subseq_k", type=int, default=None)
-        parser.add_argument("--subseq_type", type=str, default="all")
-        parser.add_argument("--subseq_calc_prob", type=int, default=None)
+        parser.add_argument("--subseq_n", type=int, default=2, help="Length of subsequences to count")
+        parser.add_argument("--subseq_k", type=int, default=None, help="Number of most common subsequences to output")
+        parser.add_argument("--subseq_type", type=str, default="all", 
+                            help="What type of subsequence: [\"all\", \"prefix\", \"suffix\"]")
+        parser.add_argument("--subseq_calc_prob", type=int, default=None, 
+                            help="Whether to calculate probabilities (in addition to absolute counts)")
