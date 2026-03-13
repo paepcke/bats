@@ -5,92 +5,113 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-12 17:13:04
+# @Last Modified time: 2026-03-13 09:11:35
 #
 # **********************************************************
 
 """
-When SonoBat extracts measures from chirp files, two files are produced:
-   xxx_Parameters_xxx.txt
-   xxx_SonoBatch_....txt
+Extract fragment-level species labels from SonoBat 30.x batch output files
+and join them with the corresponding acoustic-measures rows from the
+``_Parameters_`` files.
 
-Each SonoBatch file is a 34-column summary of a single
-chirp file. The main content is the bat species with
-confidence measures.
+Background
+----------
+SonoBat's Long File Parser chops each ~50-second recording into 2-second
+``.wav`` fragments and writes two output files per batch:
 
-Our workflow follows the SonoBat recommendation of chopping
-recordings into 2-sec fragments before running their analysis.
-So each SonoBatch file is actually a SonoBatch result *fragment*
-of the chirp sequence in a recording.
+``xxx_Parameters_xxx.txt``
+    One row **per detected chirp** with ~100 acoustic measures.  Multiple
+    rows may share the same ``Filename`` (fragment stem) when more than one
+    chirp was detected in a 2-second window.
 
-This module reads a series of the SonoBatch fragments, and
-   1. combines them into a dataframe. It then
-   2. composites a second dataframe that combines the information
-      for one entire chirp sequence into each row.
+``xxx_SonoBatch_xxx.txt``
+    One row **per fragment** summarising the species ID for that window:
+    accepted species, probability, ranked alternatives, call-quality metrics.
 
-This second bats_id dataframe can be joined with measures files
-to fill in a 'species' column for each row.
+This module:
+
+1. Discovers all per-night ``_SonoBatch_`` files under one or more input
+   directories (cumulative / nightly-summary files are silently skipped).
+2. Parses each file and retains the three species columns needed downstream:
+   ``species``, ``species_prob``, and ``species_2nd``.
+3. Reads the corresponding ``_Parameters_`` files (same directory, same date
+   prefix) to obtain the full chirp-level measures.
+4. Joins measures to species on ``Filename`` — the fragment stem written by
+   SonoBat into both file types and therefore identical by construction.
+5. Assigns a stable integer ``file_id`` per unique ``Filename``.  On
+   incremental runs the prior ``filename_to_id.csv`` is loaded so that
+   existing integers are never remapped; new fragments receive ids that
+   extend beyond the current maximum.
+6. Writes three output files:
+
+   ``<out_csv>``
+       One row per chirp with all measures plus ``species``,
+       ``species_prob``, ``species_2nd``, and integer ``file_id``.
+
+   ``<stem>_filename_to_id.csv``
+       ``Filename`` to ``file_id`` lookup table for joins with other
+       pipeline dataframes.
+
+   ``<stem>_config.csv``
+       Run-level statistics (file counts, chirp counts, species coverage,
+       elapsed time).
 
 Fragment Filename Convention
 ----------------------------
-The 2-second fragment filenames embedded in SonoBatch files take the form::
+Fragment stems embedded in both file types take the form::
 
-    <prefix>-<YYYYMMDD>_<HHMMSS>_2secs.wav
+    <location>-<YYYYMMDD>_<HHMMSS>_2secs
 
 e.g.::
 
-    lake2-20220123_064819_2secs.wav
-    bats-20220706_000013_2secs.wav
-    barn-20220411_000047_2secs.wav
+    lake2-20220123_064819_2secs
+    bats-20220706_000013_2secs
+    barn-20220411_000047_2secs
 
-Because the original 50-second recordings are no longer available,
-recording boundaries are recovered by **timestamp clustering**: consecutive
-2-sec fragments whose absolute timestamps are separated by less than
-``gap_seconds`` (default 10 s) are assumed to belong to the same original
-recording.  The synthesised ``file_id`` for each cluster is::
+This stem is the natural unique key across all sites and dates.  The integer
+``file_id`` is a groupby/join convenience derived from it.
 
-    <prefix>-<YYYYMMDD>_<HHMMSS>
+Output Columns (chirp-level CSV)
+---------------------------------
+All columns from the ``_Parameters_`` file are retained verbatim, plus:
 
-where ``<HHMMSS>`` is the timestamp of the *first* fragment in the cluster.
+    - ``species``       : SonoBat accepted species for the containing fragment
+    - ``species_prob``  : SonoBat confidence (0-1) for that assignment
+    - ``species_2nd``   : SonoBat second-ranked species (possible alternative)
+    - ``file_id``       : stable integer key; groupby('file_id') yields all
+                          chirps from one 2-second fragment
 
-Output Columns
---------------
-The output CSV contains one row per recording with:
+Downstream sequence-level species
+----------------------------------
+Recording-level species can be derived from this table without any
+pre-aggregation::
 
-    - file_id            : integer join key (``pd.factorize`` of recording_name),
-                           compatible with the integer ``file_id`` used in other
-                           pipeline dataframes
-    - recording_name     : human-readable synthesised key derived from the first
-                           fragment's stem, e.g. ``lake2-20220123_064819``
-    - species_accepted   : primary species determination
-    - species_prob       : mean probability for accepted species
-    - n_maj              : total pulses matching most frequent species
-    - n_accp             : total pulses meeting criteria for final ID
-    - species_1st        : most prevalent species across fragments
-    - species_2nd        : second most prevalent species
-    - species_3rd        : third most prevalent species
-    - accp_quality_mean  : mean acceptance quality across fragments
-    - n_fragments        : number of 2-sec fragments for this recording
+    seq_species = (
+        chirps_df
+        .groupby('recording_name')['species']
+        .agg(lambda s: s.mode().iloc[0] if s.notna().any() else pd.NA)
+    )
+
+where ``recording_name`` can be added via timestamp-clustering if needed.
 
 Typical Usage
 -------------
 ::
 
-    from sono_batch_processing import SonoBatchCombinator
+    from sono_batch_processing import SpeciesLabeler
 
-    combinator = SonoBatchCombinator(
-        inputs=['path/to/sonobatch_files/', 'file.txt'],
-        out_csv='species_determinations.csv',
-        recursive=True
+    labeler = SpeciesLabeler(
+        inputs=['/qnap/bats/barn_sonobat3_2_processed',
+                '/qnap/bats/lake2_sonobat3_2_processed'],
+        out_csv='/qnap/bats/chirps_with_species.csv',
+        recursive=True,
     )
-    result = combinator.run()
+    result = labeler.run()
     print(result.summary())
 """
 
-import re
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 from dataclasses import dataclass
@@ -105,14 +126,35 @@ log = LoggingService()
 # Constants
 # ---------------------------------------------------------------------------
 
-# Regex that matches the date+time embedded in a fragment filename.
-# Captures: group(1) = YYYYMMDD, group(2) = HHMMSS
-_TS_RE = re.compile(r'(\d{8})_(\d{6})')
+# Per-night SonoBatch files to skip — they match the glob but use a different
+# schema and would produce only spurious warnings if parsed.
+_EXCLUDE_KEYWORDS: tuple[str, ...] = (
+    'Cumulative',
+    'NightlySummary',
+    'BatchSummary',
+    'SonoBatStaging',
+)
 
-# Gap (seconds) between fragment timestamps that signals a new recording.
-# Original recordings were ~50 sec; 2-sec fragments span at most that window.
-# A gap larger than this implies a new, distinct recording event.
-_DEFAULT_GAP_SECONDS: int = 10
+# All 34 column names in a per-night SonoBatch file, in order.
+_SONOBATCH_COLS: list[str] = [
+    'Path', 'Filename', 'HiF', 'LoF',
+    'SppAccp', 'Prob',
+    '#Maj', '#Accp', '~Spp', '~Prob',
+    'Fc mean', 'Fc StdDev', 'Dur mean', 'Dur StdDev', 'calls/sec',
+    'mean HiFreq', 'mean LoFreq', 'mean UpprSlp', 'mean LwrSlp',
+    'mean TotalSlp', 'mean PrecedingIntvl',
+    '1st', '2nd', '3rd', '4th',
+    '<--All spp in sqnc classified with a ANN>0.40 in order of prevalence',
+    'ParentDir', 'NextDirUp', 'FileLength(sec)',
+    'Version', 'Filter', 'AccpQuality', 'AccpQualForTally',
+    'Max#CallsConsidered',
+]
+
+# Column indices used during parsing (computed once at import time).
+_IDX_FILENAME: int = _SONOBATCH_COLS.index('Filename')
+_IDX_SPPACCP:  int = _SONOBATCH_COLS.index('SppAccp')
+_IDX_PROB:     int = _SONOBATCH_COLS.index('Prob')
+_IDX_2ND:      int = _SONOBATCH_COLS.index('2nd')
 
 
 # ---------------------------------------------------------------------------
@@ -120,33 +162,50 @@ _DEFAULT_GAP_SECONDS: int = 10
 # ---------------------------------------------------------------------------
 
 @dataclass
-class CombinationResult:
-    """Result summary returned by :meth:`SonoBatchCombinator.run`."""
+class LabelingResult:
+    """
+    Summary returned by :meth:`SpeciesLabeler.run`.
 
-    out_csv:      Path
-    n_fragments:  int
-    n_sequences:  int
-    n_skipped:    int
-    elapsed_secs: float
+    :param out_csv:            Path to the chirp-level output CSV.
+    :param n_sonobatch_files:  Number of per-night SonoBatch files parsed.
+    :param n_fragments:        Total fragment rows parsed from SonoBatch files.
+    :param n_chirps_raw:       Chirp rows loaded from Parameters files before join.
+    :param n_chirps_labeled:   Chirp rows that received a species label.
+    :param n_chirps_unlabeled: Chirp rows with no matching SonoBatch entry.
+    :param n_skipped:          Fragment Filenames skipped (already done).
+    :param elapsed_secs:       Wall-clock seconds for the full run.
+    """
+    out_csv:            Path
+    n_sonobatch_files:  int
+    n_fragments:        int
+    n_chirps_raw:       int
+    n_chirps_labeled:   int
+    n_chirps_unlabeled: int
+    n_skipped:          int
+    elapsed_secs:       float
 
     def summary(self) -> str:
         """
-        Return a human-readable result summary.
+        Return a human-readable multi-line run summary.
 
-        :return: Multi-line string with fragment/sequence counts, runtime,
-                 and output path.
+        :return: Formatted string with all result statistics.
         """
         mins, secs = divmod(self.elapsed_secs, 60)
-        elapsed_str = (
-            f'{int(mins)}m {secs:.1f}s' if mins else f'{secs:.1f}s'
+        elapsed_str = f'{int(mins)}m {secs:.1f}s' if mins else f'{secs:.1f}s'
+        pct = (
+            100.0 * self.n_chirps_labeled / self.n_chirps_raw
+            if self.n_chirps_raw else 0.0
         )
         return (
-            f"SonoBatch combination complete:\n"
-            f"  • {self.n_fragments:,} fragments processed\n"
-            f"  • {self.n_sequences:,} sequences identified\n"
-            f"  • {self.n_skipped:,} file_ids skipped (already done)\n"
-            f"  • Elapsed: {elapsed_str}\n"
-            f"  • Output: {self.out_csv}"
+            f"SpeciesLabeler complete:\n"
+            f"  * {self.n_sonobatch_files:,} SonoBatch files parsed\n"
+            f"  * {self.n_fragments:,} fragment rows extracted\n"
+            f"  * {self.n_chirps_raw:,} chirp rows loaded from Parameters files\n"
+            f"  * {self.n_chirps_labeled:,} chirps labeled ({pct:.1f}%)\n"
+            f"  * {self.n_chirps_unlabeled:,} chirps without a species match\n"
+            f"  * {self.n_skipped:,} fragments skipped (already done)\n"
+            f"  * Elapsed: {elapsed_str}\n"
+            f"  * Output:  {self.out_csv}"
         )
 
 
@@ -154,273 +213,59 @@ class CombinationResult:
 # Main class
 # ---------------------------------------------------------------------------
 
-class SonoBatchCombinator:
+class SpeciesLabeler:
     """
-    Discover, parse, and coalesce SonoBat 30.x batch output files.
+    Parse SonoBat per-night output files and produce a chirp-level CSV
+    with acoustic measures plus species labels, ready for CNN/RF training.
 
-    Because the original 50-second recordings are no longer available, recording
-    boundaries are recovered from the absolute timestamps encoded in fragment
-    filenames.  Fragments whose timestamps are within ``gap_seconds`` of each
-    other are grouped into the same recording; the synthesised ``file_id`` is
-    ``<prefix>-<YYYYMMDD>_<HHMMSS>`` using the *first* fragment's timestamp.
+    For each pair of ``_SonoBatch_`` / ``_Parameters_`` files the labeler:
 
-    :param inputs:      One or more paths — individual SonoBatch ``.txt`` files
-                        or directories.  Use ``recursive=True`` to descend.
-    :param out_csv:     Destination CSV path for sequence-level species IDs.
-    :param recursive:   If ``True``, descend into subdirectories when a
-                        directory is given.
-    :param done_stems:  Set of integer ``file_id`` values already present in a
-                        prior run's output CSV.  Build with
-                        :meth:`load_done_stems`.
-    :param gap_seconds: Maximum inter-fragment timestamp gap (seconds) that
-                        still counts as the same original recording.
+    * Reads species columns from the SonoBatch file (one row per fragment).
+    * Reads all measure columns from the Parameters file (one row per chirp).
+    * Joins on ``Filename`` — the fragment stem written identically by SonoBat
+      into both files, and therefore an exact key by construction.
+    * Assigns a stable integer ``file_id`` per unique ``Filename`` that is
+      consistent across incremental runs (see :meth:`_assign_file_ids`).
+
+    :param inputs:      One or more directories or individual SonoBatch
+                        ``.txt`` files.  Use ``recursive=True`` to descend.
+    :param out_csv:     Destination path for the chirp-level output CSV.
+    :param recursive:   If ``True``, descend into subdirectories.
+    :param done_csv:    Path to a previously-written output CSV whose
+                        ``Filename`` values should be skipped.  New rows are
+                        appended so the output grows incrementally.
+    :param id_map_csv:  Path to a previously-written ``filename_to_id.csv``.
+                        When provided, existing ``file_id`` integers are
+                        preserved and new filenames are assigned ids that
+                        extend beyond the prior maximum.
     """
-
-    # ------------------------------------------------------------------ #
-    #  SonoBatch file schema                                             #
-    # ------------------------------------------------------------------ #
-
-    # All 34 column names, in order, as they appear in the SonoBatch file.
-    SONOBATCH_COLS: list[str] = [
-        'Path',
-        'Filename',
-        'HiF',
-        'LoF',
-        'SppAccp',
-        'Prob',
-        '#Maj',
-        '#Accp',
-        '~Spp',
-        '~Prob',
-        'Fc mean',
-        'Fc StdDev',
-        'Dur mean',
-        'Dur StdDev',
-        'calls/sec',
-        'mean HiFreq',
-        'mean LoFreq',
-        'mean UpprSlp',
-        'mean LwrSlp',
-        'mean TotalSlp',
-        'mean PrecedingIntvl',
-        '1st',
-        '2nd',
-        '3rd',
-        '4th',
-        '<--All spp in sqnc classified with a ANN>0.40 in order of prevalence',
-        'ParentDir',
-        'NextDirUp',
-        'FileLength(sec)',
-        'Version',
-        'Filter',
-        'AccpQuality',
-        'AccpQualForTally',
-        'Max#CallsConsidered',
-    ]
-
-    # Subset of columns actually needed for species aggregation.
-    NEEDED_COLS: list[str] = [
-        'Filename',
-        'SppAccp',
-        'Prob',
-        '#Maj',
-        '#Accp',
-        '1st',
-        '2nd',
-        '3rd',
-        'AccpQuality',
-    ]
-
-    # Column-name → 0-based index within SONOBATCH_COLS.
-    # Populated once on first instantiation.
-    _NEEDED_COL_IDXS: dict[str, int] = {}
-
-    # ------------------------------------------------------------------ #
-    #  Constructor                                                       #
-    # ------------------------------------------------------------------ #
 
     def __init__(
         self,
-        inputs:      Sequence[str | Path],
-        out_csv:     str | Path,
-        recursive:   bool           = False,
-        done_stems:  Optional[set]  = None,
-        gap_seconds: int            = _DEFAULT_GAP_SECONDS,
+        inputs:     Sequence[str | Path],
+        out_csv:    str | Path,
+        recursive:  bool                 = False,
+        done_csv:   Optional[str | Path] = None,
+        id_map_csv: Optional[str | Path] = None,
     ) -> None:
-        self.inputs      = [Path(p) for p in inputs]
-        self.out_csv     = Path(out_csv)
-        self.recursive   = recursive
-        self.done_stems  = done_stems or set()
-        self.gap_seconds = gap_seconds
-
-        # Build column-index lookup once for the lifetime of the class.
-        if not SonoBatchCombinator._NEEDED_COL_IDXS:
-            for col in SonoBatchCombinator.NEEDED_COLS:
-                SonoBatchCombinator._NEEDED_COL_IDXS[col] = (
-                    SonoBatchCombinator.SONOBATCH_COLS.index(col)
-                )
+        self.inputs     = [Path(p) for p in inputs]
+        self.out_csv    = Path(out_csv)
+        self.recursive  = recursive
+        self.done_csv   = Path(done_csv)   if done_csv   else None
+        self.id_map_csv = Path(id_map_csv) if id_map_csv else None
 
     # ------------------------------------------------------------------ #
-    #  Public helper: load done stems                                    #
+    #  File discovery                                                     #
     # ------------------------------------------------------------------ #
-
-    @classmethod
-    def load_done_stems(cls, csv_paths: Sequence[str | Path]) -> set:
-        """
-        Read one or more previously-written sequence CSV files and return the
-        set of integer ``file_id`` values they contain.
-
-        These ids are used to skip recordings already processed, enabling
-        incremental runs over large datasets.
-
-        :param csv_paths: Paths to existing sequence CSV files.
-        :return:          Set of integer ``file_id`` values.
-        """
-        stems: set = set()
-        for p in csv_paths:
-            p = Path(p)
-            if not p.exists():
-                log.warn(f'--done-csv not found, skipping: {p}')
-                continue
-            try:
-                df = pd.read_csv(p, usecols=['file_id'])
-                new = set(df['file_id'].dropna().astype(int).unique().tolist())
-                stems.update(new)
-                log.info(f'Loaded {len(new):,} done file_ids from {p}')
-            except Exception as exc:
-                log.warn(f'Could not read done-csv {p}: {exc}')
-        log.info(f'Total already-done file_ids: {len(stems):,}')
-        return stems
-
-    # ------------------------------------------------------------------ #
-    #  Fragment timestamp utilities                                      #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _parse_fragment_ts(fragment_name: str) -> Optional[datetime]:
-        """
-        Extract the absolute timestamp from a 2-sec fragment filename.
-
-        Expected format: ``<prefix>-<YYYYMMDD>_<HHMMSS>_2secs``
-
-        :param fragment_name: Fragment stem (no ``.wav`` extension).
-        :return:              Parsed :class:`datetime`, or ``None`` if unparseable.
-        """
-        m = _TS_RE.search(fragment_name)
-        if not m:
-            return None
-        try:
-            return datetime.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M%S')
-        except ValueError:
-            return None
-
-    @staticmethod
-    def _location_date_prefix(fragment_name: str) -> str:
-        """
-        Return the ``<location>-<YYYYMMDD>`` prefix of a fragment filename.
-
-        This prefix groups fragments that belong to the same detector and night
-        before timestamp-clustering is applied within that group.
-
-        Examples::
-
-            lake2-20220123_064819_2secs  →  lake2-20220123
-            bats-20220706_000013_2secs   →  bats-20220706
-            barn-20220411_000047_2secs   →  barn-20220411
-
-        :param fragment_name: Fragment stem (no ``.wav`` extension).
-        :return:              ``<location>-<YYYYMMDD>`` string, or the full
-                              name if the pattern is not found.
-        """
-        m = _TS_RE.search(fragment_name)
-        if not m:
-            return fragment_name
-        # Everything up to (and including) the date portion
-        date_end = m.start() + 8          # end of YYYYMMDD within the match
-        return fragment_name[: m.start() + 8]
-
-    # ------------------------------------------------------------------ #
-    #  Recording-boundary recovery via timestamp clustering              #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _assign_recording_ids(
-        group_df:    pd.DataFrame,
-        gap_seconds: int,
-    ) -> pd.Series:
-        """
-        Assign a synthesised ``file_id`` to each fragment row by clustering
-        consecutive timestamps.
-
-        Fragments are sorted by their absolute timestamp.  A new cluster (i.e.
-        a new original recording) is started whenever the gap to the previous
-        fragment exceeds ``gap_seconds``.  The synthesised ``file_id`` for each
-        cluster is ``<prefix>-<YYYYMMDD>_<HHMMSS>`` of the cluster's *first*
-        fragment.
-
-        Rows whose ``Filename`` does not contain a parseable timestamp are
-        assigned the sentinel ``file_id`` ``"unknown"``.
-
-        :param group_df:    Sub-DataFrame for one ``<location>-<YYYYMMDD>``
-                            prefix (i.e. one detector night).
-        :param gap_seconds: Inter-fragment gap threshold (seconds).
-        :return:            :class:`pandas.Series` of ``recording_name`` strings,
-                            aligned to ``group_df.index``.
-        """
-        result = pd.Series('unknown', index=group_df.index, dtype=str)
-
-        # Parse a timestamp for every row; keep NaT where parsing fails.
-        timestamps: pd.Series = group_df['Filename'].map(
-            SonoBatchCombinator._parse_fragment_ts
-        )
-
-        valid_mask = timestamps.notna()
-        if not valid_mask.any():
-            return result
-
-        valid_idx  = timestamps[valid_mask].sort_values().index
-        prev_ts:   Optional[datetime] = None
-        cluster_id: str               = ''
-
-        for idx in valid_idx:
-            ts = timestamps[idx]
-            if prev_ts is None or (ts - prev_ts).total_seconds() > gap_seconds:
-                # Start a new cluster; synthesise a file_id from this timestamp.
-                name = group_df.at[idx, 'Filename']
-                # Strip _2secs suffix for a clean key
-                clean = name[:-6] if name.endswith('_2secs') else name
-                cluster_id = clean          # e.g. "lake2-20220123_064819"
-            result[idx] = cluster_id
-            prev_ts = ts
-
-        return result
-
-    # ------------------------------------------------------------------ #
-    #  File discovery                                                    #
-    # ------------------------------------------------------------------ #
-
-    # Filename pattern for *per-night* SonoBatch files produced by SonoBat's
-    # Long File Parser.  The expected stem form is:
-    #   <YYYYMMDD>_2secs_SonoBatch_<version>.txt
-    # SonoBat also writes cumulative/nightly summary files whose names contain
-    # additional keywords (CumulativeSonoBatch, NightlySummary, BatchSummary,
-    # SonoBatStaging).  Those must be excluded because they use a different
-    # schema and produce only warnings when parsed.
-    _EXCLUDE_KEYWORDS: tuple[str, ...] = (
-        'Cumulative',
-        'NightlySummary',
-        'BatchSummary',
-        'SonoBatStaging',
-    )
 
     @staticmethod
     def _is_per_night_sonobatch(p: Path) -> bool:
         """
-        Return ``True`` iff *p* looks like a per-night SonoBatch fragment file.
+        Return ``True`` iff *p* is a per-night SonoBatch fragment file.
 
-        Accepted:   ``<YYYYMMDD>_2secs_SonoBatch_<version>.txt``
-        Rejected:   any name containing a keyword from :attr:`_EXCLUDE_KEYWORDS`,
-                    or any file whose name does not contain ``_SonoBatch_``.
+        Accepted:  any name containing ``_SonoBatch_`` but none of the
+                   keywords in :data:`_EXCLUDE_KEYWORDS`.
+        Rejected:  cumulative, nightly-summary, and staging files.
 
         :param p: Candidate path.
         :return:  ``True`` if the file should be processed.
@@ -428,23 +273,16 @@ class SonoBatchCombinator:
         name = p.name
         if '_SonoBatch_' not in name:
             return False
-        for kw in SonoBatchCombinator._EXCLUDE_KEYWORDS:
-            if kw in name:
-                return False
-        return True
+        return not any(kw in name for kw in _EXCLUDE_KEYWORDS)
 
     def _iter_sonobatch_files(self):
         """
-        Yield resolved paths to per-night SonoBatch ``.txt`` files.
+        Yield resolved, de-duplicated paths to per-night SonoBatch files
+        from all inputs.
 
-        Files are de-duplicated across all inputs.  Cumulative, nightly-summary,
-        and staging files are silently skipped (they match the glob but fail
-        :meth:`_is_per_night_sonobatch`).
-
-        :yields: :class:`pathlib.Path` objects for per-night SonoBatch files.
+        :yields: :class:`pathlib.Path` for each qualifying file.
         """
         seen: set[Path] = set()
-
         for inp in self.inputs:
             if inp.is_file():
                 if self._is_per_night_sonobatch(inp):
@@ -453,8 +291,7 @@ class SonoBatchCombinator:
                         seen.add(rp)
                         yield rp
                 else:
-                    log.warn(f'File does not look like a per-night SonoBatch file: {inp}')
-
+                    log.warn(f'Not a per-night SonoBatch file: {inp}')
             elif inp.is_dir():
                 pattern = '**/*SonoBatch*.txt' if self.recursive else '*SonoBatch*.txt'
                 for p in inp.glob(pattern):
@@ -468,252 +305,363 @@ class SonoBatchCombinator:
             else:
                 log.warn(f'Input does not exist or is not a file/directory: {inp}')
 
-    # ------------------------------------------------------------------ #
-    #  Parsing                                                           #
-    # ------------------------------------------------------------------ #
-
-    def _parse_sonobatch_file(self, path: Path) -> pd.DataFrame:
+    @staticmethod
+    def _parameters_path_for(sonobatch_path: Path) -> Optional[Path]:
         """
-        Parse a single SonoBatch ``.txt`` file into a DataFrame.
+        Derive the ``_Parameters_`` file path paired with a SonoBatch file.
 
-        Only the columns listed in :attr:`NEEDED_COLS` are retained, plus a
-        synthesised ``file_id`` column that identifies the original recording.
-        Rows whose ``file_id`` already appears in :attr:`done_stems` are
-        dropped so that incremental runs remain efficient.
+        Both files live in the same directory and share the same date prefix;
+        only the ``_SonoBatch_`` / ``_Parameters_`` infix differs.
 
-        :param path: Path to a SonoBatch file.
-        :return:     DataFrame with :attr:`NEEDED_COLS` plus ``file_id``,
-                     or an empty DataFrame on any parse error.
+        Example::
+
+            20220706_2secs_SonoBatch_v30.2.20250912.txt
+            ->  20220706_2secs_Parameters_v30.2.20250912.txt
+
+        :param sonobatch_path: Path to a per-night SonoBatch file.
+        :return:               Corresponding Parameters path, or ``None``
+                               if the file does not exist.
         """
-        payloads: list[dict] = []
+        candidate = Path(
+            str(sonobatch_path).replace('_SonoBatch_', '_Parameters_')
+        )
+        if candidate.exists():
+            return candidate
+        log.warn(
+            f'No matching Parameters file for {sonobatch_path.name} '
+            f'(expected {candidate.name})'
+        )
+        return None
 
+    # ------------------------------------------------------------------ #
+    #  Parsing                                                            #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _parse_sonobatch_file(path: Path) -> pd.DataFrame:
+        """
+        Parse a per-night SonoBatch file into a fragment-level species table.
+
+        Retains only ``Filename``, ``species``, ``species_prob``, and
+        ``species_2nd``.  The ``.wav`` extension is stripped from
+        ``Filename`` to match the stem used in Parameters files.  Rows with
+        fewer fields than expected are silently skipped.
+
+        :param path: Path to a per-night SonoBatch ``.txt`` file.
+        :return:     DataFrame with columns
+                     ``['Filename', 'species', 'species_prob', 'species_2nd']``,
+                     or an empty DataFrame on error.
+        """
+        rows: list[dict] = []
         try:
-            with open(path, 'r', encoding='utf-8') as fh:
+            with open(path, encoding='utf-8') as fh:
                 lines = fh.readlines()
         except Exception as exc:
             log.warn(f'Cannot open {path}: {exc}')
             return pd.DataFrame()
 
-        # Line 0 is the header; data starts at line 1.
-        for line in lines[1:]:
-            line = line.strip()
+        n_cols = len(_SONOBATCH_COLS)
+        for line in lines[1:]:      # line 0 is the header
+            line = line.rstrip('\n')
             if not line:
                 continue
             fields = line.split('\t')
-            if len(fields) < len(SonoBatchCombinator.SONOBATCH_COLS):
+            if len(fields) < n_cols:
                 continue
+            fname = fields[_IDX_FILENAME]
+            if fname.lower().endswith('.wav'):
+                fname = fname[:-4]
+            rows.append({
+                'Filename'    : fname,
+                'species'     : fields[_IDX_SPPACCP] or pd.NA,
+                'species_prob': fields[_IDX_PROB]    or pd.NA,
+                'species_2nd' : fields[_IDX_2ND]     or pd.NA,
+            })
 
-            row: dict = {}
-            for col, idx in SonoBatchCombinator._NEEDED_COL_IDXS.items():
-                val = fields[idx]
-                if col == 'Filename':
-                    # Strip .wav extension; keep the rest intact for clustering.
-                    if val.lower().endswith('.wav'):
-                        val = val[:-4]
-                row[col] = val
-            payloads.append(row)
-
-        if not payloads:
-            log.warn(f'No valid rows found in {path}')
+        if not rows:
+            log.warn(f'No valid rows in {path.name}')
             return pd.DataFrame()
 
-        df = pd.DataFrame(payloads)
+        df = pd.DataFrame(rows)
+        df['species_prob'] = pd.to_numeric(df['species_prob'], errors='coerce')
+        return df
 
-        # ---- Assign file_ids via timestamp clustering ---- #
-        # Group by <location>-<YYYYMMDD> prefix first so that clustering is
-        # only applied within one detector/night combination.
-        df['_prefix'] = df['Filename'].map(
-            SonoBatchCombinator._location_date_prefix
+    @staticmethod
+    def _parse_parameters_file(path: Path) -> pd.DataFrame:
+        """
+        Read a ``_Parameters_`` file into a chirp-level measures DataFrame.
+
+        All columns are retained verbatim.  The ``Filename`` column (fragment
+        stem) is the join key; any trailing ``.wav`` extension is stripped
+        defensively.
+
+        :param path: Path to a ``_Parameters_`` ``.txt`` file.
+        :return:     DataFrame with one row per detected chirp, or an empty
+                     DataFrame on error.
+        """
+        try:
+            df = pd.read_csv(path, sep='\t', low_memory=False)
+        except Exception as exc:
+            log.warn(f'Cannot read Parameters file {path}: {exc}')
+            return pd.DataFrame()
+
+        if 'Filename' not in df.columns:
+            log.warn(f'No Filename column in {path.name} — skipping')
+            return pd.DataFrame()
+
+        # Strip .wav if present (defensive; SonoBat usually omits it here).
+        df['Filename'] = df['Filename'].str.replace(
+            r'\.wav$', '', regex=True, case=False
         )
-
-        file_ids = pd.Series('unknown', index=df.index, dtype=str)
-        for prefix, grp in df.groupby('_prefix', sort=False):
-            ids = SonoBatchCombinator._assign_recording_ids(grp, self.gap_seconds)
-            file_ids.update(ids)
-
-        df['recording_name'] = file_ids
-        df.drop(columns=['_prefix'], inplace=True)
-
-        # ---- Drop already-done recordings ---- #
-        # done_stems holds integer file_ids from prior runs; map them back
-        # via recording_name is not yet possible here (factorize runs later),
-        # so we carry all fragments through and filter after coalescing.
-        # (done_stems filtering on the coalesced frame happens in run().)
-
         return df
 
     # ------------------------------------------------------------------ #
-    #  Coalescing (vectorised)                                          #
+    #  Done-set helper                                                    #
     # ------------------------------------------------------------------ #
 
-    def _coalesce_sequences(self, fragments_df: pd.DataFrame) -> pd.DataFrame:
+    @staticmethod
+    def load_done_filenames(done_csv: Path) -> set[str]:
         """
-        Coalesce fragment-level rows into one row per original recording.
+        Return the set of ``Filename`` stems already present in a prior
+        output CSV, enabling incremental runs.
 
-        Uses fully vectorised pandas ``groupby``/``agg`` operations for
-        performance on large datasets (hundreds of thousands of fragments).
-
-        Aggregation strategy per recording (``file_id``):
-
-        * ``species_accepted``  — mode of non-empty ``SppAccp`` values
-        * ``species_prob``      — mean ``Prob`` for the accepted species
-        * ``n_maj``             — sum of ``#Maj``
-        * ``n_accp``            — sum of ``#Accp``
-        * ``species_1st/2nd/3rd`` — mode of non-empty rank-species columns
-        * ``accp_quality_mean`` — mean ``AccpQuality``
-        * ``n_fragments``       — row count
-
-        :param fragments_df: DataFrame with one row per 2-sec fragment,
-                             including a ``file_id`` column.
-        :return:             DataFrame with one row per recording.
+        :param done_csv: Path to an existing chirp-level output CSV.
+        :return:         Set of ``Filename`` strings to skip.
         """
-        if fragments_df.empty:
-            return pd.DataFrame()
-
-        df = fragments_df.copy()
-
-        # Coerce numeric columns; treat missing/invalid as 0.
-        for col in ('#Maj', '#Accp'):
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
-        for col in ('Prob', 'AccpQuality'):
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-
-        # Replace empty strings with NaN so mode/aggregations ignore them.
-        for col in ('SppAccp', '1st', '2nd', '3rd'):
-            df[col] = df[col].replace('', pd.NA)
-
-        def _mode_or_empty(s: pd.Series) -> str:
-            """Return the most frequent non-null value, or empty string."""
-            clean = s.dropna()
-            if clean.empty:
-                return ''
-            return clean.mode().iloc[0]
-
-        # First pass: standard aggregations grouped by recording_name.
-        agg = df.groupby('recording_name', sort=False).agg(
-            n_maj             = ('#Maj',        'sum'),
-            n_accp            = ('#Accp',       'sum'),
-            accp_quality_mean = ('AccpQuality', 'mean'),
-            n_fragments       = ('Filename',    'count'),
-            species_accepted  = ('SppAccp',     _mode_or_empty),
-            species_1st       = ('1st',         _mode_or_empty),
-            species_2nd       = ('2nd',         _mode_or_empty),
-            species_3rd       = ('3rd',         _mode_or_empty),
-        ).reset_index()
-
-        # Second pass: mean Prob only for the accepted species per recording.
-        prob_rows = df[df['SppAccp'].notna()].copy()
-        prob_rows = prob_rows.merge(
-            agg[['recording_name', 'species_accepted']],
-            on='recording_name', how='left'
-        )
-        prob_rows = prob_rows[prob_rows['SppAccp'] == prob_rows['species_accepted']]
-        prob_mean = (
-            prob_rows.groupby('recording_name')['Prob']
-            .mean()
-            .rename('species_prob')
-            .reset_index()
-        )
-
-        agg = agg.merge(prob_mean, on='recording_name', how='left')
-        agg['species_prob'] = agg['species_prob'].fillna(0.0)
-
-        # Round for readability.
-        agg['species_prob']      = agg['species_prob'].round(4)
-        agg['accp_quality_mean'] = agg['accp_quality_mean'].round(2)
-
-        # Assign integer file_id via factorize — same convention used across
-        # the broader chirp-measures pipeline so joins work without remapping.
-        agg['file_id'] = pd.factorize(agg['recording_name'])[0]
-
-        # Enforce column order: integer file_id first, then readable name.
-        return agg[[
-            'file_id', 'recording_name',
-            'species_accepted', 'species_prob',
-            'n_maj', 'n_accp',
-            'species_1st', 'species_2nd', 'species_3rd',
-            'accp_quality_mean', 'n_fragments',
-        ]]
+        if not done_csv.exists():
+            log.warn(f'done-csv not found: {done_csv}')
+            return set()
+        try:
+            df = pd.read_csv(done_csv, usecols=['Filename'])
+            stems = set(df['Filename'].dropna().unique().tolist())
+            log.info(f'Loaded {len(stems):,} done Filenames from {done_csv}')
+            return stems
+        except Exception as exc:
+            log.warn(f'Could not read done-csv {done_csv}: {exc}')
+            return set()
 
     # ------------------------------------------------------------------ #
-    #  Main entry point                                                  #
+    #  Stable integer file_id                                             #
     # ------------------------------------------------------------------ #
 
-    def run(self) -> CombinationResult:
+    @staticmethod
+    def _assign_file_ids(
+        df:         pd.DataFrame,
+        id_map_csv: Optional[Path],
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Discover, parse, and coalesce SonoBatch files into sequence-level
-        species determinations, then write the result to :attr:`out_csv`.
+        Assign a stable integer ``file_id`` to every chirp row via ``Filename``.
 
-        :return: :class:`CombinationResult` with summary statistics.
+        On a fresh run integers are assigned by order of first appearance.
+        On an incremental run the prior mapping is loaded first; known
+        Filenames keep their existing integers and new Filenames are
+        assigned integers extending beyond the prior maximum.  This ensures
+        that no earlier row ever has its ``file_id`` remapped.
+
+        :param df:         Chirp-level DataFrame containing a ``Filename``
+                           column.
+        :param id_map_csv: Path to a previously-written
+                           ``filename_to_id.csv``, or ``None`` for a fresh
+                           run.
+        :return:           Tuple of (updated DataFrame with ``file_id``
+                           column added, full Filename-to-id mapping
+                           DataFrame with columns
+                           ``['Filename', 'file_id']``).
         """
-        _EMPTY_COLS = [
-            'file_id', 'recording_name',
-            'species_accepted', 'species_prob',
-            'n_maj', 'n_accp',
-            'species_1st', 'species_2nd', 'species_3rd',
-            'accp_quality_mean', 'n_fragments',
-        ]
+        prior = pd.DataFrame(columns=['Filename', 'file_id'])
 
-        def _write_empty() -> CombinationResult:
-            pd.DataFrame(columns=_EMPTY_COLS).to_csv(self.out_csv, index=False)
-            return CombinationResult(
-                out_csv      = self.out_csv.resolve(),
-                n_fragments  = 0,
-                n_sequences  = 0,
-                n_skipped    = len(self.done_stems),
-                elapsed_secs = time.perf_counter() - _t0,
-            )
+        if id_map_csv and id_map_csv.exists():
+            try:
+                prior = pd.read_csv(id_map_csv)
+                log.info(
+                    f'Loaded {len(prior):,} prior Filename->id mappings '
+                    f'from {id_map_csv}'
+                )
+            except Exception as exc:
+                log.warn(f'Could not read id-map CSV {id_map_csv}: {exc}')
 
+        known_names: set[str] = set(prior['Filename'].tolist()) if len(prior) else set()
+        all_names              = df['Filename'].unique()
+        new_names              = [n for n in all_names if n not in known_names]
+
+        if new_names:
+            next_id  = int(prior['file_id'].max()) + 1 if len(prior) else 0
+            new_rows = pd.DataFrame({
+                'Filename': new_names,
+                'file_id' : range(next_id, next_id + len(new_names)),
+            })
+            full_map = pd.concat([prior, new_rows], ignore_index=True)
+        else:
+            full_map = prior.copy()
+
+        df = df.merge(full_map[['Filename', 'file_id']], on='Filename', how='left')
+        return df, full_map
+
+    # ------------------------------------------------------------------ #
+    #  Main entry point                                                   #
+    # ------------------------------------------------------------------ #
+
+    def run(self) -> LabelingResult:
+        """
+        Discover SonoBatch files, join with Parameters measures, attach
+        species labels, assign stable integer ``file_id`` values, and
+        write output.
+
+        On an incremental run (``done_csv`` provided and present on disk):
+
+        * Fragment ``Filename`` stems already in the done set are excluded
+          before the join.
+        * The chirp output CSV is appended to rather than overwritten.
+        * The ``filename_to_id`` map is extended without remapping old ids.
+
+        :return: :class:`LabelingResult` with full run statistics.
+        """
         _t0 = time.perf_counter()
-        log.info(f'SonoBatchCombinator: processing {len(self.inputs)} input(s)')
+
+        # ---- Load done set ------------------------------------------- #
+        done_filenames: set[str] = set()
+        if self.done_csv and self.done_csv.exists():
+            done_filenames = self.load_done_filenames(self.done_csv)
+            log.info(f'{len(done_filenames):,} fragment Filenames already done')
+
+        # ---- Discover SonoBatch files --------------------------------- #
         sonobatch_files = list(self._iter_sonobatch_files())
-        log.info(f'Found {len(sonobatch_files):,} SonoBatch file(s) to process')
+        log.info(f'Found {len(sonobatch_files):,} per-night SonoBatch files')
 
         if not sonobatch_files:
-            log.warn('No SonoBatch files found — writing empty output')
-            return _write_empty()
-
-        all_fragments: list[pd.DataFrame] = []
-        for path in sonobatch_files:
-            log.info(f'Parsing {path.name} …')
-            frag_df = self._parse_sonobatch_file(path)
-            if not frag_df.empty:
-                all_fragments.append(frag_df)
-
-        if not all_fragments:
-            log.warn('No valid data extracted — writing empty output')
-            return _write_empty()
-
-        fragments_df = pd.concat(all_fragments, ignore_index=True)
-        log.info(f'Total fragment rows: {len(fragments_df):,}')
-
-        log.info('Coalescing fragments into sequences …')
-        sequences_df = self._coalesce_sequences(fragments_df)
-
-        # Drop recordings whose integer file_id was already written in a
-        # prior incremental run.  This is the authoritative done-filter;
-        # fragment-level filtering is not possible before factorize runs.
-        if self.done_stems:
-            before = len(sequences_df)
-            sequences_df = sequences_df[
-                ~sequences_df['file_id'].isin(self.done_stems)
-            ]
-            log.info(
-                f'Skipped {before - len(sequences_df):,} already-done recordings'
+            log.warn('No SonoBatch files found — nothing to do')
+            return LabelingResult(
+                out_csv            = self.out_csv.resolve(),
+                n_sonobatch_files  = 0,
+                n_fragments        = 0,
+                n_chirps_raw       = 0,
+                n_chirps_labeled   = 0,
+                n_chirps_unlabeled = 0,
+                n_skipped          = len(done_filenames),
+                elapsed_secs       = time.perf_counter() - _t0,
             )
 
-        log.info(f'Sequences identified: {len(sequences_df):,}')
+        # ---- Parse, filter, join ------------------------------------- #
+        all_chirps: list[pd.DataFrame] = []
+        n_fragments_total = 0
 
+        for sb_path in sonobatch_files:
+            log.info(f'Processing {sb_path.name} ...')
+
+            species_df = self._parse_sonobatch_file(sb_path)
+            if species_df.empty:
+                continue
+
+            n_fragments_total += len(species_df)
+
+            # Drop already-done fragments before touching the Parameters file.
+            if done_filenames:
+                before     = len(species_df)
+                species_df = species_df[
+                    ~species_df['Filename'].isin(done_filenames)
+                ]
+                skipped = before - len(species_df)
+                if skipped:
+                    log.info(f'  Skipped {skipped:,} already-done fragments')
+            if species_df.empty:
+                log.info('  All fragments already done — skipping Parameters file')
+                continue
+
+            params_path = self._parameters_path_for(sb_path)
+            if params_path is None:
+                continue
+            measures_df = self._parse_parameters_file(params_path)
+            if measures_df.empty:
+                continue
+
+            # Restrict measures to new fragments only, then join.
+            new_filenames = set(species_df['Filename'].tolist())
+            measures_df   = measures_df[
+                measures_df['Filename'].isin(new_filenames)
+            ]
+            if measures_df.empty:
+                log.warn(
+                    f'  No measures rows matched species Filenames '
+                    f'in {params_path.name}'
+                )
+                continue
+
+            joined = measures_df.merge(species_df, on='Filename', how='left')
+            all_chirps.append(joined)
+
+        # ---- Bail out if nothing new --------------------------------- #
+        if not all_chirps:
+            log.warn('No new chirp data after filtering — nothing written')
+            return LabelingResult(
+                out_csv            = self.out_csv.resolve(),
+                n_sonobatch_files  = len(sonobatch_files),
+                n_fragments        = n_fragments_total,
+                n_chirps_raw       = 0,
+                n_chirps_labeled   = 0,
+                n_chirps_unlabeled = 0,
+                n_skipped          = len(done_filenames),
+                elapsed_secs       = time.perf_counter() - _t0,
+            )
+
+        chirps_df          = pd.concat(all_chirps, ignore_index=True)
+        n_chirps_raw       = len(chirps_df)
+        n_chirps_labeled   = int(chirps_df['species'].notna().sum())
+        n_chirps_unlabeled = n_chirps_raw - n_chirps_labeled
+
+        if n_chirps_unlabeled:
+            log.warn(
+                f'{n_chirps_unlabeled:,} chirps have no species match '
+                f'(fragment present in Parameters but absent from SonoBatch)'
+            )
+
+        # ---- Stable integer file_id ---------------------------------- #
+        chirps_df, full_map = self._assign_file_ids(chirps_df, self.id_map_csv)
+
+        # ---- Write output -------------------------------------------- #
         self.out_csv.parent.mkdir(parents=True, exist_ok=True)
-        sequences_df.to_csv(self.out_csv, index=False)
-        log.info(f'Wrote {len(sequences_df):,} rows to {self.out_csv}')
+        stem         = str(self.out_csv).removesuffix('.csv')
+        id_map_path  = Path(stem + '_filename_to_id.csv')
+        config_path  = Path(stem + '_config.csv')
 
-        return CombinationResult(
-            out_csv      = self.out_csv.resolve(),
-            n_fragments  = len(fragments_df),
-            n_sequences  = len(sequences_df),
-            n_skipped    = len(self.done_stems),
-            elapsed_secs = time.perf_counter() - _t0,
+        # Append to existing CSV on incremental runs; write fresh otherwise.
+        is_incremental = bool(
+            self.done_csv and self.done_csv.exists() and self.out_csv.exists()
+        )
+        write_mode   = 'a' if is_incremental else 'w'
+        write_header = not is_incremental
+
+        chirps_df.to_csv(
+            self.out_csv, mode=write_mode, header=write_header, index=False
+        )
+        log.info(
+            f'{"Appended" if is_incremental else "Wrote"} '
+            f'{len(chirps_df):,} chirp rows to {self.out_csv}'
+        )
+
+        full_map.to_csv(id_map_path, index=False)
+        log.info(f'Wrote {len(full_map):,} Filename->id mappings to {id_map_path}')
+
+        elapsed = time.perf_counter() - _t0
+        pd.DataFrame([
+            {'parameter': 'n_sonobatch_files',  'value': len(sonobatch_files)},
+            {'parameter': 'n_fragments',        'value': n_fragments_total},
+            {'parameter': 'n_chirps_raw',       'value': n_chirps_raw},
+            {'parameter': 'n_chirps_labeled',   'value': n_chirps_labeled},
+            {'parameter': 'n_chirps_unlabeled', 'value': n_chirps_unlabeled},
+            {'parameter': 'n_skipped',          'value': len(done_filenames)},
+            {'parameter': 'elapsed_secs',       'value': round(elapsed, 1)},
+        ]).to_csv(config_path, index=False)
+        log.info(f'Wrote config to {config_path}')
+
+        return LabelingResult(
+            out_csv            = self.out_csv.resolve(),
+            n_sonobatch_files  = len(sonobatch_files),
+            n_fragments        = n_fragments_total,
+            n_chirps_raw       = n_chirps_raw,
+            n_chirps_labeled   = n_chirps_labeled,
+            n_chirps_unlabeled = n_chirps_unlabeled,
+            n_skipped          = len(done_filenames),
+            elapsed_secs       = elapsed,
         )
 
 
@@ -723,61 +671,60 @@ class SonoBatchCombinator:
 
 def _parse_args():
     """
-    Parse command-line arguments.
+    Parse command-line arguments for :class:`SpeciesLabeler`.
 
-    :return: ``argparse.Namespace`` with validated ``inputs``, ``out_csv``,
-             ``recursive``, and ``done_csv`` attributes.
+    :return: ``argparse.Namespace`` with validated attributes.
     """
     import argparse
 
     parser = argparse.ArgumentParser(
         prog='sono_batch_processing',
         description=(
-            'Combine SonoBat species ID summaries written by SonoBat 30.x.\n\n'
+            'Join SonoBat species labels with acoustic measures to produce\n'
+            'a chirp-level training CSV.\n\n'
             'Inputs can be any mix of:\n'
-            '  • individual xxx_SonoBatch_....txt files\n'
-            '  • directories (searched for such files; use -r to recurse)\n\n'
-            'Output: CSV with one row per original recording (chirp sequence).'
+            '  * individual xxx_SonoBatch_....txt files\n'
+            '  * directories containing such files (use -r to recurse)\n\n'
+            'Each SonoBatch file is paired automatically with its\n'
+            'co-located xxx_Parameters_....txt file.\n\n'
+            'For incremental runs, pass --done-csv pointing at the prior\n'
+            'output and --id-map-csv pointing at the prior\n'
+            'filename_to_id.csv.  New rows are appended and existing\n'
+            'file_id integers are never remapped.'
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
         'input',
         nargs='+',
-        help=(
-            'One or more SonoBatch .txt files or directories.\n'
-            'Directories are searched at the top level; use -r to recurse.'
-        ),
+        help='One or more SonoBatch .txt files or directories.',
     )
     parser.add_argument(
         '-o', '--out-csv',
         required=True,
-        help='Destination .csv path for the coalesced result.',
+        help='Destination .csv for the chirp-level output.',
     )
     parser.add_argument(
         '-r', '--recursive',
         action='store_true',
-        help='Descend into subdirectories when a directory is given.',
+        help='Descend into subdirectories.',
     )
     parser.add_argument(
         '--done-csv',
-        nargs='+',
-        default=[],
+        default=None,
         metavar='CSV',
         help=(
-            'One or more previously-written sequence CSVs.\n'
-            'Recordings whose file_id already appears in any of these\n'
-            'files are skipped, enabling incremental runs.'
+            'Previously-written chirp CSV.  Fragment Filenames already\n'
+            'present are skipped; new rows are appended.'
         ),
     )
     parser.add_argument(
-        '--gap-seconds',
-        type=int,
-        default=_DEFAULT_GAP_SECONDS,
-        metavar='N',
+        '--id-map-csv',
+        default=None,
+        metavar='CSV',
         help=(
-            f'Inter-fragment timestamp gap (seconds) that signals a new\n'
-            f'original recording (default: {_DEFAULT_GAP_SECONDS}).'
+            'Previously-written filename_to_id.csv.  Existing integer\n'
+            'file_ids are preserved; new Filenames extend the sequence.'
         ),
     )
 
@@ -801,26 +748,21 @@ def _parse_args():
 
 def main() -> None:
     """
-    CLI entry point for :class:`SonoBatchCombinator`.
+    CLI entry point for :class:`SpeciesLabeler`.
     """
     args = _parse_args()
 
-    done_stems = (
-        SonoBatchCombinator.load_done_stems(args.done_csv)
-        if args.done_csv else set()
+    labeler = SpeciesLabeler(
+        inputs     = args.inputs,
+        out_csv    = args.out_csv,
+        recursive  = args.recursive,
+        done_csv   = args.done_csv,
+        id_map_csv = args.id_map_csv,
     )
 
-    combinator = SonoBatchCombinator(
-        inputs      = args.inputs,
-        out_csv     = args.out_csv,
-        recursive   = args.recursive,
-        done_stems  = done_stems,
-        gap_seconds = args.gap_seconds,
-    )
-
-    result = combinator.run()
+    result = labeler.run()
     log.info(result.summary())
-    sys.exit(0 if result.n_sequences > 0 else 1)
+    sys.exit(0 if result.n_chirps_labeled > 0 else 1)
 
 
 # ------------------- Main Section --------------
