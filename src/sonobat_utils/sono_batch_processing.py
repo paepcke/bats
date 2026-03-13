@@ -5,7 +5,7 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-12 16:40:48
+# @Last Modified time: 2026-03-12 17:13:04
 #
 # **********************************************************
 
@@ -89,6 +89,7 @@ Typical Usage
 
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
@@ -122,22 +123,29 @@ _DEFAULT_GAP_SECONDS: int = 10
 class CombinationResult:
     """Result summary returned by :meth:`SonoBatchCombinator.run`."""
 
-    out_csv:     Path
-    n_fragments: int
-    n_sequences: int
-    n_skipped:   int
+    out_csv:      Path
+    n_fragments:  int
+    n_sequences:  int
+    n_skipped:    int
+    elapsed_secs: float
 
     def summary(self) -> str:
         """
         Return a human-readable result summary.
 
-        :return: Multi-line string with fragment/sequence counts and output path.
+        :return: Multi-line string with fragment/sequence counts, runtime,
+                 and output path.
         """
+        mins, secs = divmod(self.elapsed_secs, 60)
+        elapsed_str = (
+            f'{int(mins)}m {secs:.1f}s' if mins else f'{secs:.1f}s'
+        )
         return (
             f"SonoBatch combination complete:\n"
             f"  • {self.n_fragments:,} fragments processed\n"
             f"  • {self.n_sequences:,} sequences identified\n"
             f"  • {self.n_skipped:,} file_ids skipped (already done)\n"
+            f"  • Elapsed: {elapsed_str}\n"
             f"  • Output: {self.out_csv}"
         )
 
@@ -391,34 +399,68 @@ class SonoBatchCombinator:
     #  File discovery                                                    #
     # ------------------------------------------------------------------ #
 
+    # Filename pattern for *per-night* SonoBatch files produced by SonoBat's
+    # Long File Parser.  The expected stem form is:
+    #   <YYYYMMDD>_2secs_SonoBatch_<version>.txt
+    # SonoBat also writes cumulative/nightly summary files whose names contain
+    # additional keywords (CumulativeSonoBatch, NightlySummary, BatchSummary,
+    # SonoBatStaging).  Those must be excluded because they use a different
+    # schema and produce only warnings when parsed.
+    _EXCLUDE_KEYWORDS: tuple[str, ...] = (
+        'Cumulative',
+        'NightlySummary',
+        'BatchSummary',
+        'SonoBatStaging',
+    )
+
+    @staticmethod
+    def _is_per_night_sonobatch(p: Path) -> bool:
+        """
+        Return ``True`` iff *p* looks like a per-night SonoBatch fragment file.
+
+        Accepted:   ``<YYYYMMDD>_2secs_SonoBatch_<version>.txt``
+        Rejected:   any name containing a keyword from :attr:`_EXCLUDE_KEYWORDS`,
+                    or any file whose name does not contain ``_SonoBatch_``.
+
+        :param p: Candidate path.
+        :return:  ``True`` if the file should be processed.
+        """
+        name = p.name
+        if '_SonoBatch_' not in name:
+            return False
+        for kw in SonoBatchCombinator._EXCLUDE_KEYWORDS:
+            if kw in name:
+                return False
+        return True
+
     def _iter_sonobatch_files(self):
         """
-        Yield resolved paths to SonoBatch ``.txt`` files from all inputs.
+        Yield resolved paths to per-night SonoBatch ``.txt`` files.
 
-        Files are de-duplicated.  A file is only yielded when at least one
-        fragment inside it (checked later during parsing) has a ``file_id``
-        not already in ``done_stems``.  The file-level quick-skip used here
-        checks whether the SonoBatch filename's date component suggests the
-        file *might* contain new data; full filtering happens in
-        :meth:`_parse_sonobatch_file`.
+        Files are de-duplicated across all inputs.  Cumulative, nightly-summary,
+        and staging files are silently skipped (they match the glob but fail
+        :meth:`_is_per_night_sonobatch`).
 
-        :yields: :class:`pathlib.Path` objects for unprocessed SonoBatch files.
+        :yields: :class:`pathlib.Path` objects for per-night SonoBatch files.
         """
         seen: set[Path] = set()
 
         for inp in self.inputs:
             if inp.is_file():
-                if '_SonoBatch_' in inp.name and inp.suffix.lower() == '.txt':
+                if self._is_per_night_sonobatch(inp):
                     rp = inp.resolve()
                     if rp not in seen:
                         seen.add(rp)
                         yield rp
                 else:
-                    log.warn(f'File does not look like a SonoBatch file: {inp}')
+                    log.warn(f'File does not look like a per-night SonoBatch file: {inp}')
 
             elif inp.is_dir():
                 pattern = '**/*SonoBatch*.txt' if self.recursive else '*SonoBatch*.txt'
                 for p in inp.glob(pattern):
+                    if not self._is_per_night_sonobatch(p):
+                        log.info(f'Skipping summary/staging file: {p.name}')
+                        continue
                     rp = p.resolve()
                     if rp not in seen:
                         seen.add(rp)
@@ -615,12 +657,14 @@ class SonoBatchCombinator:
         def _write_empty() -> CombinationResult:
             pd.DataFrame(columns=_EMPTY_COLS).to_csv(self.out_csv, index=False)
             return CombinationResult(
-                out_csv     = self.out_csv.resolve(),
-                n_fragments = 0,
-                n_sequences = 0,
-                n_skipped   = len(self.done_stems),
+                out_csv      = self.out_csv.resolve(),
+                n_fragments  = 0,
+                n_sequences  = 0,
+                n_skipped    = len(self.done_stems),
+                elapsed_secs = time.perf_counter() - _t0,
             )
 
+        _t0 = time.perf_counter()
         log.info(f'SonoBatchCombinator: processing {len(self.inputs)} input(s)')
         sonobatch_files = list(self._iter_sonobatch_files())
         log.info(f'Found {len(sonobatch_files):,} SonoBatch file(s) to process')
@@ -665,10 +709,11 @@ class SonoBatchCombinator:
         log.info(f'Wrote {len(sequences_df):,} rows to {self.out_csv}')
 
         return CombinationResult(
-            out_csv     = self.out_csv.resolve(),
-            n_fragments = len(fragments_df),
-            n_sequences = len(sequences_df),
-            n_skipped   = len(self.done_stems),
+            out_csv      = self.out_csv.resolve(),
+            n_fragments  = len(fragments_df),
+            n_sequences  = len(sequences_df),
+            n_skipped    = len(self.done_stems),
+            elapsed_secs = time.perf_counter() - _t0,
         )
 
 
