@@ -5,18 +5,7 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-13 11:11:04
-#
-# **********************************************************
-
-#!/usr/bin/env python
-# **********************************************************
-#
-# @Author: Andreas Paepcke
-# @Date:   2026-03-11 15:59:39
-# @File:   sono_batch_processing.py
-# @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-13
+# @Last Modified time: 2026-03-13 11:12:57
 #
 # **********************************************************
 

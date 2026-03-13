@@ -370,10 +370,13 @@
             "subProcess": false,
             "console": "integratedTerminal",
             "args": [
-                "${env:HOME}/tmp/sonobat3_2_species_ids.csv",
+                "${env:HOME}/tmp/sonobat3_2_species_ids.feather",
             ],
             "cwd": "${workspaceFolder}/src",
-            "justMyCode": false
+            "justMyCode": false,
+            "env": {
+                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "1.5" 
+            }            
         }
     ],
     "debug.defaultConfiguration": "Python: Test Explorer (unittests)"
