@@ -5,7 +5,7 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-13 11:12:57
+# @Last Modified time: 2026-03-13 13:03:56
 #
 # **********************************************************
 
@@ -112,6 +112,7 @@ Typical Usage
     print(result.summary())
 """
 
+import re
 import sys
 import time
 from pathlib import Path
@@ -157,6 +158,12 @@ _IDX_FILENAME: int = _SONOBATCH_COLS.index('Filename')
 _IDX_SPPACCP:  int = _SONOBATCH_COLS.index('SppAccp')
 _IDX_PROB:     int = _SONOBATCH_COLS.index('Prob')
 _IDX_2ND:      int = _SONOBATCH_COLS.index('2nd')
+
+# Valid SonoBat species codes are exactly one uppercase letter followed
+# by three lowercase letters (e.g. Myca, Tabr, Lano).  Anything else —
+# slash-lists, HiF tab-shift artifacts, empty strings — is treated as
+# no identification.
+_SPECIES_RE = re.compile(r'^[A-Z][a-z]{3}$')
 
 # Parameters-file columns that carry no information for a classifier:
 #   Path / ParentDir / NextDirUp  — stale Windows paths, redundant with Filename
@@ -390,10 +397,18 @@ class SpeciesLabeler:
             fname = fields[_IDX_FILENAME]
             if fname.lower().endswith('.wav'):
                 fname = fname[:-4]
+
+            # Validate species code: accept only a clean 4-char SonoBat code
+            # (e.g. Myca, Tabr).  Slash-lists (Myca/Myyu), HiF (tab-shift
+            # artifact), numeric bleedover, and empty strings all become NA.
+            spp = fields[_IDX_SPPACCP].strip()
+            species_val = spp if _SPECIES_RE.match(spp) else pd.NA
+            prob_val    = fields[_IDX_PROB] if species_val is not pd.NA else pd.NA
+
             rows.append({
                 'Filename'    : fname,
-                'species'     : fields[_IDX_SPPACCP] or pd.NA,
-                'species_prob': fields[_IDX_PROB]    or pd.NA,
+                'species'     : species_val,
+                'species_prob': prob_val,
                 'species_2nd' : fields[_IDX_2ND]     or pd.NA,
             })
 
