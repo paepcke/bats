@@ -5,7 +5,18 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-13 09:11:35
+# @Last Modified time: 2026-03-13 11:11:04
+#
+# **********************************************************
+
+#!/usr/bin/env python
+# **********************************************************
+#
+# @Author: Andreas Paepcke
+# @Date:   2026-03-11 15:59:39
+# @File:   sono_batch_processing.py
+# @Last Modified by:   Andreas Paepcke
+# @Last Modified time: 2026-03-13
 #
 # **********************************************************
 
@@ -44,9 +55,11 @@ This module:
    extend beyond the current maximum.
 6. Writes three output files:
 
-   ``<out_csv>``
+   ``<out_path>``
        One row per chirp with all measures plus ``species``,
        ``species_prob``, ``species_2nd``, and integer ``file_id``.
+       Written as ``.feather`` (fast, compact) when ``use_feather=True``,
+       otherwise as ``.csv``.
 
    ``<stem>_filename_to_id.csv``
        ``Filename`` to ``file_id`` lookup table for joins with other
@@ -156,6 +169,15 @@ _IDX_SPPACCP:  int = _SONOBATCH_COLS.index('SppAccp')
 _IDX_PROB:     int = _SONOBATCH_COLS.index('Prob')
 _IDX_2ND:      int = _SONOBATCH_COLS.index('2nd')
 
+# Parameters-file columns that carry no information for a classifier:
+#   Path / ParentDir / NextDirUp  — stale Windows paths, redundant with Filename
+#   Version / Filter              — SonoBat run constants, identical across all rows
+#   Preemphasis / MaxSegLnght     — additional run-configuration constants
+_COLS_TO_DROP: frozenset[str] = frozenset([
+    'Path', 'ParentDir', 'NextDirUp',
+    'Version', 'Filter', 'Preemphasis', 'MaxSegLnght',
+])
+
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -238,6 +260,12 @@ class SpeciesLabeler:
                         When provided, existing ``file_id`` integers are
                         preserved and new filenames are assigned ids that
                         extend beyond the prior maximum.
+    :param use_feather: If ``True``, write the chirp output as a ``.feather``
+                        file instead of ``.csv``.  Feather is typically 5-10x
+                        faster to write and read and roughly half the size for
+                        this kind of numeric-heavy DataFrame.  The
+                        ``filename_to_id`` and ``config`` sidecar files are
+                        always written as CSV regardless of this flag.
     """
 
     def __init__(
@@ -247,12 +275,14 @@ class SpeciesLabeler:
         recursive:  bool                 = False,
         done_csv:   Optional[str | Path] = None,
         id_map_csv: Optional[str | Path] = None,
+        use_feather: bool                = False,
     ) -> None:
-        self.inputs     = [Path(p) for p in inputs]
-        self.out_csv    = Path(out_csv)
-        self.recursive  = recursive
-        self.done_csv   = Path(done_csv)   if done_csv   else None
-        self.id_map_csv = Path(id_map_csv) if id_map_csv else None
+        self.inputs      = [Path(p) for p in inputs]
+        self.out_csv     = Path(out_csv)
+        self.recursive   = recursive
+        self.done_csv    = Path(done_csv)   if done_csv   else None
+        self.id_map_csv  = Path(id_map_csv) if id_map_csv else None
+        self.use_feather = use_feather
 
     # ------------------------------------------------------------------ #
     #  File discovery                                                     #
@@ -413,6 +443,12 @@ class SpeciesLabeler:
         df['Filename'] = df['Filename'].str.replace(
             r'\.wav$', '', regex=True, case=False
         )
+
+        # Drop columns that are redundant or carry no classifier signal.
+        df.drop(
+            columns=[c for c in _COLS_TO_DROP if c in df.columns],
+            inplace=True,
+        )
         return df
 
     # ------------------------------------------------------------------ #
@@ -486,15 +522,23 @@ class SpeciesLabeler:
 
         if new_names:
             next_id  = int(prior['file_id'].max()) + 1 if len(prior) else 0
+            log.info(
+                f'  Assigning ids {next_id:,} .. '
+                f'{next_id + len(new_names) - 1:,} '
+                f'to {len(new_names):,} new Filenames'
+            )
             new_rows = pd.DataFrame({
                 'Filename': new_names,
                 'file_id' : range(next_id, next_id + len(new_names)),
             })
             full_map = pd.concat([prior, new_rows], ignore_index=True)
         else:
+            log.info('  All Filenames already mapped — no new ids needed')
             full_map = prior.copy()
 
+        log.info(f'  Merging file_id into {len(df):,} chirp rows ...')
         df = df.merge(full_map[['Filename', 'file_id']], on='Filename', how='left')
+        log.info('  file_id merge complete')
         return df, full_map
 
     # ------------------------------------------------------------------ #
@@ -603,7 +647,9 @@ class SpeciesLabeler:
                 elapsed_secs       = time.perf_counter() - _t0,
             )
 
+        log.info(f'Concatenating {len(all_chirps):,} per-night DataFrames ...')
         chirps_df          = pd.concat(all_chirps, ignore_index=True)
+        log.info(f'Concat complete: {len(chirps_df):,} chirp rows')
         n_chirps_raw       = len(chirps_df)
         n_chirps_labeled   = int(chirps_df['species'].notna().sum())
         n_chirps_unlabeled = n_chirps_raw - n_chirps_labeled
@@ -615,27 +661,54 @@ class SpeciesLabeler:
             )
 
         # ---- Stable integer file_id ---------------------------------- #
+        log.info('Assigning stable file_id integers ...')
         chirps_df, full_map = self._assign_file_ids(chirps_df, self.id_map_csv)
 
         # ---- Write output -------------------------------------------- #
         self.out_csv.parent.mkdir(parents=True, exist_ok=True)
-        stem         = str(self.out_csv).removesuffix('.csv')
-        id_map_path  = Path(stem + '_filename_to_id.csv')
-        config_path  = Path(stem + '_config.csv')
 
-        # Append to existing CSV on incremental runs; write fresh otherwise.
+        # Derive stem regardless of whether the extension is .csv or .feather.
+        out_str = str(self.out_csv)
+        for ext in ('.feather', '.csv'):
+            if out_str.endswith(ext):
+                stem = out_str[: -len(ext)]
+                break
+        else:
+            stem = out_str
+
+        id_map_path = Path(stem + '_filename_to_id.csv')
+        config_path = Path(stem + '_config.csv')
+
+        # Resolve the actual output path — honour use_feather regardless of
+        # what extension the caller put on out_csv.
+        if self.use_feather:
+            out_path = Path(stem + '.feather')
+        else:
+            out_path = Path(stem + '.csv')
+
         is_incremental = bool(
-            self.done_csv and self.done_csv.exists() and self.out_csv.exists()
+            self.done_csv and self.done_csv.exists() and out_path.exists()
         )
-        write_mode   = 'a' if is_incremental else 'w'
-        write_header = not is_incremental
 
-        chirps_df.to_csv(
-            self.out_csv, mode=write_mode, header=write_header, index=False
+        log.info(
+            f'{"Appending" if is_incremental else "Writing"} '
+            f'{len(chirps_df):,} chirp rows to {out_path} ...'
         )
+        if self.use_feather:
+            if is_incremental:
+                import pyarrow.feather as feather
+                prior_df = feather.read_feather(out_path)
+                combined = pd.concat([prior_df, chirps_df], ignore_index=True)
+                feather.write_feather(combined, out_path)
+            else:
+                chirps_df.reset_index(drop=True).to_feather(out_path)
+        else:
+            write_mode   = 'a' if is_incremental else 'w'
+            write_header = not is_incremental
+            chirps_df.to_csv(out_path, mode=write_mode, header=write_header, index=False)
         log.info(
             f'{"Appended" if is_incremental else "Wrote"} '
-            f'{len(chirps_df):,} chirp rows to {self.out_csv}'
+            f'{len(chirps_df):,} chirp rows to {out_path}'
         )
 
         full_map.to_csv(id_map_path, index=False)
@@ -654,7 +727,7 @@ class SpeciesLabeler:
         log.info(f'Wrote config to {config_path}')
 
         return LabelingResult(
-            out_csv            = self.out_csv.resolve(),
+            out_csv            = out_path.resolve(),
             n_sonobatch_files  = len(sonobatch_files),
             n_fragments        = n_fragments_total,
             n_chirps_raw       = n_chirps_raw,
@@ -727,6 +800,16 @@ def _parse_args():
             'file_ids are preserved; new Filenames extend the sequence.'
         ),
     )
+    parser.add_argument(
+        '-f', '--use-feather',
+        action='store_true',
+        help=(
+            'Write the chirp output as a .feather file instead of .csv.\n'
+            'Feather is typically 5-10x faster to write/read and about\n'
+            'half the size for numeric-heavy DataFrames.  The sidecar\n'
+            'filename_to_id and config files are always written as CSV.'
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -753,11 +836,12 @@ def main() -> None:
     args = _parse_args()
 
     labeler = SpeciesLabeler(
-        inputs     = args.inputs,
-        out_csv    = args.out_csv,
-        recursive  = args.recursive,
-        done_csv   = args.done_csv,
-        id_map_csv = args.id_map_csv,
+        inputs      = args.inputs,
+        out_csv     = args.out_csv,
+        recursive   = args.recursive,
+        done_csv    = args.done_csv,
+        id_map_csv  = args.id_map_csv,
+        use_feather = args.use_feather,
     )
 
     result = labeler.run()

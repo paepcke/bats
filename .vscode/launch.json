@@ -361,8 +361,20 @@
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
+        },
+        {
+            "name": "Python: report species distribution in a species-augmented measures df",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/species_distribution_reporting.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${env:HOME}/tmp/sonobat3_2_species_ids.csv",
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
         }
-
     ],
     "debug.defaultConfiguration": "Python: Test Explorer (unittests)"
 }
