@@ -363,6 +363,21 @@
             "justMyCode": false
         },
         {
+            "name": "Python: filtered pager for dataframe",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/fmore_measures.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${env:HOME}/tmp/sonobat3_2_species_ids.feather",
+                "--filter", "species == 'Tabr'",
+                "--columns", "Filename", "species"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false,
+        },
+        {
             "name": "Python: report species distribution and confusion explanations",
             "type": "debugpy",
             "request": "launch",
