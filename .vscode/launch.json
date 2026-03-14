@@ -372,6 +372,7 @@
             "args": [
                 "${env:HOME}/tmp/sonobat3_2_species_ids.feather",
                 "--confusion-matrix-csv", "${env:HOME}/VSCodeWorkspaces/bats/tmp/random_forest_results/confusion_matrix.csv",
+                "--species-pairs", "Myca", "Myyu", "Myth", "Myev",
                 "--out-dir", "${env:HOME}/VSCodeWorkspaces/bats/tmp/measures_distrib_exploration",
                 "--action", "univariate-overlap", "multivariate-overlap", "umap"
             ],

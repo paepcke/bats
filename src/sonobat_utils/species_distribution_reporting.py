@@ -4,8 +4,9 @@
 # @Date:   2026-03-13 10:08:55
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/species_distribution_reporting.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-14 09:14:16
+# @Last Modified time: 2026-03-14 10:49:26
 # **********************************************************
+
 
 """
 Analyse and report species distributions in a chirp-level measures DataFrame.
@@ -65,7 +66,17 @@ Typical Usage
         --confusion-matrix-csv confusion_matrix.csv \\
         --top-n-pairs 3 \\
         --out-dir ./overlap_reports
-"""
+
+    Poorest classifications from the confusion matrix plus
+    comparison between Myca/Myyu and Myth/Myev:
+
+    python species_distribution_reporting.py data.feather \
+       --action univariate-overlap multivariate-overlap \
+       --confusion-matrix-csv confusion_matrix.csv \
+       --top-n-pairs 3 \
+       --species-pairs Myca Myyu Myth Myev \
+       --out-dir ./overlap_reports        
+   """
 
 import os
 import sys
@@ -637,8 +648,11 @@ class SpeciesOverlapAnalyzer:
         labels = np.array([sp_a] * len(X_a) + [sp_b] * len(X_b))
 
         log.info(f'  Fitting UMAP on {len(X):,} points x {X.shape[1]} features ...')
-        reducer   = umap.UMAP(n_components=n_components, random_state=42,
-                              n_jobs=-1)
+        reducer   = umap.UMAP(n_components=n_components, random_state=42)
+        # This commented version runs multi-threaded, but is
+        # not reproducible:
+        #reducer   = umap.UMAP(n_components=n_components, random_state=42,
+        #                      n_jobs=-1)
         embedding = reducer.fit_transform(X)
         log.info('  UMAP fit complete')
 
@@ -794,7 +808,8 @@ def _parse_args():
         metavar='CSV',
         help=(
             'Normalised confusion matrix CSV produced by\n'
-            'species_pred_random_forest.py.  Required for overlap actions.'
+            'species_pred_random_forest.py.  Required for overlap actions\n'
+            'unless --species-pairs is also provided.'
         ),
     )
     parser.add_argument(
@@ -803,6 +818,20 @@ def _parse_args():
         default=5,
         metavar='N',
         help='Number of worst-confused species pairs to analyse (default: 5).',
+    )
+    parser.add_argument(
+        '--species-pairs',
+        nargs='+',
+        default=[],
+        metavar='SPECIES',
+        help=(
+            'Explicit species pairs to analyse, given as a flat even-length\n'
+            'space-separated list of species codes:\n'
+            '  --species-pairs Myca Myyu Lano Tabr\n'
+            'analyses Myca/Myyu and Lano/Tabr.  May be combined with\n'
+            '--confusion-matrix-csv; the resulting pairs are unioned.\n'
+            'Satisfies the overlap-action source requirement on its own.'
+        ),
     )
     parser.add_argument(
         '--n-sample',
@@ -824,18 +853,28 @@ def _parse_args():
 
     # Post-parse validation.
     overlap_requested = [a for a in args.action if a in _OVERLAP_ACTIONS]
-    if overlap_requested and not args.confusion_matrix_csv:
-        parser.error(
-            f'--confusion-matrix-csv is required for overlap actions: '
-            f'{", ".join(overlap_requested)}'
-        )
+
+    if overlap_requested:
+        has_cm_source     = bool(args.confusion_matrix_csv)
+        has_pair_source   = bool(args.species_pairs)
+        if not has_cm_source and not has_pair_source:
+            parser.error(
+                f'Overlap actions ({", ".join(overlap_requested)}) require '
+                f'at least one of --confusion-matrix-csv or --species-pairs.'
+            )
+        if args.species_pairs and len(args.species_pairs) % 2 != 0:
+            parser.error(
+                f'--species-pairs requires an even number of species codes; '
+                f'got {len(args.species_pairs)}.'
+            )
+
     if args.confusion_matrix_csv and not Path(args.confusion_matrix_csv).exists():
         parser.error(
             f'Confusion matrix file not found: {args.confusion_matrix_csv}'
         )
 
-    args.input   = Path(args.input)
-    args.out_dir = Path(args.out_dir)
+    args.input    = Path(args.input)
+    args.out_dir  = Path(args.out_dir)
     args.n_sample = args.n_sample if args.n_sample > 0 else None
     return args
 
@@ -873,16 +912,40 @@ def main() -> None:
         else:
             log.warn(f'Unhandled action: {action}')
 
-    # Overlap actions — load pairs once, run all requested analyses per pair.
+    # Overlap actions — assemble pairs from both sources, then run.
     if overlap_actions:
-        pairs = _worst_pairs(
-            Path(args.confusion_matrix_csv),
-            top_n=args.top_n_pairs,
-        )
-        log.info(
-            f'Top {len(pairs)} confused pairs: '
-            + '  '.join(f'{a}/{b} ({r:.3f})' for a, b, r in pairs)
-        )
+        pairs: list[tuple[str, str, float]] = []
+
+        # Pairs from confusion matrix (ranked by confusion rate).
+        if args.confusion_matrix_csv:
+            cm_pairs = _worst_pairs(
+                Path(args.confusion_matrix_csv),
+                top_n=args.top_n_pairs,
+            )
+            log.info(
+                f'Top {len(cm_pairs)} confused pairs from confusion matrix: '
+                + '  '.join(f'{a}/{b} ({r:.3f})' for a, b, r in cm_pairs)
+            )
+            pairs.extend(cm_pairs)
+
+        # Explicit pairs from --species-pairs (confusion rate reported as NaN).
+        if args.species_pairs:
+            sp = args.species_pairs
+            explicit = [
+                (sp[i], sp[i + 1], float('nan'))
+                for i in range(0, len(sp), 2)
+            ]
+            # Union: skip any pair already present from the confusion matrix.
+            existing = {(a, b) for a, b, _ in pairs} | {(b, a) for a, b, _ in pairs}
+            new_explicit = [(a, b, r) for a, b, r in explicit
+                            if (a, b) not in existing]
+            if new_explicit:
+                log.info(
+                    f'Adding {len(new_explicit)} explicit pair(s): '
+                    + '  '.join(f'{a}/{b}' for a, b, _ in new_explicit)
+                )
+            pairs.extend(new_explicit)
+
         analyzer = SpeciesOverlapAnalyzer(
             df       = df,
             out_dir  = args.out_dir,
