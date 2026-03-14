@@ -36,6 +36,7 @@ dependencies = [
     "torchaudio>=2.2.2",
     "tqdm==4.66.2",
     "typing_extensions>=4.12.2",
+    "umap-learn>=0.5.11",
     #"pantab>=5.2.2",
 ]
 

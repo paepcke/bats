@@ -363,7 +363,7 @@
             "justMyCode": false
         },
         {
-            "name": "Python: report species distribution in a species-augmented measures df",
+            "name": "Python: report species distribution and confusion explanations",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/src/sonobat_utils/species_distribution_reporting.py",
@@ -371,7 +371,9 @@
             "console": "integratedTerminal",
             "args": [
                 "${env:HOME}/tmp/sonobat3_2_species_ids.feather",
-                "--out-dir", "${env:HOME}/tmp/sequence_species_purity"
+                "--confusion-matrix-csv", "${env:HOME}/VSCodeWorkspaces/bats/tmp/random_forest_results/confusion_matrix.csv",
+                "--out-dir", "${env:HOME}/VSCodeWorkspaces/bats/tmp/measures_distrib_exploration",
+                "--action", "univariate-overlap", "multivariate-overlap", "umap"
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false,
