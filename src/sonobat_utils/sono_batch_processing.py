@@ -5,7 +5,7 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-13 13:03:56
+# @Last Modified time: 2026-03-13 17:56:49
 #
 # **********************************************************
 
@@ -172,6 +172,7 @@ _SPECIES_RE = re.compile(r'^[A-Z][a-z]{3}$')
 _COLS_TO_DROP: frozenset[str] = frozenset([
     'Path', 'ParentDir', 'NextDirUp',
     'Version', 'Filter', 'Preemphasis', 'MaxSegLnght',
+    'MinAccpQuality', 'MaxSegLngth', 'Max#CallsConsidered'
 ])
 
 

@@ -371,6 +371,7 @@
             "console": "integratedTerminal",
             "args": [
                 "${env:HOME}/tmp/sonobat3_2_species_ids.feather",
+                "--out-dir", "${env:HOME}/tmp/sequence_species_purity"
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false,
