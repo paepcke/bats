@@ -1,12 +1,13 @@
- # **********************************************************
- #
- # @Author: Andreas Paepcke
- # @Date:   2026-03-14 11:45:56
- # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/fmore_measures.py
- # @Last Modified by:   Andreas Paepcke
- # @Last Modified time: 2026-03-14 13:34:47
- #
- # **********************************************************
+#!/usr/bin/env python
+# **********************************************************
+#
+# @Author: Andreas Paepcke
+# @Date:   2026-03-14 11:45:56
+# @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/fmore_measures.py
+# @Last Modified by:   Andreas Paepcke
+# @Last Modified time: 2026-03-14 14:20:25
+#
+# **********************************************************
 
 """
 A simple CLI level 'more' utility to show successive rows of
