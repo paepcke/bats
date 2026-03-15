@@ -5,7 +5,7 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 12:27:45
+# @Last Modified time: 2026-03-15 16:25:16
 #
 # **********************************************************
 
@@ -176,9 +176,23 @@ _IDX_2ND:      int = _SONOBATCH_COLS.index('2nd')
 # no identification.
 _SPECIES_RE = re.compile(r'^[A-Z][a-z]{3}$')
 
-# Regex to extract HHMMSS from a fragment stem such as
-# 'bats-20220706_003959_2secs' → group(1) = '003959'
-_FRAG_TS_RE = re.compile(r'\d{8}_(\d{6})')
+# Regex to extract YYYYMMDD_HHMMSS from a fragment stem such as
+# 'bats-20220706_003959_2secs' → group(0) = '20220706_003959'
+# group(1) = '20220706', group(2) = '003959'
+_FRAG_TS_RE = re.compile(r'(\d{8})_(\d{6})')
+
+# Map from feather Filename prefix to canonical site name.
+# 'barn-' and 'bats-' are both the barn roost site; the 'bats-' prefix
+# was accidentally used during some lake2 SonoBat runs on the Windows VMs.
+# Site is extracted from the matched_wav path in the match report (ground
+# truth) rather than from the feather prefix, but we still need to map the
+# feather prefix to a site for the compound join key.
+_PREFIX_TO_SITE: dict[str, str] = {
+    'barn':  'barn',
+    'bats':  'barn',    # accidental prefix used during lake2 batch runs
+    'lake2': 'lake2',
+    'lake':  'lake2',
+}
 
 # Parameters-file columns that carry no information for a classifier:
 #   Path / ParentDir / NextDirUp  — stale Windows paths, redundant with Filename
@@ -530,8 +544,11 @@ class SpeciesLabeler:
         Midnight-spanning recordings (fragment timestamp < recording start
         timestamp) are handled by adding 86,400 seconds to the difference.
 
-        Rows whose ``Filename`` has no entry in *match_df* (the 2 unmatched
-        fragments) receive ``NaN``.
+        Rows whose compound key (timestamp + site) has no entry in
+        *match_df* receive ``NaN``.  The compound key guards against
+        false joins when multiple detectors record simultaneously at
+        different sites, and against the accidental ``bats-`` prefix
+        used during some lake2 batch runs on the Windows VMs.
 
         :param chirps_df: Chirp-level DataFrame containing ``Filename`` and
                           ``TimeInFile`` columns.
@@ -541,31 +558,83 @@ class SpeciesLabeler:
         :return:          Series of float millisecond values, aligned to
                           ``chirps_df.index``.
         """
-        # Build Filename → recording_start_time lookup (HHMMSS string).
-        rec_start_map: dict[str, str] = (
-            match_df[['Filename', 'recording_start_time']]
-            .dropna(subset=['recording_start_time'])
-            .drop_duplicates('Filename')
-            .set_index('Filename')['recording_start_time']
-            .astype(str)
-            .to_dict()
-        )
+        # ── Build compound key → recording_start_time lookup ──────────────
+        # The join key is YYYYMMDD_HHMMSS + site, where site is extracted
+        # from the matched_wav path (ground truth) in the match report.
+        # A pure timestamp join is unsafe because multiple detectors at
+        # different Jasper Ridge sites can record simultaneously, and because
+        # the feather's Filename prefix ('barn-' vs 'bats-') is unreliable
+        # due to accidental prefix use during Windows VM batch runs.
 
-        result = pd.Series(pd.NA, index=chirps_df.index, dtype='Float64')
+        def _site_from_wav_path(wav_path: str) -> str:
+            """Extract canonical site keyword from a full recording path."""
+            p = str(wav_path).lower()
+            for kw in ('lake2', 'barn', 'lake', 'jasper'):
+                if kw in p:
+                    return kw
+            return 'unknown'
 
-        for idx, row in chirps_df[['Filename', 'TimeInFile']].iterrows():
-            fname    = row['Filename']
-            time_inf = row['TimeInFile']
+        def _site_from_feather_stem(stem: str) -> str:
+            """Map feather Filename prefix to canonical site name."""
+            s = str(stem).lower()
+            for prefix, site in _PREFIX_TO_SITE.items():
+                if s.startswith(prefix):
+                    return site
+            return 'unknown'
 
-            # Extract fragment HHMMSS from Filename stem.
-            m = _FRAG_TS_RE.search(str(fname))
+        def _compound_key_from_stem(stem: str, site: str) -> Optional[str]:
+            """Return 'YYYYMMDD_HHMMSS_<site>' or None."""
+            m = _FRAG_TS_RE.search(str(stem))
+            if not m:
+                return None
+            return f'{m.group(1)}_{m.group(2)}_{site}'
+
+        # Build compound_key → (recording_start_time HHMMSS) lookup
+        # using site extracted from the matched_wav path.
+        rec_start_map: dict[str, str] = {}
+        for _, mrow in match_df.iterrows():
+            fname     = str(mrow.get('Filename', ''))
+            rec_start = str(mrow.get('recording_start_time', ''))
+            wav_path  = str(mrow.get('matched_wav', ''))
+            if not fname or not rec_start or rec_start in ('nan', ''):
+                continue
+            site = _site_from_wav_path(wav_path)
+            m    = _FRAG_TS_RE.search(fname)
             if not m:
                 continue
-            frag_hhmmss = m.group(1)
+            key = f'{m.group(1)}_{m.group(2)}_{site}'
+            rec_start_map[key] = rec_start
 
-            rec_start = rec_start_map.get(fname)
+        log.info(
+            f'  Built {len(rec_start_map):,} compound-key lookup entries '
+            f'(YYYYMMDD_HHMMSS_site → recording_start_time)'
+        )
+
+        # ── Vectorised computation ─────────────────────────────────────────
+        # Build arrays aligned to chirps_df for fast computation.
+        filenames    = chirps_df['Filename'].astype(str).values
+        time_in_file = pd.to_numeric(
+            chirps_df['TimeInFile'], errors='coerce'
+        ).values
+
+        result_vals = [pd.NA] * len(chirps_df)
+
+        for i, (fname, tif) in enumerate(zip(filenames, time_in_file)):
+            if pd.isna(tif):
+                continue
+            site = _site_from_feather_stem(fname)
+            key  = _compound_key_from_stem(fname, site)
+            if key is None:
+                continue
+            rec_start = rec_start_map.get(key)
             if rec_start is None:
                 continue
+
+            # Extract fragment HHMMSS from the key (last 6 chars before site).
+            m = _FRAG_TS_RE.search(fname)
+            if not m:
+                continue
+            frag_hhmmss = m.group(2)
 
             frag_secs = SpeciesLabeler._hhmmss_to_seconds(frag_hhmmss)
             rec_secs  = SpeciesLabeler._hhmmss_to_seconds(rec_start)
@@ -573,18 +642,15 @@ class SpeciesLabeler:
                 continue
 
             diff_secs = frag_secs - rec_secs
-            # Handle midnight crossing.
             if diff_secs < 0:
                 diff_secs += 86_400
+            # Cap at recording max length to catch midnight-crossing artefacts.
+            if diff_secs > 55:
+                diff_secs = 0
 
-            try:
-                time_in_file = float(time_inf)
-            except (TypeError, ValueError):
-                continue
+            result_vals[i] = diff_secs * 1000.0 + float(tif)
 
-            result[idx] = diff_secs * 1000.0 + time_in_file
-
-        return result
+        return pd.array(result_vals, dtype='Float64')
 
     # ------------------------------------------------------------------ #
     #  Done-set helper                                                    #
@@ -1025,4 +1091,4 @@ def main() -> None:
 
 # ------------------- Main Section --------------
 if __name__ == '__main__':
-    main()    
+    main()
