@@ -4,7 +4,7 @@
 # @Date:   2026-03-14 19:02:24
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/wav_path_resolver.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 12:57:23
+# @Last Modified time: 2026-03-15 13:13:07
 # **********************************************************
 
 """
@@ -554,8 +554,7 @@ class WavPathResolver:
         # are not silently dropped when the CSV is read back by pandas.
         for col in ('fragment_time', 'recording_start_time'):
             match_df[col] = (match_df[col].astype(str)
-                                          .str.zfill(6)
-                                          .replace('000000', ''))
+                                          .str.zfill(6))
         match_path = self.out_dir / 'match_report.csv'
         match_df.to_csv(match_path, index=False, quoting=1)  # quoting=1 = QUOTE_ALL
         log.info(f'Wrote {len(match_df):,} rows to {match_path}')
