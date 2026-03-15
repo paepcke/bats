@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 10:36:08
+# @Last Modified time: 2026-03-15 11:32:31
 # **********************************************************
 
 """
@@ -120,12 +120,13 @@ log = LoggingService()
 # Constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_WINDOW_MS:     float = 50.0
+_DEFAULT_PRE_MS:        float = 3.0    # ms before chirp onset
+_DEFAULT_POST_MS:       float = 17.0   # ms after chirp onset (captures FM sweep tail)
 _DEFAULT_FREQ_LO_KHZ:  float = 15.0
 _DEFAULT_FREQ_HI_KHZ:  float = 80.0
 _DEFAULT_IMG_SIZE:      int   = 224
 _DEFAULT_MIN_PROB:      float = 0.80
-_DEFAULT_DYNAMIC_RANGE: float = 60.0   # dB — log-power normalisation range
+_DEFAULT_DYNAMIC_RANGE: float = 40.0   # dB — tighter range suppresses noise floor
 _DEFAULT_WORKERS:       int   = max(1, (os.cpu_count() or 4) - 2)
 _STFT_WINDOW_MS:        float = 0.25   # same as chirp_measures_extraction.py
 
@@ -186,7 +187,8 @@ class SpectroExtractionResult:
 def _chirp_to_spectro(
     wav_path:      str,
     time_ms:       float,
-    window_ms:     float,
+    pre_ms:        float,
+    post_ms:       float,
     freq_lo_hz:    float,
     freq_hi_hz:    float,
     img_size:      int,
@@ -197,29 +199,37 @@ def _chirp_to_spectro(
     spectrogram image as a uint8 numpy array of shape
     ``(img_size, img_size)``.
 
+    The window runs from ``time_ms - pre_ms`` to ``time_ms + post_ms``.
+    Asymmetric defaults (3ms pre, 17ms post) capture the full FM sweep
+    descent that follows chirp onset without admitting excess pre-call noise.
+
+    Normalisation anchors on the peak-power frame in the bat band rather
+    than the window maximum, preventing noise spikes outside the call from
+    compressing the call signal into the gray midrange.
+
     Uses ``soundfile`` for seek-based partial reads when available,
     falling back to ``scipy.io.wavfile`` (full file load) otherwise.
 
     :param wav_path:      Path to the full-recording ``.wav`` file.
     :param time_ms:       Chirp onset within the recording (ms).
-    :param window_ms:     Total window duration centred on onset (ms).
+    :param pre_ms:        Ms of audio before chirp onset.
+    :param post_ms:       Ms of audio after chirp onset.
     :param freq_lo_hz:    Lower frequency bound for spectrogram (Hz).
     :param freq_hi_hz:    Upper frequency bound for spectrogram (Hz).
     :param img_size:      Output image size in pixels (square).
-    :param dynamic_range: Log-power normalisation range (dB).
+    :param dynamic_range: Log-power normalisation range (dB).  Tighter
+                          values (e.g. 40 dB) suppress noisy backgrounds.
     :return:              uint8 array of shape ``(img_size, img_size)``,
                           or ``None`` on any error.
     """
     try:
-        half_ms = window_ms / 2.0
-
         if _SF_AVAILABLE:
             with sf.SoundFile(wav_path) as f:
                 sr = f.samplerate
                 total_frames = len(f)
-                # Centre window on onset; clamp to file boundaries.
-                start_s  = max(0.0, (time_ms - half_ms) / 1000.0)
-                end_s    = min(total_frames / sr, (time_ms + half_ms) / 1000.0)
+                start_s  = max(0.0, (time_ms - pre_ms)  / 1000.0)
+                end_s    = min(total_frames / sr,
+                               (time_ms + post_ms) / 1000.0)
                 start_fr = int(start_s * sr)
                 n_frames = int((end_s - start_s) * sr)
                 if n_frames < 4:
@@ -241,8 +251,9 @@ def _chirp_to_spectro(
             else:
                 raw = raw.astype(np.float32)
             sr = sr_raw
-            start_fr = max(0, int((time_ms - half_ms) / 1000.0 * sr))
-            end_fr   = min(len(raw), int((time_ms + half_ms) / 1000.0 * sr))
+            start_fr = max(0, int((time_ms - pre_ms)  / 1000.0 * sr))
+            end_fr   = min(len(raw),
+                           int((time_ms + post_ms) / 1000.0 * sr))
             audio    = raw[start_fr:end_fr]
 
         # Apply TE correction if needed (same threshold as MeasureExtractor).
@@ -267,18 +278,23 @@ def _chirp_to_spectro(
             return None
         Sxx_band = Sxx[band, :]
 
-        # ── Log-power normalisation → [0, 255] uint8 ──────────────────
-        # Convert to dB, clip to dynamic range, scale to 0-255.
-        # Small epsilon avoids log(0).
+        # ── Log-power normalisation anchored on call peak ──────────────
+        # Find the time frame of maximum total energy in the bat band.
+        # Anchoring on this frame's peak power prevents noise spikes
+        # elsewhere in the window from compressing the call signal.
+        peak_frame = int(np.argmax(Sxx_band.sum(axis=0)))
+        peak_power = float(Sxx_band[:, peak_frame].max())
+        if peak_power <= 0:
+            return None
+        db_ref   = 10.0 * np.log10(peak_power + 1e-12)
         eps      = 1e-12
         Sxx_db   = 10.0 * np.log10(Sxx_band + eps)
-        db_max   = Sxx_db.max()
-        db_floor = db_max - dynamic_range
-        Sxx_clip = np.clip(Sxx_db, db_floor, db_max)
+        db_floor = db_ref - dynamic_range
+        Sxx_clip = np.clip(Sxx_db, db_floor, db_ref)
         Sxx_norm = ((Sxx_clip - db_floor) / dynamic_range * 255.0).astype(np.uint8)
 
-        # Frequency axis: low freq at bottom → flip so low freq is at bottom
-        # of image (PIL origin is top-left, so we flip vertically).
+        # Frequency axis: flip so low frequencies are at the image bottom
+        # (PIL origin is top-left).
         Sxx_norm = np.flipud(Sxx_norm)
 
         # ── Resize to img_size × img_size ─────────────────────────────
@@ -288,6 +304,7 @@ def _chirp_to_spectro(
 
     except Exception:
         return None
+
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +328,8 @@ class ChirpSpectroExtractor:
                             :class:`~wav_path_resolver.WavPathResolver`.
     :param out_dir:         Root output directory for PNG crops.
     :param min_prob:        Minimum ``species_prob`` to include a chirp.
-    :param window_ms:       Crop window duration in ms, centred on chirp onset.
+    :param pre_ms:          Ms of audio before chirp onset (default 3ms).
+    :param post_ms:         Ms of audio after chirp onset (default 17ms).
     :param freq_lo_khz:     Lower frequency bound for spectrogram (kHz).
     :param freq_hi_khz:     Upper frequency bound for spectrogram (kHz).
     :param img_size:        Output PNG size in pixels (square).
@@ -328,7 +346,8 @@ class ChirpSpectroExtractor:
         match_csv:      str | Path,
         out_dir:        str | Path,
         min_prob:       float          = _DEFAULT_MIN_PROB,
-        window_ms:      float          = _DEFAULT_WINDOW_MS,
+        pre_ms:         float          = _DEFAULT_PRE_MS,
+        post_ms:        float          = _DEFAULT_POST_MS,
         freq_lo_khz:    float          = _DEFAULT_FREQ_LO_KHZ,
         freq_hi_khz:    float          = _DEFAULT_FREQ_HI_KHZ,
         img_size:       int            = _DEFAULT_IMG_SIZE,
@@ -340,7 +359,8 @@ class ChirpSpectroExtractor:
         self.match_csv     = Path(match_csv)
         self.out_dir       = Path(out_dir)
         self.min_prob      = min_prob
-        self.window_ms     = window_ms
+        self.pre_ms        = pre_ms
+        self.post_ms       = post_ms
         self.freq_lo_hz    = freq_lo_khz * 1000.0
         self.freq_hi_hz    = freq_hi_khz * 1000.0
         self.img_size      = img_size
@@ -370,6 +390,10 @@ class ChirpSpectroExtractor:
         """
         log.info(f'Loading feather: {self.feather_path} ...')
         df = pd.read_feather(self.feather_path)
+        # Strip Windows CRLF artefacts from string columns.
+        for _col in ('Filename', 'species', 'species_prob'):
+            if _col in df.columns and df[_col].dtype == object:
+                df[_col] = df[_col].astype(str).str.strip()
         log.info(f'  {len(df):,} total chirp rows')
 
         log.info(f'Loading match report: {self.match_csv} ...')
@@ -445,7 +469,7 @@ class ChirpSpectroExtractor:
     #  Main entry point                                                   #
     # ------------------------------------------------------------------ #
 
-    def run(self) -> SpectroExtractionResult:
+    def run(self) -> ExtractionResult:
         """
         Extract spectrogram crops for all qualifying chirps and write PNGs
         plus a manifest CSV.
@@ -567,7 +591,8 @@ class ChirpSpectroExtractor:
                         _chirp_to_spectro,
                         row['matched_wav'],
                         float(row['TimeInFile']),
-                        self.window_ms,
+                        self.pre_ms,
+                        self.post_ms,
                         self.freq_lo_hz,
                         self.freq_hi_hz,
                         self.img_size,
@@ -625,7 +650,8 @@ class ChirpSpectroExtractor:
             {'parameter': 'feather_path',   'value': str(self.feather_path)},
             {'parameter': 'match_csv',      'value': str(self.match_csv)},
             {'parameter': 'min_prob',       'value': self.min_prob},
-            {'parameter': 'window_ms',      'value': self.window_ms},
+            {'parameter': 'pre_ms',         'value': self.pre_ms},
+            {'parameter': 'post_ms',        'value': self.post_ms},
             {'parameter': 'freq_lo_khz',    'value': self.freq_lo_hz / 1000},
             {'parameter': 'freq_hi_khz',    'value': self.freq_hi_hz / 1000},
             {'parameter': 'img_size',       'value': self.img_size},
@@ -705,11 +731,18 @@ def _parse_args():
         help=f'Minimum species_prob to include (default: {_DEFAULT_MIN_PROB}).',
     )
     parser.add_argument(
-        '--window-ms',
+        '--pre-ms',
         type=float,
-        default=_DEFAULT_WINDOW_MS,
+        default=_DEFAULT_PRE_MS,
         metavar='MS',
-        help=f'Crop window in ms, centred on chirp onset (default: {_DEFAULT_WINDOW_MS}).',
+        help=f'Ms before chirp onset (default: {_DEFAULT_PRE_MS}).',
+    )
+    parser.add_argument(
+        '--post-ms',
+        type=float,
+        default=_DEFAULT_POST_MS,
+        metavar='MS',
+        help=f'Ms after chirp onset (default: {_DEFAULT_POST_MS}).',
     )
     parser.add_argument(
         '--freq-lo',
@@ -780,12 +813,13 @@ def main() -> None:
         match_csv     = args.matches,
         out_dir       = args.out_dir,
         min_prob      = args.min_prob,
-        window_ms     = args.window_ms,
+        pre_ms        = args.pre_ms,
+        post_ms       = args.post_ms,
         freq_lo_khz   = args.freq_lo,
         freq_hi_khz   = args.freq_hi,
         img_size      = args.img_size,
         dynamic_range = args.dynamic_range,
-        n_workers     = args.workers,
+        n_workers     = args.n_workers,
         match_quality = args.match_quality,
     )
 
@@ -796,4 +830,4 @@ def main() -> None:
 
 # ------------------- Main Section --------------
 if __name__ == '__main__':
-    main() 
+    main()
