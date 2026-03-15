@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 11:32:31
+# @Last Modified time: 2026-03-15 11:56:04
 # **********************************************************
 
 """
@@ -338,6 +338,16 @@ class ChirpSpectroExtractor:
     :param match_quality:   Accepted match quality values from match report.
                             Defaults to ``['window', 'nearest']``; pass
                             ``['window']`` to exclude fallback matches.
+    :param sample:          If > 0, stop after writing this many crops.
+                            Useful for quick visual inspection before a
+                            full run.  Combines with ``sample_species``
+                            and ``sample_partition``.
+    :param sample_species:  Restrict sampling to these species codes
+                            (e.g. ``['Myca', 'Tabr']``).  Ignored when
+                            ``sample == 0``.
+    :param sample_partition: Restrict sampling to this partition key
+                            (e.g. ``'20220706_bats'``).  Ignored when
+                            ``sample == 0``.
     """
 
     def __init__(
@@ -353,7 +363,10 @@ class ChirpSpectroExtractor:
         img_size:       int            = _DEFAULT_IMG_SIZE,
         dynamic_range:  float          = _DEFAULT_DYNAMIC_RANGE,
         n_workers:      int            = _DEFAULT_WORKERS,
-        match_quality:  Sequence[str]  = ('window', 'nearest'),
+        match_quality:      Sequence[str]  = ('window', 'nearest'),
+        sample:             int            = 0,
+        sample_species:     Sequence[str]  = (),
+        sample_partition:   str            = '',
     ) -> None:
         self.feather_path  = Path(feather_path)
         self.match_csv     = Path(match_csv)
@@ -366,7 +379,10 @@ class ChirpSpectroExtractor:
         self.img_size      = img_size
         self.dynamic_range = dynamic_range
         self.n_workers     = n_workers
-        self.match_quality = set(match_quality)
+        self.match_quality      = set(match_quality)
+        self.sample             = sample
+        self.sample_species     = list(sample_species)
+        self.sample_partition   = sample_partition
 
     # ------------------------------------------------------------------ #
     #  Data loading and preparation                                       #
@@ -469,7 +485,7 @@ class ChirpSpectroExtractor:
     #  Main entry point                                                   #
     # ------------------------------------------------------------------ #
 
-    def run(self) -> ExtractionResult:
+    def run(self) -> SpectroExtractionResult:
         """
         Extract spectrogram crops for all qualifying chirps and write PNGs
         plus a manifest CSV.
@@ -493,6 +509,44 @@ class ChirpSpectroExtractor:
         # ── Load and filter work items ─────────────────────────────────
         work_df = self._load_work_items()
         n_input = len(work_df)
+
+        # ── Sample-mode filters ───────────────────────────────────────
+        # Applied before the incremental skip so the sample reflects the
+        # requested subset, not whatever happens to be unprocessed.
+        if self.sample > 0:
+            if self.sample_partition:
+                # Assign partition keys temporarily for filtering.
+                import re as _re2
+                _dr2 = _re2.compile(r'(\d{8})')
+                _sk2 = ('barn', 'lake2', 'lake', 'jasper', 'bats')
+                def _pk2(fn):
+                    m = _dr2.search(fn)
+                    d = m.group(1) if m else 'unknown'
+                    s = next((k for k in _sk2 if k in fn.lower()), 'unknown')
+                    return f'{d}_{s}'
+                work_df = work_df[
+                    work_df['Filename'].apply(_pk2) == self.sample_partition
+                ].copy()
+                log.info(
+                    f'Sample partition filter: {len(work_df):,} rows '
+                    f'match partition "{self.sample_partition}"'
+                )
+            if self.sample_species:
+                work_df = work_df[
+                    work_df['species'].isin(self.sample_species)
+                ].copy()
+                log.info(
+                    f'Sample species filter: {len(work_df):,} rows '
+                    f'match species {self.sample_species}'
+                )
+            if len(work_df) > self.sample:
+                work_df = work_df.sample(
+                    n=self.sample, random_state=42
+                ).copy()
+            log.info(
+                f'Sample mode: will extract {len(work_df):,} crops then stop'
+            )
+            n_input = len(work_df)   # recount after sample filter
 
         # ── Incremental skip ──────────────────────────────────────────
         manifest_path = self.out_dir / 'manifest.csv'
@@ -656,8 +710,11 @@ class ChirpSpectroExtractor:
             {'parameter': 'freq_hi_khz',    'value': self.freq_hi_hz / 1000},
             {'parameter': 'img_size',       'value': self.img_size},
             {'parameter': 'dynamic_range',  'value': self.dynamic_range},
-            {'parameter': 'n_workers',      'value': self.n_workers},
-            {'parameter': 'match_quality',  'value': str(list(self.match_quality))},
+            {'parameter': 'n_workers',       'value': self.n_workers},
+            {'parameter': 'match_quality',   'value': str(list(self.match_quality))},
+            {'parameter': 'sample',          'value': self.sample},
+            {'parameter': 'sample_species',  'value': str(self.sample_species)},
+            {'parameter': 'sample_partition','value': self.sample_partition},
             {'parameter': 'n_chirps_input', 'value': n_input},
             {'parameter': 'n_crops_written','value': n_written},
             {'parameter': 'n_failed',       'value': n_failed},
@@ -780,6 +837,30 @@ def _parse_args():
         help=f'Parallel worker processes (default: {_DEFAULT_WORKERS}).',
     )
     parser.add_argument(
+        '--sample',
+        type=int,
+        default=0,
+        metavar='N',
+        help=(
+            'Stop after writing N crops (default: 0 = no limit).\n'
+            'Combine with --sample-species and --sample-partition\n'
+            'for fast visual inspection before a full run.'
+        ),
+    )
+    parser.add_argument(
+        '--sample-species',
+        nargs='+',
+        default=[],
+        metavar='SP',
+        help='Restrict sampling to these species codes, e.g. Myca Tabr.',
+    )
+    parser.add_argument(
+        '--sample-partition',
+        default='',
+        metavar='KEY',
+        help='Restrict sampling to this partition, e.g. 20220706_bats.',
+    )
+    parser.add_argument(
         '--window-only',
         action='store_true',
         help=(
@@ -820,7 +901,10 @@ def main() -> None:
         img_size      = args.img_size,
         dynamic_range = args.dynamic_range,
         n_workers     = args.n_workers,
-        match_quality = args.match_quality,
+        match_quality     = args.match_quality,
+        sample            = args.sample,
+        sample_species    = args.sample_species,
+        sample_partition  = args.sample_partition,
     )
 
     result = extractor.run()
