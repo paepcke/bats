@@ -4,70 +4,71 @@
 # @Date:   2026-03-14 19:02:24
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/wav_path_resolver.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-14 19:02:59
+# @Last Modified time: 2026-03-15 12:57:23
 # **********************************************************
 
 """
-Resolve each ``Filename`` stem in the SonoBat species feather file to the
-corresponding full-recording ``.wav`` path on disk.
+Resolve 2-second fragment stems to their parent full-recording ``.wav``
+paths using timestamp-based matching.
+
+This module is the **first step** in the spectrogram crop pipeline.  It
+requires no prior pipeline output — it discovers fragment stems directly by
+walking the fragment ``.wav`` directories, so it can run before
+``sono_batch_processing.py``.
+
+Pipeline order
+--------------
+::
+
+    1. wav_path_resolver.py       — fragment dirs  -> match_report.csv
+    2. sono_batch_processing.py   — SonoBatch txt  -> feather (with TimeInOrigRecording)
+    3. chirps_to_spectros.py      — feather + match -> spectrogram crops
 
 Background
 ----------
-The SonoBat pipeline was run on Windows VMs, causing the ``Filename`` column
-in ``sonobat3_2_species_ids.feather`` to carry location prefixes
-(``barn-``, ``lake2-``, ``bats-``) that do not reliably match the actual
-directory structure on disk.  The only stable identifier shared between the
-feather file and the original recordings is the **date + time** embedded in
-both filenames:
+The SonoBat pipeline was run on Windows VMs, causing fragment filename
+prefixes (``barn-``, ``lake2-``, ``bats-``) to not reliably match the actual
+directory structure on disk.  The only stable identifier is the **date + time**
+embedded in both the fragment stem and the original recording filename:
 
-* Fragment stem:    ``lake2_-20220427_192220_2secs``  → date ``20220427``, time ``192220``
-* Full recording:  ``barn1_D20220427T194240m165.wav`` → date ``20220427``, time ``194240``
+* Fragment stem:    ``lake2_-20220427_192220_2secs``  -> date ``20220427``, time ``192220``
+* Full recording:  ``barn1_D20220427T194240m165.wav`` -> date ``20220427``, time ``194240``
 
-The fragment timestamp is an *offset within* the original recording, not the
-recording start time.  A fragment timestamped ``192220`` belongs to a
-recording that started at or before ``192220`` and ended at or after it —
-i.e. within the window ``[recording_start, recording_start + 55s]``.
+The fragment timestamp is the wall-clock time of that fragment, not the
+recording start time.  Fragment ``192220`` belongs to a recording that
+started at or before ``192220`` and ended at or after it — i.e. within
+``[recording_start, recording_start + 55s]``.
 
 Match strategy
 --------------
-1. Index all ``.wav`` files found under the configured search roots, parsing
-   each filename for a ``YYYYMMDD`` date and ``HHMMSS`` time.  Two filename
-   patterns are recognised:
+1. Walk ``--fragment-dirs`` to discover all ``*_2secs*.wav`` fragment files
+   and collect their unique stems as the set of Filenames to resolve.
+2. Walk ``--full-recording-dirs`` to index full recordings by date.
+3. For each fragment stem, search for a full recording on the same date
+   whose window ``[rec_start, rec_start + 55s]`` contains the fragment time.
+4. If no window match, fall back to the nearest recording within
+   ``--fallback-window`` seconds.
+5. Record match quality: ``window``, ``nearest``, or ``none``.
 
-   * Full recordings: ``*_D<YYYYMMDD>T<HHMMSS>*.wav``
-     (e.g. ``barn1_D20220327T194240m165.wav``)
-   * Fragment files:  ``*<YYYYMMDD>_<HHMMSS>*.wav``
-     (e.g. ``lake2_-20220427_192220_2secs.wav``)
-
-2. For each unique ``Filename`` stem in the feather file, extract its date
-   and fragment timestamp.
-
-3. Search the index for full recordings on the same date whose time window
-   ``[rec_start, rec_start + 55s]`` contains the fragment timestamp.
-
-4. If no window match is found, fall back to the nearest full recording on
-   the same date within +/- ``--fallback-window`` seconds of the fragment
-   timestamp.
-
-5. Record match quality:
-
-   ``window``   — fragment timestamp falls inside the recording window
-   ``nearest``  — fallback nearest-timestamp match
-   ``none``     — no match found
+HHMMSS columns
+--------------
+``fragment_time`` and ``recording_start_time`` are written as zero-padded
+six-character strings (e.g. ``003926``) so that downstream readers do not
+lose leading zeros when parsing as integers.
 
 Output files (all written to ``--out-dir``)
 -------------------------------------------
 ``match_report.csv``
-    One row per unique ``Filename`` stem with columns:
+    One row per unique fragment stem with columns:
     ``Filename``, ``fragment_date``, ``fragment_time``, ``matched_wav``,
-    ``match_quality``, ``recording_start_time``, ``site_guess``
+    ``match_quality``, ``recording_start_time``, ``site_guess``,
+    ``n_candidates``
 
 ``unmatched.csv``
     Subset of ``match_report.csv`` where ``match_quality == 'none'``.
 
 ``wav_index.csv``
-    All ``.wav`` files found under the search roots, with parsed date/time
-    and a ``wav_type`` column (``full_recording`` or ``fragment``).
+    All ``.wav`` files indexed, with parsed date/time and ``wav_type``.
 
 ``resolver_config.csv``
     Run parameters and summary statistics.
@@ -76,12 +77,10 @@ Typical usage
 -------------
 ::
 
-    cd /path/to/data/root
-    python wav_path_resolver.py \\
-        --root . \\
-        --feather sonobat3_2_species_ids.feather \\
-        --out-dir ./wav_resolver_results \\
-        --full-recording-dirs barn/SMB_BARN_BATS jasperridge jasperride \\
+    python wav_path_resolver.py \
+        --root /qnap/bats \
+        --out-dir /qnap/bats/recording_file_locations \
+        --full-recording-dirs barn/SMB_BARN_BATS jasperridge jasperride \
         --fragment-dirs barn_sonobat3_2_processed lake2_sonobat3_2_processed
 """
 
@@ -238,12 +237,13 @@ class WavPathResolver:
     Resolve SonoBat feather ``Filename`` stems to original ``.wav`` paths.
 
     :param root:              Root directory containing all data.
-    :param feather_path:      Path to ``sonobat3_2_species_ids.feather``.
     :param out_dir:           Directory for output CSVs.
     :param full_rec_dirs:     Subdirectory names (relative to root) to search
                               for full recordings.
     :param fragment_dirs:     Subdirectory names (relative to root) to search
-                              for fragment ``.wav`` files.
+                              for fragment ``.wav`` files.  These are walked to
+                              discover all fragment stems — no feather file is
+                              required.
     :param fallback_window_s: Maximum seconds from fragment timestamp to
                               recording start time for a fallback match.
     :param recursive:         If ``True``, descend into all subdirectories
@@ -253,7 +253,6 @@ class WavPathResolver:
     def __init__(
         self,
         root:              str | Path,
-        feather_path:      str | Path,
         out_dir:           str | Path,
         full_rec_dirs:     Sequence[str] = _DEFAULT_FULL_REC_DIRS,
         fragment_dirs:     Sequence[str] = _DEFAULT_FRAGMENT_DIRS,
@@ -261,7 +260,6 @@ class WavPathResolver:
         recursive:         bool          = True,
     ) -> None:
         self.root              = Path(root).resolve()
-        self.feather_path      = Path(feather_path)
         self.out_dir           = Path(out_dir)
         self.full_rec_dirs     = [self.root / d for d in full_rec_dirs]
         self.fragment_dirs     = [self.root / d for d in fragment_dirs]
@@ -485,20 +483,20 @@ class WavPathResolver:
         _t0 = time.perf_counter()
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
-        # ── Load feather ──────────────────────────────────────────────
-        log.info(f'Loading feather: {self.feather_path} ...')
-        try:
-            df = pd.read_feather(self.feather_path)
-        except Exception as exc:
-            log.warn(f'Cannot read feather file: {exc}')
-            sys.exit(1)
-
-        if 'Filename' not in df.columns:
-            log.warn('Feather file has no Filename column — aborting')
-            sys.exit(1)
-
-        unique_stems = df['Filename'].dropna().unique().tolist()
-        log.info(f'{len(unique_stems):,} unique Filename stems to resolve')
+        # ── Discover fragment stems by walking fragment dirs ──────────
+        # No feather required — stems are read directly from the fragment
+        # .wav filenames on disk.
+        log.info('Discovering fragment stems from fragment directories ...')
+        seen_stems: set[str] = set()
+        for frag_dir in self.fragment_dirs:
+            if not frag_dir.exists():
+                log.warn(f'Fragment dir not found: {frag_dir}')
+                continue
+            glob_fn = frag_dir.rglob if self.recursive else frag_dir.glob
+            for p in glob_fn('*_2secs*.wav'):
+                seen_stems.add(p.stem)
+        unique_stems = sorted(seen_stems)
+        log.info(f'{len(unique_stems):,} unique fragment stems discovered')
 
         # ── Build .wav index ──────────────────────────────────────────
         full_recordings, fragments = self._build_index()
@@ -552,8 +550,14 @@ class WavPathResolver:
             }
             for r in match_records
         ])
+        # Write HHMMSS columns as zero-padded strings so leading zeros
+        # are not silently dropped when the CSV is read back by pandas.
+        for col in ('fragment_time', 'recording_start_time'):
+            match_df[col] = (match_df[col].astype(str)
+                                          .str.zfill(6)
+                                          .replace('000000', ''))
         match_path = self.out_dir / 'match_report.csv'
-        match_df.to_csv(match_path, index=False)
+        match_df.to_csv(match_path, index=False, quoting=1)  # quoting=1 = QUOTE_ALL
         log.info(f'Wrote {len(match_df):,} rows to {match_path}')
 
         unmatched_df = match_df[match_df['match_quality'] == 'none']
@@ -590,7 +594,6 @@ class WavPathResolver:
 
         pd.DataFrame([
             {'parameter': 'root',               'value': str(self.root)},
-            {'parameter': 'feather_path',       'value': str(self.feather_path)},
             {'parameter': 'full_rec_dirs',      'value': str([str(d) for d in self.full_rec_dirs])},
             {'parameter': 'fragment_dirs',      'value': str([str(d) for d in self.fragment_dirs])},
             {'parameter': 'fallback_window_s',  'value': self.fallback_window_s},
@@ -632,9 +635,9 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         prog='wav_path_resolver',
         description=(
-            'Resolve SonoBat feather Filename stems to original .wav paths\n'
-            'using timestamp-based matching.\n\n'
-            'Run from the data root directory, or pass --root explicitly.'
+            'Resolve 2-second fragment stems to original full-recording .wav paths.\n\n'
+            'Discovers fragment stems by walking --fragment-dirs directly —\n'
+            'no feather file required.  Run this BEFORE sono_batch_processing.py.'
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
@@ -643,15 +646,6 @@ def _parse_args():
         default='.',
         metavar='DIR',
         help='Root directory containing all data (default: current directory).',
-    )
-    parser.add_argument(
-        '--feather',
-        default='sonobat3_2_species_ids.feather',
-        metavar='PATH',
-        help=(
-            'Path to species feather file, relative to --root\n'
-            '(default: sonobat3_2_species_ids.feather).'
-        ),
     )
     parser.add_argument(
         '-o', '--out-dir',
@@ -696,16 +690,7 @@ def _parse_args():
     )
 
     args = parser.parse_args()
-    root = Path(args.root).resolve()
-
-    feather = Path(args.feather)
-    if not feather.is_absolute():
-        feather = root / feather
-    if not feather.exists():
-        parser.error(f'Feather file not found: {feather}')
-
-    args.root      = root
-    args.feather   = feather
+    args.root      = Path(args.root).resolve()
     args.out_dir   = Path(args.out_dir)
     args.recursive = not args.no_recursive
     return args
@@ -719,7 +704,6 @@ def main() -> None:
 
     resolver = WavPathResolver(
         root              = args.root,
-        feather_path      = args.feather,
         out_dir           = args.out_dir,
         full_rec_dirs     = args.full_recording_dirs,
         fragment_dirs     = args.fragment_dirs,
