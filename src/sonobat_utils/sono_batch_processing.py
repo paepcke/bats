@@ -5,7 +5,7 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-13 17:56:49
+# @Last Modified time: 2026-03-15 12:27:45
 #
 # **********************************************************
 
@@ -42,12 +42,18 @@ This module:
    incremental runs the prior ``filename_to_id.csv`` is loaded so that
    existing integers are never remapped; new fragments receive ids that
    extend beyond the current maximum.
-6. Writes three output files:
+6. If ``match_csv`` is provided (output of ``wav_path_resolver.py``), adds a
+   ``TimeInOrigRecording`` column giving each chirp's onset in milliseconds
+   within the original full-length recording.  This is the correct seek
+   offset to use when extracting spectrogram crops from the original ``.wav``
+   files.
+7. Writes three output files:
 
    ``<out_path>``
        One row per chirp with all measures plus ``species``,
-       ``species_prob``, ``species_2nd``, and integer ``file_id``.
-       Written as ``.feather`` (fast, compact) when ``use_feather=True``,
+       ``species_prob``, ``species_2nd``, ``file_id``, and (when
+       ``match_csv`` is provided) ``TimeInOrigRecording``.
+       Written as ``.feather`` when ``use_feather=True``,
        otherwise as ``.csv``.
 
    ``<stem>_filename_to_id.csv``
@@ -73,28 +79,32 @@ e.g.::
 This stem is the natural unique key across all sites and dates.  The integer
 ``file_id`` is a groupby/join convenience derived from it.
 
-Output Columns (chirp-level CSV)
----------------------------------
+TimeInOrigRecording
+-------------------
+``TimeInFile`` in the ``_Parameters_`` files is the chirp onset in
+milliseconds measured from the **start of the 2-second fragment**, not from
+the start of the original recording.  ``TimeInOrigRecording`` corrects this:
+
+.. code-block:: text
+
+    fragment_offset_ms      = (fragment_HHMMSS - recording_start_HHMMSS) * 1000
+    TimeInOrigRecording     = fragment_offset_ms + TimeInFile
+
+The fragment and recording timestamps are both ``HHMMSS`` strings parsed from
+the ``Filename`` stem and from the ``recording_start_time`` column of
+``match_report.csv`` respectively.  Midnight-spanning recordings (fragment
+timestamp < recording start timestamp) are handled by adding 86,400 seconds.
+
+Output Columns (chirp-level output)
+------------------------------------
 All columns from the ``_Parameters_`` file are retained verbatim, plus:
 
-    - ``species``       : SonoBat accepted species for the containing fragment
-    - ``species_prob``  : SonoBat confidence (0-1) for that assignment
-    - ``species_2nd``   : SonoBat second-ranked species (possible alternative)
-    - ``file_id``       : stable integer key; groupby('file_id') yields all
-                          chirps from one 2-second fragment
-
-Downstream sequence-level species
-----------------------------------
-Recording-level species can be derived from this table without any
-pre-aggregation::
-
-    seq_species = (
-        chirps_df
-        .groupby('recording_name')['species']
-        .agg(lambda s: s.mode().iloc[0] if s.notna().any() else pd.NA)
-    )
-
-where ``recording_name`` can be added via timestamp-clustering if needed.
+    - ``species``               : SonoBat accepted species for the fragment
+    - ``species_prob``          : SonoBat confidence (0-1) for that assignment
+    - ``species_2nd``           : SonoBat second-ranked species
+    - ``file_id``               : stable integer key per fragment
+    - ``TimeInOrigRecording``   : chirp onset (ms) within the original
+                                  full-length recording (requires match_csv)
 
 Typical Usage
 -------------
@@ -106,6 +116,7 @@ Typical Usage
         inputs=['/qnap/bats/barn_sonobat3_2_processed',
                 '/qnap/bats/lake2_sonobat3_2_processed'],
         out_csv='/qnap/bats/chirps_with_species.csv',
+        match_csv='/qnap/bats/recording_file_locations/match_report.csv',
         recursive=True,
     )
     result = labeler.run()
@@ -165,6 +176,10 @@ _IDX_2ND:      int = _SONOBATCH_COLS.index('2nd')
 # no identification.
 _SPECIES_RE = re.compile(r'^[A-Z][a-z]{3}$')
 
+# Regex to extract HHMMSS from a fragment stem such as
+# 'bats-20220706_003959_2secs' → group(1) = '003959'
+_FRAG_TS_RE = re.compile(r'\d{8}_(\d{6})')
+
 # Parameters-file columns that carry no information for a classifier:
 #   Path / ParentDir / NextDirUp  — stale Windows paths, redundant with Filename
 #   Version / Filter              — SonoBat run constants, identical across all rows
@@ -172,7 +187,7 @@ _SPECIES_RE = re.compile(r'^[A-Z][a-z]{3}$')
 _COLS_TO_DROP: frozenset[str] = frozenset([
     'Path', 'ParentDir', 'NextDirUp',
     'Version', 'Filter', 'Preemphasis', 'MaxSegLnght',
-    'MinAccpQuality', 'MaxSegLngth', 'Max#CallsConsidered'
+    'MinAccpQuality', 'MaxSegLngth', 'Max#CallsConsidered',
 ])
 
 
@@ -185,13 +200,15 @@ class LabelingResult:
     """
     Summary returned by :meth:`SpeciesLabeler.run`.
 
-    :param out_csv:            Path to the chirp-level output CSV.
+    :param out_csv:            Path to the chirp-level output file.
     :param n_sonobatch_files:  Number of per-night SonoBatch files parsed.
     :param n_fragments:        Total fragment rows parsed from SonoBatch files.
     :param n_chirps_raw:       Chirp rows loaded from Parameters files before join.
     :param n_chirps_labeled:   Chirp rows that received a species label.
     :param n_chirps_unlabeled: Chirp rows with no matching SonoBatch entry.
     :param n_skipped:          Fragment Filenames skipped (already done).
+    :param n_time_resolved:    Chirp rows that received a TimeInOrigRecording
+                               value (0 when match_csv not provided).
     :param elapsed_secs:       Wall-clock seconds for the full run.
     """
     out_csv:            Path
@@ -201,6 +218,7 @@ class LabelingResult:
     n_chirps_labeled:   int
     n_chirps_unlabeled: int
     n_skipped:          int
+    n_time_resolved:    int
     elapsed_secs:       float
 
     def summary(self) -> str:
@@ -215,17 +233,24 @@ class LabelingResult:
             100.0 * self.n_chirps_labeled / self.n_chirps_raw
             if self.n_chirps_raw else 0.0
         )
-        return (
-            f"SpeciesLabeler complete:\n"
-            f"  * {self.n_sonobatch_files:,} SonoBatch files parsed\n"
-            f"  * {self.n_fragments:,} fragment rows extracted\n"
-            f"  * {self.n_chirps_raw:,} chirp rows loaded from Parameters files\n"
-            f"  * {self.n_chirps_labeled:,} chirps labeled ({pct:.1f}%)\n"
-            f"  * {self.n_chirps_unlabeled:,} chirps without a species match\n"
-            f"  * {self.n_skipped:,} fragments skipped (already done)\n"
-            f"  * Elapsed: {elapsed_str}\n"
-            f"  * Output:  {self.out_csv}"
-        )
+        lines = [
+            f"SpeciesLabeler complete:",
+            f"  * {self.n_sonobatch_files:,} SonoBatch files parsed",
+            f"  * {self.n_fragments:,} fragment rows extracted",
+            f"  * {self.n_chirps_raw:,} chirp rows loaded from Parameters files",
+            f"  * {self.n_chirps_labeled:,} chirps labeled ({pct:.1f}%)",
+            f"  * {self.n_chirps_unlabeled:,} chirps without a species match",
+            f"  * {self.n_skipped:,} fragments skipped (already done)",
+        ]
+        if self.n_time_resolved > 0:
+            lines.append(
+                f"  * {self.n_time_resolved:,} chirps with TimeInOrigRecording"
+            )
+        lines += [
+            f"  * Elapsed: {elapsed_str}",
+            f"  * Output:  {self.out_csv}",
+        ]
+        return '\n'.join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +259,7 @@ class LabelingResult:
 
 class SpeciesLabeler:
     """
-    Parse SonoBat per-night output files and produce a chirp-level CSV
+    Parse SonoBat per-night output files and produce a chirp-level output
     with acoustic measures plus species labels, ready for CNN/RF training.
 
     For each pair of ``_SonoBatch_`` / ``_Parameters_`` files the labeler:
@@ -245,34 +270,39 @@ class SpeciesLabeler:
       into both files, and therefore an exact key by construction.
     * Assigns a stable integer ``file_id`` per unique ``Filename`` that is
       consistent across incremental runs (see :meth:`_assign_file_ids`).
+    * Optionally adds ``TimeInOrigRecording`` — the chirp onset in ms within
+      the original full-length recording — by joining against the match report
+      produced by ``wav_path_resolver.py``.
 
     :param inputs:      One or more directories or individual SonoBatch
                         ``.txt`` files.  Use ``recursive=True`` to descend.
-    :param out_csv:     Destination path for the chirp-level output CSV.
+    :param out_csv:     Destination path for the chirp-level output.
     :param recursive:   If ``True``, descend into subdirectories.
-    :param done_csv:    Path to a previously-written output CSV whose
+    :param done_csv:    Path to a previously-written output whose
                         ``Filename`` values should be skipped.  New rows are
                         appended so the output grows incrementally.
     :param id_map_csv:  Path to a previously-written ``filename_to_id.csv``.
                         When provided, existing ``file_id`` integers are
-                        preserved and new filenames are assigned ids that
-                        extend beyond the prior maximum.
-    :param use_feather: If ``True``, write the chirp output as a ``.feather``
-                        file instead of ``.csv``.  Feather is typically 5-10x
-                        faster to write and read and roughly half the size for
-                        this kind of numeric-heavy DataFrame.  The
-                        ``filename_to_id`` and ``config`` sidecar files are
-                        always written as CSV regardless of this flag.
+                        preserved and new filenames receive ids extending
+                        beyond the prior maximum.
+    :param use_feather: If ``True``, write the chirp output as ``.feather``
+                        instead of ``.csv``.  Sidecar files are always CSV.
+    :param match_csv:   Path to ``match_report.csv`` produced by
+                        ``wav_path_resolver.py``.  When provided, a
+                        ``TimeInOrigRecording`` column is added giving the
+                        chirp onset in ms within the original full-length
+                        recording.  Required for spectrogram crop extraction.
     """
 
     def __init__(
         self,
-        inputs:     Sequence[str | Path],
-        out_csv:    str | Path,
-        recursive:  bool                 = False,
-        done_csv:   Optional[str | Path] = None,
-        id_map_csv: Optional[str | Path] = None,
-        use_feather: bool                = False,
+        inputs:      Sequence[str | Path],
+        out_csv:     str | Path,
+        recursive:   bool                 = False,
+        done_csv:    Optional[str | Path] = None,
+        id_map_csv:  Optional[str | Path] = None,
+        use_feather: bool                 = False,
+        match_csv:   Optional[str | Path] = None,
     ) -> None:
         self.inputs      = [Path(p) for p in inputs]
         self.out_csv     = Path(out_csv)
@@ -280,6 +310,7 @@ class SpeciesLabeler:
         self.done_csv    = Path(done_csv)   if done_csv   else None
         self.id_map_csv  = Path(id_map_csv) if id_map_csv else None
         self.use_feather = use_feather
+        self.match_csv   = Path(match_csv)  if match_csv  else None
 
     # ------------------------------------------------------------------ #
     #  File discovery                                                     #
@@ -410,7 +441,7 @@ class SpeciesLabeler:
                 'Filename'    : fname,
                 'species'     : species_val,
                 'species_prob': prob_val,
-                'species_2nd' : fields[_IDX_2ND]     or pd.NA,
+                'species_2nd' : fields[_IDX_2ND] or pd.NA,
             })
 
         if not rows:
@@ -455,6 +486,105 @@ class SpeciesLabeler:
             inplace=True,
         )
         return df
+
+    # ------------------------------------------------------------------ #
+    #  TimeInOrigRecording computation                                    #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _hhmmss_to_seconds(hhmmss: str) -> Optional[int]:
+        """
+        Convert a six-character ``HHMMSS`` string to total seconds.
+
+        :param hhmmss: Time string, e.g. ``'003959'``.
+        :return:       Total seconds from midnight, or ``None`` if unparseable.
+        """
+        if not isinstance(hhmmss, str) or len(hhmmss) != 6:
+            return None
+        try:
+            hh = int(hhmmss[0:2])
+            mm = int(hhmmss[2:4])
+            ss = int(hhmmss[4:6])
+            return hh * 3600 + mm * 60 + ss
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _compute_time_in_orig_recording(
+        chirps_df: pd.DataFrame,
+        match_df:  pd.DataFrame,
+    ) -> pd.Series:
+        """
+        Compute ``TimeInOrigRecording`` for every chirp row.
+
+        ``TimeInFile`` in the Parameters files is the chirp onset in ms from
+        the **start of the 2-second fragment**.  This method converts it to
+        ms from the start of the **original full-length recording** by adding
+        the fragment's own offset within that recording:
+
+        .. code-block:: text
+
+            fragment_offset_ms   = (fragment_HHMMSS - rec_start_HHMMSS) * 1000
+            TimeInOrigRecording  = fragment_offset_ms + TimeInFile
+
+        Midnight-spanning recordings (fragment timestamp < recording start
+        timestamp) are handled by adding 86,400 seconds to the difference.
+
+        Rows whose ``Filename`` has no entry in *match_df* (the 2 unmatched
+        fragments) receive ``NaN``.
+
+        :param chirps_df: Chirp-level DataFrame containing ``Filename`` and
+                          ``TimeInFile`` columns.
+        :param match_df:  Match report DataFrame containing ``Filename`` and
+                          ``recording_start_time`` columns (output of
+                          ``wav_path_resolver.py``).
+        :return:          Series of float millisecond values, aligned to
+                          ``chirps_df.index``.
+        """
+        # Build Filename → recording_start_time lookup (HHMMSS string).
+        rec_start_map: dict[str, str] = (
+            match_df[['Filename', 'recording_start_time']]
+            .dropna(subset=['recording_start_time'])
+            .drop_duplicates('Filename')
+            .set_index('Filename')['recording_start_time']
+            .astype(str)
+            .to_dict()
+        )
+
+        result = pd.Series(pd.NA, index=chirps_df.index, dtype='Float64')
+
+        for idx, row in chirps_df[['Filename', 'TimeInFile']].iterrows():
+            fname    = row['Filename']
+            time_inf = row['TimeInFile']
+
+            # Extract fragment HHMMSS from Filename stem.
+            m = _FRAG_TS_RE.search(str(fname))
+            if not m:
+                continue
+            frag_hhmmss = m.group(1)
+
+            rec_start = rec_start_map.get(fname)
+            if rec_start is None:
+                continue
+
+            frag_secs = SpeciesLabeler._hhmmss_to_seconds(frag_hhmmss)
+            rec_secs  = SpeciesLabeler._hhmmss_to_seconds(rec_start)
+            if frag_secs is None or rec_secs is None:
+                continue
+
+            diff_secs = frag_secs - rec_secs
+            # Handle midnight crossing.
+            if diff_secs < 0:
+                diff_secs += 86_400
+
+            try:
+                time_in_file = float(time_inf)
+            except (TypeError, ValueError):
+                continue
+
+            result[idx] = diff_secs * 1000.0 + time_in_file
+
+        return result
 
     # ------------------------------------------------------------------ #
     #  Done-set helper                                                    #
@@ -553,14 +683,14 @@ class SpeciesLabeler:
     def run(self) -> LabelingResult:
         """
         Discover SonoBatch files, join with Parameters measures, attach
-        species labels, assign stable integer ``file_id`` values, and
-        write output.
+        species labels, assign stable integer ``file_id`` values, optionally
+        add ``TimeInOrigRecording``, and write output.
 
         On an incremental run (``done_csv`` provided and present on disk):
 
         * Fragment ``Filename`` stems already in the done set are excluded
           before the join.
-        * The chirp output CSV is appended to rather than overwritten.
+        * The chirp output is appended to rather than overwritten.
         * The ``filename_to_id`` map is extended without remapping old ids.
 
         :return: :class:`LabelingResult` with full run statistics.
@@ -587,6 +717,7 @@ class SpeciesLabeler:
                 n_chirps_labeled   = 0,
                 n_chirps_unlabeled = 0,
                 n_skipped          = len(done_filenames),
+                n_time_resolved    = 0,
                 elapsed_secs       = time.perf_counter() - _t0,
             )
 
@@ -649,6 +780,7 @@ class SpeciesLabeler:
                 n_chirps_labeled   = 0,
                 n_chirps_unlabeled = 0,
                 n_skipped          = len(done_filenames),
+                n_time_resolved    = 0,
                 elapsed_secs       = time.perf_counter() - _t0,
             )
 
@@ -669,10 +801,33 @@ class SpeciesLabeler:
         log.info('Assigning stable file_id integers ...')
         chirps_df, full_map = self._assign_file_ids(chirps_df, self.id_map_csv)
 
+        # ---- TimeInOrigRecording ------------------------------------- #
+        n_time_resolved = 0
+        if self.match_csv and self.match_csv.exists():
+            log.info(f'Computing TimeInOrigRecording from {self.match_csv} ...')
+            try:
+                match_df = pd.read_csv(self.match_csv)
+                # Strip CRLF artefacts from string columns.
+                for col in ('Filename', 'recording_start_time'):
+                    if col in match_df.columns:
+                        match_df[col] = match_df[col].astype(str).str.strip()
+
+                chirps_df['TimeInOrigRecording'] = self._compute_time_in_orig_recording(
+                    chirps_df, match_df
+                )
+                n_time_resolved = int(chirps_df['TimeInOrigRecording'].notna().sum())
+                log.info(
+                    f'TimeInOrigRecording computed for '
+                    f'{n_time_resolved:,} / {len(chirps_df):,} chirp rows'
+                )
+            except Exception as exc:
+                log.warn(f'Could not compute TimeInOrigRecording: {exc}')
+        elif self.match_csv:
+            log.warn(f'match_csv not found: {self.match_csv}')
+
         # ---- Write output -------------------------------------------- #
         self.out_csv.parent.mkdir(parents=True, exist_ok=True)
 
-        # Derive stem regardless of whether the extension is .csv or .feather.
         out_str = str(self.out_csv)
         for ext in ('.feather', '.csv'):
             if out_str.endswith(ext):
@@ -684,8 +839,6 @@ class SpeciesLabeler:
         id_map_path = Path(stem + '_filename_to_id.csv')
         config_path = Path(stem + '_config.csv')
 
-        # Resolve the actual output path — honour use_feather regardless of
-        # what extension the caller put on out_csv.
         if self.use_feather:
             out_path = Path(stem + '.feather')
         else:
@@ -727,6 +880,7 @@ class SpeciesLabeler:
             {'parameter': 'n_chirps_labeled',   'value': n_chirps_labeled},
             {'parameter': 'n_chirps_unlabeled', 'value': n_chirps_unlabeled},
             {'parameter': 'n_skipped',          'value': len(done_filenames)},
+            {'parameter': 'n_time_resolved',    'value': n_time_resolved},
             {'parameter': 'elapsed_secs',       'value': round(elapsed, 1)},
         ]).to_csv(config_path, index=False)
         log.info(f'Wrote config to {config_path}')
@@ -739,6 +893,7 @@ class SpeciesLabeler:
             n_chirps_labeled   = n_chirps_labeled,
             n_chirps_unlabeled = n_chirps_unlabeled,
             n_skipped          = len(done_filenames),
+            n_time_resolved    = n_time_resolved,
             elapsed_secs       = elapsed,
         )
 
@@ -759,7 +914,7 @@ def _parse_args():
         prog='sono_batch_processing',
         description=(
             'Join SonoBat species labels with acoustic measures to produce\n'
-            'a chirp-level training CSV.\n\n'
+            'a chirp-level training output.\n\n'
             'Inputs can be any mix of:\n'
             '  * individual xxx_SonoBatch_....txt files\n'
             '  * directories containing such files (use -r to recurse)\n\n'
@@ -768,7 +923,9 @@ def _parse_args():
             'For incremental runs, pass --done-csv pointing at the prior\n'
             'output and --id-map-csv pointing at the prior\n'
             'filename_to_id.csv.  New rows are appended and existing\n'
-            'file_id integers are never remapped.'
+            'file_id integers are never remapped.\n\n'
+            'Pass --match-csv to add TimeInOrigRecording, required for\n'
+            'spectrogram crop extraction with chirps_to_spectros.py.'
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
@@ -780,7 +937,7 @@ def _parse_args():
     parser.add_argument(
         '-o', '--out-csv',
         required=True,
-        help='Destination .csv for the chirp-level output.',
+        help='Destination path for the chirp-level output.',
     )
     parser.add_argument(
         '-r', '--recursive',
@@ -792,7 +949,7 @@ def _parse_args():
         default=None,
         metavar='CSV',
         help=(
-            'Previously-written chirp CSV.  Fragment Filenames already\n'
+            'Previously-written chirp output.  Fragment Filenames already\n'
             'present are skipped; new rows are appended.'
         ),
     )
@@ -813,6 +970,17 @@ def _parse_args():
             'Feather is typically 5-10x faster to write/read and about\n'
             'half the size for numeric-heavy DataFrames.  The sidecar\n'
             'filename_to_id and config files are always written as CSV.'
+        ),
+    )
+    parser.add_argument(
+        '--match-csv',
+        default=None,
+        metavar='CSV',
+        help=(
+            'match_report.csv from wav_path_resolver.py.  When provided,\n'
+            'a TimeInOrigRecording column is added giving the chirp onset\n'
+            'in ms within the original full-length recording.  Required\n'
+            'for spectrogram crop extraction with chirps_to_spectros.py.'
         ),
     )
 
@@ -847,6 +1015,7 @@ def main() -> None:
         done_csv    = args.done_csv,
         id_map_csv  = args.id_map_csv,
         use_feather = args.use_feather,
+        match_csv   = args.match_csv,
     )
 
     result = labeler.run()
@@ -856,4 +1025,4 @@ def main() -> None:
 
 # ------------------- Main Section --------------
 if __name__ == '__main__':
-    main()
+    main()    
