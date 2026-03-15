@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 10:06:06
+# @Last Modified time: 2026-03-15 10:34:13
 # **********************************************************
 
 """
@@ -445,7 +445,7 @@ class ChirpSpectroExtractor:
     #  Main entry point                                                   #
     # ------------------------------------------------------------------ #
 
-    def run(self) -> ExtractionResult:
+    def run(self) -> SpectroExtractionResult:
         """
         Extract spectrogram crops for all qualifying chirps and write PNGs
         plus a manifest CSV.
