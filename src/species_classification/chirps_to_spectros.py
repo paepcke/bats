@@ -4,15 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 17:36:43
-# **********************************************************
-#!/usr/bin/env python
-# **********************************************************
-#
-# @Author: Andreas Paepcke
-# @Date:   2026-03-15
-# @File:   chirps_to_spectros.py
-#
+# @Last Modified time: 2026-03-15 17:51:06
 # **********************************************************
 
 """
@@ -368,7 +360,6 @@ class ChirpSpectroExtractor:
         self,
         feather_path:   str | Path,
         out_dir:        str | Path,
-        match_csv:      Optional[str | Path] = None,
         min_prob:       float          = _DEFAULT_MIN_PROB,
         pre_ms:         float          = _DEFAULT_PRE_MS,
         post_ms:        float          = _DEFAULT_POST_MS,
@@ -383,7 +374,6 @@ class ChirpSpectroExtractor:
         sample_partition:   str            = '',
     ) -> None:
         self.feather_path  = Path(feather_path)
-        self.match_csv     = Path(match_csv) if match_csv else None
         self.out_dir       = Path(out_dir)
         self.min_prob      = min_prob
         self.pre_ms        = pre_ms
@@ -740,7 +730,6 @@ class ChirpSpectroExtractor:
         elapsed = time.perf_counter() - _t0
         pd.DataFrame([
             {'parameter': 'feather_path',   'value': str(self.feather_path)},
-            {'parameter': 'match_csv',      'value': str(self.match_csv)},
             {'parameter': 'min_prob',       'value': self.min_prob},
             {'parameter': 'pre_ms',         'value': self.pre_ms},
             {'parameter': 'post_ms',        'value': self.post_ms},
@@ -805,16 +794,6 @@ def _parse_args():
         required=True,
         metavar='PATH',
         help='Chirp-level feather file (sonobat3_2_species_ids.feather).',
-    )
-    parser.add_argument(
-        '--matches',
-        default=None,
-        metavar='PATH',
-        help=(
-            'match_report.csv from wav_path_resolver.py.\n'
-            'No longer required — matched_wav is read from the feather.\n'
-            'Accepted for backward compatibility but ignored.'
-        ),
     )
     parser.add_argument(
         '-o', '--out-dir',
@@ -918,7 +897,6 @@ def _parse_args():
         parser.error(f'Feather file not found: {feather_p}')
 
     args.feather  = Path(args.feather)
-    args.matches  = Path(args.matches)
     args.out_dir  = Path(args.out_dir)
     args.match_quality = ['window'] if args.window_only else ['window', 'nearest']
     return args
@@ -932,7 +910,6 @@ def main() -> None:
 
     extractor = ChirpSpectroExtractor(
         feather_path  = args.feather,
-        match_csv     = args.matches,
         out_dir       = args.out_dir,
         min_prob      = args.min_prob,
         pre_ms        = args.pre_ms,
