@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 17:25:27
+# @Last Modified time: 2026-03-15 17:28:34
 # **********************************************************
 
 """
@@ -921,7 +921,7 @@ def main() -> None:
         freq_hi_khz   = args.freq_hi,
         img_size      = args.img_size,
         dynamic_range = args.dynamic_range,
-        n_workers     = args.n_workers,
+        n_workers     = args.workers,
         match_quality     = args.match_quality,
         sample            = args.sample,
         sample_species    = args.sample_species,
