@@ -5,17 +5,7 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 17:36:27
-#
-# **********************************************************
-#!/usr/bin/env python
-# **********************************************************
-#
-# @Author: Andreas Paepcke
-# @Date:   2026-03-11 15:59:39
-# @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
-# @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15
+# @Last Modified time: 2026-03-15 18:03:21
 #
 # **********************************************************
 
@@ -918,10 +908,13 @@ class SpeciesLabeler:
                             return kw
                     return 'unknown'
 
-                wav_map: dict[str, str] = {}
+                # Build compound_key → (matched_wav, match_quality) lookup.
+                wav_map:     dict[str, str] = {}
+                quality_map: dict[str, str] = {}
                 for _, mrow in match_df.iterrows():
                     fname    = str(mrow.get('Filename', ''))
                     wav_path = str(mrow.get('matched_wav', ''))
+                    quality  = str(mrow.get('match_quality', ''))
                     if not fname or not wav_path or wav_path == 'nan':
                         continue
                     m = _ts_re_mw.search(fname)
@@ -929,7 +922,8 @@ class SpeciesLabeler:
                         continue
                     site = _site_from_path_mw(wav_path)
                     key  = f'{m.group(1)}_{m.group(2)}_{site}'
-                    wav_map[key] = wav_path
+                    wav_map[key]     = wav_path
+                    quality_map[key] = quality
 
                 def _feather_ck(stem: str) -> Optional[str]:
                     m = _ts_re_mw.search(str(stem))
@@ -942,14 +936,16 @@ class SpeciesLabeler:
                     )
                     return f'{m.group(1)}_{m.group(2)}_{site}'
 
-                chirps_df['matched_wav'] = (
-                    chirps_df['Filename']
-                    .map(_feather_ck)
-                    .map(lambda k: wav_map.get(k) if k else None)
+                ck_series = chirps_df['Filename'].map(_feather_ck)
+                chirps_df['matched_wav'] = ck_series.map(
+                    lambda k: wav_map.get(k) if k else None
+                )
+                chirps_df['match_quality'] = ck_series.map(
+                    lambda k: quality_map.get(k) if k else None
                 )
                 n_wav_resolved = int(chirps_df['matched_wav'].notna().sum())
                 log.info(
-                    f'matched_wav resolved for '
+                    f'matched_wav / match_quality resolved for '
                     f'{n_wav_resolved:,} / {len(chirps_df):,} chirp rows'
                 )
             except Exception as exc:
