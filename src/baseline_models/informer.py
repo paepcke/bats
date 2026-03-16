@@ -1,20 +1,10 @@
-from huggingface_hub import hf_hub_download
 import torch
-from transformers import InformerConfig, InformerModel, InformerForPrediction
-import torch.nn as nn
+from transformers import InformerConfig, InformerForPrediction
 import torch.optim as optim
-import sys
 import os
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-# os.chdir("bats_transformer")
-# print(os.getcwd())
-sys.path.append('../bats_transformer')
-
-import spacetimeformer as stf
-from bats_dataset.bats_dataset import BatsCSVDataset, BatsCSVDatasetWithMetadata
 
 class InformerPredictor():
     def __init__(self, num_features, num_epochs=10, batch_size=16,
@@ -193,16 +183,20 @@ class InformerPredictor():
                 # Process all batches (you can accumulate predictions here)
                 # if batch_idx >= 5:  # Just process first few batches for demo
                 #     break
-                
+
+        save_path = self.model_path.split("/models/")[0] + "/outputs/" + self.model_path.split("/models/")[1]
+        if not os.path.exists(f"{save_path}"):
+            os.mkdir(f"{save_path}")
         preds_np = np.array(predictions)
-        np.savetxt(f"{self.model_path}/_predictions.log", preds_np, delimiter=",", header=",".join(data.dataset.target_cols + data.dataset.metadata_cols))#",".join(target_cols))
+        np.savetxt(f"{save_path}/model_predictions.log", preds_np, delimiter=",", header=",".join(data.dataset.target_cols + data.dataset.metadata_cols))#",".join(target_cols))
         truths_np = np.array(truths)
-        np.savetxt(f"{self.model_path}/_ground_truths.log", truths_np, delimiter=",", header=",".join(data.dataset.target_cols + data.dataset.metadata_cols))#",".join(target_cols))
+        np.savetxt(f"{save_path}/model_ground_truths.log", truths_np, delimiter=",", header=",".join(data.dataset.target_cols + data.dataset.metadata_cols))#",".join(target_cols))
         confidences_np = np.array(confidences)
-        np.savetxt(f"{self.model_path}/_confidences.log", confidences_np, delimiter=",", header="mean std across features," + ",".join(data.dataset.metadata_cols))#",".join(target_cols))
+        np.savetxt(f"{save_path}/model_confidences.log", confidences_np, delimiter=",", header="mean std across features," + ",".join(data.dataset.metadata_cols))#",".join(target_cols))
 
     @classmethod
     def add_cli(cls, parser):
-        parser.add_argument("--n_epochs", type=int, default=10)
-        parser.add_argument("--seq_len", type=int, default=46)
-        parser.add_argument("--model_path", type=str, default="/home/ayc227/bats/bats_transformer/models/informer_test")
+        parser.add_argument("--n_epochs", type=int, default=10, help="Number of epochs to train")
+        parser.add_argument("--seq_len", type=int, default=46, help="Length (padded) of the input sequences")
+        parser.add_argument("--model_path", type=str, default="/home/ayc227/bats/bats_transformer/models/informer_test",
+                            help="Filepath to save models")
