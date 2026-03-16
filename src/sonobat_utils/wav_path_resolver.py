@@ -4,7 +4,7 @@
 # @Date:   2026-03-14 19:02:24
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/wav_path_resolver.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 13:13:07
+# @Last Modified time: 2026-03-16 10:31:16
 # **********************************************************
 
 """
@@ -95,6 +95,7 @@ from typing import Optional, Sequence
 import pandas as pd
 
 from logging_service import LoggingService
+from sonobat_utils.wav_file_info import WavInfo
 
 log = LoggingService()
 
@@ -122,6 +123,9 @@ _DEFAULT_FULL_REC_DIRS: list[str] = [
     'jasperride',
 ]
 
+# Filename for the WavInfo header cache written to --out-dir.
+_WAV_CACHE_FILENAME: str = 'wav_header_info_cache.csv'
+
 # Subdirectories to search for fragment .wav files (relative to root).
 _DEFAULT_FRAGMENT_DIRS: list[str] = [
     'barn_sonobat3_2_processed',
@@ -138,17 +142,22 @@ class WavEntry:
     """
     One ``.wav`` file found during the index walk.
 
-    :param path:      Absolute path.
-    :param wav_type:  ``'full_recording'`` or ``'fragment'``.
-    :param date_str:  ``YYYYMMDD`` string parsed from the filename.
-    :param time_str:  ``HHMMSS`` string parsed from the filename.
-    :param dt:        Parsed :class:`datetime` object.
+    :param path:             Absolute path.
+    :param wav_type:         ``'full_recording'`` or ``'fragment'``.
+    :param date_str:         ``YYYYMMDD`` string parsed from the filename.
+    :param time_str:         ``HHMMSS`` string parsed from the filename.
+    :param dt:               Parsed :class:`datetime` object.
+    :param true_duration_s:  True acoustic duration in seconds (from
+                             :class:`~wav_file_info.WavInfo`).  Used as
+                             the per-recording match window.  Defaults to
+                             ``_MAX_REC_DUR_S`` when WavInfo is unavailable.
     """
-    path:     Path
-    wav_type: str
-    date_str: str
-    time_str: str
-    dt:       datetime
+    path:             Path
+    wav_type:         str
+    date_str:         str
+    time_str:         str
+    dt:               datetime
+    true_duration_s:  float = float(_MAX_REC_DUR_S)
 
 
 @dataclass
@@ -266,20 +275,81 @@ class WavPathResolver:
         self.fallback_window_s = fallback_window_s
         self.recursive         = recursive
 
+
+    # ------------------------------------------------------------------ #
+    #  WavInfo header cache                                               #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _load_wav_cache(cache_path: Path) -> dict[str, float]:
+        """
+        Load the WavInfo header cache from a CSV file.
+
+        The cache maps absolute ``.wav`` path strings to their
+        ``true_duration_s`` values, avoiding repeated GUANO header reads
+        on subsequent runs.
+
+        :param cache_path: Path to the cache CSV file.
+        :return:           Dict mapping path string → true_duration_s.
+        """
+        if not cache_path.exists():
+            return {}
+        try:
+            df = pd.read_csv(cache_path)
+            result = dict(zip(df['path'].astype(str),
+                              df['true_duration_s'].astype(float)))
+            log.info(
+                f'Loaded {len(result):,} entries from WavInfo cache: '
+                f'{cache_path}'
+            )
+            return result
+        except Exception as exc:
+            log.warn(f'Could not read WavInfo cache {cache_path}: {exc}')
+            return {}
+
+    @staticmethod
+    def _save_wav_cache(
+        cache:      dict[str, float],
+        cache_path: Path,
+    ) -> None:
+        """
+        Save the WavInfo header cache to a CSV file.
+
+        :param cache:      Dict mapping path string → true_duration_s.
+        :param cache_path: Destination CSV path.
+        """
+        try:
+            pd.DataFrame([
+                {'path': p, 'true_duration_s': d}
+                for p, d in cache.items()
+            ]).to_csv(cache_path, index=False)
+            log.info(
+                f'Saved {len(cache):,} entries to WavInfo cache: '
+                f'{cache_path}'
+            )
+        except Exception as exc:
+            log.warn(f'Could not save WavInfo cache {cache_path}: {exc}')
+
     # ------------------------------------------------------------------ #
     #  Filename parsing                                                   #
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _parse_full_recording(path: Path) -> Optional[WavEntry]:
+    def _parse_full_recording(
+        path:      Path,
+        wav_cache: dict[str, float],
+    ) -> Optional[WavEntry]:
         """
-        Parse a full-recording ``.wav`` filename for date and time.
+        Parse a full-recording ``.wav`` filename for date and time,
+        reading true duration from the WavInfo cache when available.
 
         Expects the pattern ``_D<YYYYMMDD>T<HHMMSS>`` anywhere in the stem,
         e.g. ``barn1_D20220327T194240m165.wav``.
 
-        :param path: Path to candidate ``.wav`` file.
-        :return:     :class:`WavEntry` or ``None`` if pattern not found.
+        :param path:      Path to candidate ``.wav`` file.
+        :param wav_cache: Dict mapping path string → true_duration_s;
+                          populated by :meth:`_load_wav_cache`.
+        :return:          :class:`WavEntry` or ``None`` if pattern not found.
         """
         m = _FULL_REC_RE.search(path.stem)
         if not m:
@@ -289,12 +359,25 @@ class WavPathResolver:
             dt = datetime.strptime(date_str + time_str, '%Y%m%d%H%M%S')
         except ValueError:
             return None
+        rp = path.resolve()
+        rp_str = str(rp)
+        # Use cache if available; otherwise call WavInfo and cache result.
+        if rp_str in wav_cache:
+            true_dur = wav_cache[rp_str]
+        else:
+            try:
+                info = WavInfo.from_path(rp)
+                true_dur = info.true_duration_s
+            except Exception:
+                true_dur = float(_MAX_REC_DUR_S)
+            wav_cache[rp_str] = true_dur
         return WavEntry(
-            path     = path.resolve(),
-            wav_type = 'full_recording',
-            date_str = date_str,
-            time_str = time_str,
-            dt       = dt,
+            path            = rp,
+            wav_type        = 'full_recording',
+            date_str        = date_str,
+            time_str        = time_str,
+            dt              = dt,
+            true_duration_s = true_dur,
         )
 
     @staticmethod
@@ -350,12 +433,22 @@ class WavPathResolver:
         Walk the configured directories and build separate lists of full
         recordings and fragment ``.wav`` files.
 
+        Loads the WavInfo header cache from ``<out_dir>/wav_header_info_cache.csv``
+        before the walk and saves it afterwards, so that repeated runs
+        avoid re-reading GUANO headers for already-seen files.
+
         :return: ``(full_recordings, fragments)`` — each a list of
                  :class:`WavEntry` objects with parsed timestamps.
         """
         full_recordings: list[WavEntry] = []
         fragments:       list[WavEntry] = []
         seen: set[Path] = set()
+
+        # Load existing WavInfo cache; updated in-place during the walk.
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = self.out_dir / _WAV_CACHE_FILENAME
+        wav_cache: dict[str, float] = self._load_wav_cache(cache_path)
+        cache_size_before = len(wav_cache)
 
         def _walk(dirs: list[Path], parser, target: list[WavEntry]) -> None:
             for base in dirs:
@@ -368,7 +461,9 @@ class WavPathResolver:
                     if rp in seen:
                         continue
                     seen.add(rp)
-                    entry = parser(p)
+                    # Pass wav_cache only to full-recording parser.
+                    entry = parser(p) if parser is not self._parse_full_recording \
+                        else parser(p, wav_cache)
                     if entry is not None:
                         target.append(entry)
 
@@ -379,6 +474,16 @@ class WavPathResolver:
         log.info('Indexing fragment .wav files ...')
         _walk(self.fragment_dirs, self._parse_fragment, fragments)
         log.info(f'  {len(fragments):,} fragment files indexed')
+
+        # Save updated cache if new entries were added.
+        if len(wav_cache) > cache_size_before:
+            log.info(
+                f'  {len(wav_cache) - cache_size_before:,} new entries added to '
+                f'WavInfo cache ({len(wav_cache):,} total)'
+            )
+            self._save_wav_cache(wav_cache, cache_path)
+        else:
+            log.info('  WavInfo cache: no new entries (all files already cached)')
 
         return full_recordings, fragments
 
@@ -445,9 +550,12 @@ class WavPathResolver:
             return rec
 
         # ── Window match ───────────────────────────────────────────────
+        # Use each recording's own true duration as its window, so that
+        # 5-second TE recordings are not incorrectly matched to fragments
+        # recorded minutes later.
         window_matches = [
             e for e in candidates
-            if e.dt <= frag_dt <= e.dt + timedelta(seconds=_MAX_REC_DUR_S)
+            if e.dt <= frag_dt <= e.dt + timedelta(seconds=e.true_duration_s)
         ]
         if window_matches:
             # Prefer the recording whose start is closest (most recent before frag)
@@ -554,7 +662,8 @@ class WavPathResolver:
         # are not silently dropped when the CSV is read back by pandas.
         for col in ('fragment_time', 'recording_start_time'):
             match_df[col] = (match_df[col].astype(str)
-                                          .str.zfill(6))
+                                          .str.zfill(6)
+                                          .replace('000000', ''))
         match_path = self.out_dir / 'match_report.csv'
         match_df.to_csv(match_path, index=False, quoting=1)  # quoting=1 = QUOTE_ALL
         log.info(f'Wrote {len(match_df):,} rows to {match_path}')
@@ -567,11 +676,12 @@ class WavPathResolver:
         # Full .wav index
         wav_index_rows = [
             {
-                'path':     str(e.path),
-                'wav_type': e.wav_type,
-                'date':     e.date_str,
-                'time':     e.time_str,
-                'site':     self._site_from_path(e.path),
+                'path':            str(e.path),
+                'wav_type':        e.wav_type,
+                'date':            e.date_str,
+                'time':            e.time_str,
+                'site':            self._site_from_path(e.path),
+                'true_duration_s': e.true_duration_s,
             }
             for e in (full_recordings + fragments)
         ]

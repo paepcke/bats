@@ -289,6 +289,20 @@
             "justMyCode": false
         },
         {
+            "name": "Python: Performer tests",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/chirp_gen/performer.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/chirp_gen/test/data/lake2_-20220408_213738_2secs.wav",
+                "--print-header"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        },
+        {
             "name": "Python: Chirp generation",
             "type": "debugpy",
             "request": "launch",

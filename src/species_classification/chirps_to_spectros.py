@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 17:51:06
+# @Last Modified time: 2026-03-16 10:05:10
 # **********************************************************
 
 """
@@ -117,6 +117,7 @@ except ImportError:
     _TQDM = False
 
 from logging_service import LoggingService
+from sonobat_utils.wav_file_info import WavInfo, RecordingType
 
 log = LoggingService()
 
@@ -227,15 +228,22 @@ def _chirp_to_spectro(
                           or ``None`` on any error.
     """
     try:
+        # ── Determine recording type (TE/DR) via WavInfo ──────────────
+        info     = WavInfo.from_path(wav_path)
+        te       = info.te
+        sr_true  = info.sr_true
+
+        if not info.is_ultrasonic:
+            return None   # FD or unknown — cannot produce valid spectrogram
+
+        # ── Seek and load in file-domain frames ───────────────────────
+        # time_ms is in true milliseconds; convert to file-domain frames.
+        start_fr = info.true_ms_to_file_frame(time_ms - pre_ms)
+        n_frames = info.true_ms_to_file_frames_count(pre_ms + post_ms)
+
         if _SF_AVAILABLE:
             with sf.SoundFile(wav_path) as f:
-                sr = f.samplerate
-                total_frames = len(f)
-                start_s  = max(0.0, (time_ms - pre_ms)  / 1000.0)
-                end_s    = min(total_frames / sr,
-                               (time_ms + post_ms) / 1000.0)
-                start_fr = int(start_s * sr)
-                n_frames = int((end_s - start_s) * sr)
+                n_frames = min(n_frames, info.file_frames - start_fr)
                 if n_frames < 4:
                     return None
                 f.seek(start_fr)
@@ -244,7 +252,6 @@ def _chirp_to_spectro(
                     data = data.mean(axis=1)
                 audio = data
         else:
-            # Full file load — slow for large files but always available.
             sr_raw, raw = wavfile.read(wav_path)
             if raw.ndim > 1:
                 raw = raw.mean(axis=1)
@@ -254,27 +261,27 @@ def _chirp_to_spectro(
                 raw = raw.astype(np.float32) / 2_147_483_648.0
             else:
                 raw = raw.astype(np.float32)
-            sr = sr_raw
-            start_fr = max(0, int((time_ms - pre_ms)  / 1000.0 * sr))
-            end_fr   = min(len(raw),
-                           int((time_ms + post_ms) / 1000.0 * sr))
-            audio    = raw[start_fr:end_fr]
-
-        # Apply TE correction if needed (same threshold as MeasureExtractor).
-        if sr < 80_000:
-            sr *= 10
+            end_fr = min(len(raw), start_fr + n_frames)
+            audio  = raw[start_fr:end_fr]
 
         if len(audio) < 4:
             return None
 
-        # ── Spectrogram ────────────────────────────────────────────────
-        nperseg  = max(64, int(round(_STFT_WINDOW_MS / 1000.0 * sr)))
-        noverlap = nperseg * 3 // 4
-        freqs, _, Sxx = signal.spectrogram(
-            audio, fs=sr,
+        # ── Spectrogram in file domain, scaled to true domain ─────────
+        # Run spectrogram with sr_header so scipy's frame/freq counts
+        # match the loaded samples, then scale freq axis by te.
+        sr_header  = info.sr_header
+        nperseg    = min(len(audio) // 2,
+                         max(64, int(round(_STFT_WINDOW_MS / 1000.0 * sr_true))))
+        nperseg    = max(8, nperseg)
+        noverlap   = nperseg * 3 // 4
+        freqs_file, _, Sxx = signal.spectrogram(
+            audio, fs=sr_header,
             window='hann', nperseg=nperseg, noverlap=noverlap,
             scaling='spectrum',
         )
+        # Scale file-domain frequencies to true frequencies.
+        freqs = freqs_file * te
 
         # Restrict to target frequency band.
         band = (freqs >= freq_lo_hz) & (freqs <= freq_hi_hz)
@@ -368,7 +375,7 @@ class ChirpSpectroExtractor:
         img_size:       int            = _DEFAULT_IMG_SIZE,
         dynamic_range:  float          = _DEFAULT_DYNAMIC_RANGE,
         n_workers:      int            = _DEFAULT_WORKERS,
-        match_quality:      Sequence[str]  = ('window', 'nearest'),
+        match_quality:      Sequence[str]  = ('window',),
         sample:             int            = 0,
         sample_species:     Sequence[str]  = (),
         sample_partition:   str            = '',
@@ -882,11 +889,13 @@ def _parse_args():
         help='Restrict sampling to this partition, e.g. 20220706_bats.',
     )
     parser.add_argument(
-        '--window-only',
+        '--include-nearest',
         action='store_true',
         help=(
-            'Only use chirps with match_quality="window".\n'
-            'Default: accept both "window" and "nearest" matches.'
+            'Also accept chirps with match_quality="nearest".\n'
+            'Default: window matches only.  Nearest matches are\n'
+            'unreliable for TE recordings (fragment may belong to\n'
+            'a different recording than the one it was matched to).'
         ),
     )
 
@@ -898,7 +907,7 @@ def _parse_args():
 
     args.feather  = Path(args.feather)
     args.out_dir  = Path(args.out_dir)
-    args.match_quality = ['window'] if args.window_only else ['window', 'nearest']
+    args.match_quality = ['window', 'nearest'] if args.include_nearest else ['window']
     return args
 
 
