@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 11:58:44
+# @Last Modified time: 2026-03-15 17:25:27
 # **********************************************************
 
 """
@@ -23,7 +23,9 @@ Inputs
 ------
 ``sonobat3_2_species_ids.feather``
     Chirp-level measures file produced by ``sono_batch_processing.py``.
-    Must contain: ``Filename``, ``TimeInFile``, ``species``, ``species_prob``.
+    Must contain: ``Filename``, ``TimeInFile``, ``TimeInOrigRecording``,
+    ``species``, ``species_prob``.  Run ``sono_batch_processing.py`` with
+    ``--match-csv`` to add ``TimeInOrigRecording`` before using this module.
 
 ``match_report.csv``
     Output of ``wav_path_resolver.py``.  Maps each ``Filename`` stem to the
@@ -32,8 +34,9 @@ Inputs
 Pipeline per chirp
 ------------------
 1. Look up the full-recording ``.wav`` path via ``Filename``.
-2. Seek to ``TimeInFile`` ms within that recording using ``soundfile``
-   (no full-file load).
+2. Seek to ``TimeInOrigRecording`` ms within that recording using
+   ``soundfile`` (no full-file load).  This is the chirp onset within
+   the original full recording, not within the 2-second fragment.
 3. Extract a ``--window-ms`` window centered on the chirp onset.
 4. Compute a linear-scale power spectrogram restricted to
    ``--freq-lo`` – ``--freq-hi`` kHz.
@@ -446,10 +449,26 @@ class ChirpSpectroExtractor:
             f'(min_prob={self.min_prob})'
         )
 
-        # Verify wav files exist (sample check — full check per-worker).
-        needed_cols = ['Filename', 'TimeInFile', 'species',
-                       'species_prob', 'file_id', 'matched_wav',
-                       'match_quality']
+        # Require TimeInOrigRecording — rows without it have no valid
+        # seek position and would produce noise crops.
+        if 'TimeInOrigRecording' not in merged.columns:
+            log.warn(
+                'TimeInOrigRecording column missing from feather. '
+                'Re-run sono_batch_processing.py with --match-csv.'
+            )
+            sys.exit(1)
+        before = len(merged)
+        merged = merged[merged['TimeInOrigRecording'].notna()]
+        dropped = before - len(merged)
+        if dropped:
+            log.info(
+                f'  Dropped {dropped:,} rows with NaN TimeInOrigRecording '
+                f'({len(merged):,} remaining)'
+            )
+
+        needed_cols = ['Filename', 'TimeInFile', 'TimeInOrigRecording',
+                       'species', 'species_prob', 'file_id',
+                       'matched_wav', 'match_quality']
         missing = [c for c in needed_cols if c not in merged.columns]
         if missing:
             log.warn(f'Missing columns in merged DataFrame: {missing}')
@@ -616,7 +635,8 @@ class ChirpSpectroExtractor:
         manifest_fh = open(manifest_path, 'a', newline='')
         manifest_writer = csv.DictWriter(manifest_fh, fieldnames=[
             'crop_path', 'partition', 'species', 'species_prob',
-            'file_id', 'Filename', 'time_in_file_ms', 'match_quality',
+            'file_id', 'Filename',
+            'time_in_orig_rec_ms', 'time_in_file_ms', 'match_quality',
         ])
         if not manifest_exists:
             manifest_writer.writeheader()
@@ -644,7 +664,7 @@ class ChirpSpectroExtractor:
                     pool.submit(
                         _chirp_to_spectro,
                         row['matched_wav'],
-                        float(row['TimeInFile']),
+                        float(row['TimeInOrigRecording']),
                         self.pre_ms,
                         self.post_ms,
                         self.freq_lo_hz,
@@ -675,14 +695,15 @@ class ChirpSpectroExtractor:
                         try:
                             Image.fromarray(img_array, mode='L').save(out_path)
                             manifest_writer.writerow({
-                                'crop_path'      : str(out_path),
-                                'partition'      : part,
-                                'species'        : sp,
-                                'species_prob'   : row.get('species_prob', ''),
-                                'file_id'        : row.get('file_id', ''),
-                                'Filename'       : row['Filename'],
-                                'time_in_file_ms': row['TimeInFile'],
-                                'match_quality'  : row.get('match_quality', ''),
+                                'crop_path'          : str(out_path),
+                                'partition'          : part,
+                                'species'            : sp,
+                                'species_prob'       : row.get('species_prob', ''),
+                                'file_id'            : row.get('file_id', ''),
+                                'Filename'           : row['Filename'],
+                                'time_in_orig_rec_ms': row['TimeInOrigRecording'],
+                                'time_in_file_ms'    : row['TimeInFile'],
+                                'match_quality'      : row.get('match_quality', ''),
                             })
                             n_written += 1
                         except Exception as exc:
@@ -900,7 +921,7 @@ def main() -> None:
         freq_hi_khz   = args.freq_hi,
         img_size      = args.img_size,
         dynamic_range = args.dynamic_range,
-        n_workers     = args.workers,
+        n_workers     = args.n_workers,
         match_quality     = args.match_quality,
         sample            = args.sample,
         sample_species    = args.sample_species,
