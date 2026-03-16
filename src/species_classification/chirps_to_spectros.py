@@ -4,7 +4,15 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 17:28:34
+# @Last Modified time: 2026-03-15 17:36:43
+# **********************************************************
+#!/usr/bin/env python
+# **********************************************************
+#
+# @Author: Andreas Paepcke
+# @Date:   2026-03-15
+# @File:   chirps_to_spectros.py
+#
 # **********************************************************
 
 """
@@ -28,12 +36,13 @@ Inputs
     ``--match-csv`` to add ``TimeInOrigRecording`` before using this module.
 
 ``match_report.csv``
-    Output of ``wav_path_resolver.py``.  Maps each ``Filename`` stem to the
-    resolved full-recording ``.wav`` path.
+    No longer required directly — ``matched_wav`` paths are embedded in
+    the feather file by ``sono_batch_processing.py --match-csv``.
 
 Pipeline per chirp
 ------------------
-1. Look up the full-recording ``.wav`` path via ``Filename``.
+1. Read the full-recording ``.wav`` path from the ``matched_wav`` column
+   of the feather file (set by ``sono_batch_processing.py --match-csv``).
 2. Seek to ``TimeInOrigRecording`` ms within that recording using
    ``soundfile`` (no full-file load).  This is the chirp onset within
    the original full recording, not within the 2-second fragment.
@@ -327,8 +336,10 @@ class ChirpSpectroExtractor:
     been processed so re-runs skip completed work.
 
     :param feather_path:    Path to the chirp-level feather file.
-    :param match_csv:       Path to ``match_report.csv`` from
-                            :class:`~wav_path_resolver.WavPathResolver`.
+    :param match_csv:       No longer required — ``matched_wav`` is now
+                            read directly from the feather file.  This
+                            parameter is accepted for backward compatibility
+                            but ignored.
     :param out_dir:         Root output directory for PNG crops.
     :param min_prob:        Minimum ``species_prob`` to include a chirp.
     :param pre_ms:          Ms of audio before chirp onset (default 3ms).
@@ -356,8 +367,8 @@ class ChirpSpectroExtractor:
     def __init__(
         self,
         feather_path:   str | Path,
-        match_csv:      str | Path,
         out_dir:        str | Path,
+        match_csv:      Optional[str | Path] = None,
         min_prob:       float          = _DEFAULT_MIN_PROB,
         pre_ms:         float          = _DEFAULT_PRE_MS,
         post_ms:        float          = _DEFAULT_POST_MS,
@@ -372,7 +383,7 @@ class ChirpSpectroExtractor:
         sample_partition:   str            = '',
     ) -> None:
         self.feather_path  = Path(feather_path)
-        self.match_csv     = Path(match_csv)
+        self.match_csv     = Path(match_csv) if match_csv else None
         self.out_dir       = Path(out_dir)
         self.min_prob      = min_prob
         self.pre_ms        = pre_ms
@@ -415,21 +426,26 @@ class ChirpSpectroExtractor:
                 df[_col] = df[_col].astype(str).str.strip()
         log.info(f'  {len(df):,} total chirp rows')
 
-        log.info(f'Loading match report: {self.match_csv} ...')
-        matches = pd.read_csv(self.match_csv)
-        # Keep only columns we need and those with a resolved wav path.
-        matches = matches[matches['matched_wav'].notna() &
-                          (matches['matched_wav'] != '')]
-        matches = matches[matches['match_quality'].isin(self.match_quality)]
-        matches = matches[['Filename', 'matched_wav', 'match_quality']]
+        # matched_wav and match_quality are now columns in the feather —
+        # no match report join required.
+        for col in ('matched_wav', 'match_quality'):
+            if col not in df.columns:
+                log.warn(
+                    f'Column {col!r} missing from feather. '
+                    'Re-run sono_batch_processing.py with --match-csv.'
+                )
+                sys.exit(1)
+
+        merged = df[
+            df['matched_wav'].notna() &
+            (df['matched_wav'] != '') &
+            (df['matched_wav'] != 'nan') &
+            df['match_quality'].isin(self.match_quality)
+        ].copy()
         log.info(
-            f'  {len(matches):,} match-report rows with resolved paths '
+            f'  {len(merged):,} rows with resolved matched_wav '
             f'(quality filter: {self.match_quality})'
         )
-
-        # Join on Filename.
-        merged = df.merge(matches, on='Filename', how='inner')
-        log.info(f'  {len(merged):,} rows after join on Filename')
 
         # Species filter: clean 4-char code only.
         import re
@@ -469,6 +485,7 @@ class ChirpSpectroExtractor:
         needed_cols = ['Filename', 'TimeInFile', 'TimeInOrigRecording',
                        'species', 'species_prob', 'file_id',
                        'matched_wav', 'match_quality']
+        # matched_wav and match_quality already in df from feather.
         missing = [c for c in needed_cols if c not in merged.columns]
         if missing:
             log.warn(f'Missing columns in merged DataFrame: {missing}')
@@ -791,9 +808,13 @@ def _parse_args():
     )
     parser.add_argument(
         '--matches',
-        required=True,
+        default=None,
         metavar='PATH',
-        help='match_report.csv from wav_path_resolver.py.',
+        help=(
+            'match_report.csv from wav_path_resolver.py.\n'
+            'No longer required — matched_wav is read from the feather.\n'
+            'Accepted for backward compatibility but ignored.'
+        ),
     )
     parser.add_argument(
         '-o', '--out-dir',
@@ -892,10 +913,9 @@ def _parse_args():
 
     args = parser.parse_args()
 
-    for attr, label in [('feather', 'feather'), ('matches', 'match CSV')]:
-        p = Path(getattr(args, attr))
-        if not p.exists():
-            parser.error(f'{label} not found: {p}')
+    feather_p = Path(args.feather)
+    if not feather_p.exists():
+        parser.error(f'Feather file not found: {feather_p}')
 
     args.feather  = Path(args.feather)
     args.matches  = Path(args.matches)

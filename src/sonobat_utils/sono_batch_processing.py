@@ -5,7 +5,17 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 17:02:38
+# @Last Modified time: 2026-03-15 17:36:27
+#
+# **********************************************************
+#!/usr/bin/env python
+# **********************************************************
+#
+# @Author: Andreas Paepcke
+# @Date:   2026-03-11 15:59:39
+# @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
+# @Last Modified by:   Andreas Paepcke
+# @Last Modified time: 2026-03-15
 #
 # **********************************************************
 
@@ -105,6 +115,8 @@ All columns from the ``_Parameters_`` file are retained verbatim, plus:
     - ``file_id``               : stable integer key per fragment
     - ``TimeInOrigRecording``   : chirp onset (ms) within the original
                                   full-length recording (requires match_csv)
+    - ``matched_wav``           : absolute path to the original full-length
+                                  ``.wav`` file (requires match_csv)
 
 Typical Usage
 -------------
@@ -223,6 +235,8 @@ class LabelingResult:
     :param n_skipped:          Fragment Filenames skipped (already done).
     :param n_time_resolved:    Chirp rows that received a TimeInOrigRecording
                                value (0 when match_csv not provided).
+    :param n_wav_resolved:     Chirp rows that received a matched_wav path
+                               (0 when match_csv not provided).
     :param elapsed_secs:       Wall-clock seconds for the full run.
     """
     out_csv:            Path
@@ -233,6 +247,7 @@ class LabelingResult:
     n_chirps_unlabeled: int
     n_skipped:          int
     n_time_resolved:    int
+    n_wav_resolved:     int
     elapsed_secs:       float
 
     def summary(self) -> str:
@@ -784,6 +799,7 @@ class SpeciesLabeler:
                 n_chirps_unlabeled = 0,
                 n_skipped          = len(done_filenames),
                 n_time_resolved    = 0,
+                n_wav_resolved     = 0,
                 elapsed_secs       = time.perf_counter() - _t0,
             )
 
@@ -847,6 +863,7 @@ class SpeciesLabeler:
                 n_chirps_unlabeled = 0,
                 n_skipped          = len(done_filenames),
                 n_time_resolved    = 0,
+                n_wav_resolved     = 0,
                 elapsed_secs       = time.perf_counter() - _t0,
             )
 
@@ -872,10 +889,7 @@ class SpeciesLabeler:
         if self.match_csv and self.match_csv.exists():
             log.info(f'Computing TimeInOrigRecording from {self.match_csv} ...')
             try:
-                match_df = pd.read_csv(
-                    self.match_csv,
-                    dtype={'recording_start_time': str, 'fragment_time': str}
-                )                
+                match_df = pd.read_csv(self.match_csv)
                 # Strip CRLF artefacts from string columns.
                 for col in ('Filename', 'recording_start_time'):
                     if col in match_df.columns:
@@ -888,6 +902,55 @@ class SpeciesLabeler:
                 log.info(
                     f'TimeInOrigRecording computed for '
                     f'{n_time_resolved:,} / {len(chirps_df):,} chirp rows'
+                )
+
+                # Add matched_wav path so chirps_to_spectros.py needs no
+                # match report — the feather is self-contained for crop
+                # extraction.  Use compound key (YYYYMMDD_HHMMSS_site) for
+                # the same reason as TimeInOrigRecording: feather prefixes
+                # are unreliable.
+                _ts_re_mw = re.compile(r'(\d{8})_(\d{6})')
+
+                def _site_from_path_mw(p: str) -> str:
+                    pl = str(p).lower()
+                    for kw in ('lake2', 'barn', 'lake'):
+                        if kw in pl:
+                            return kw
+                    return 'unknown'
+
+                wav_map: dict[str, str] = {}
+                for _, mrow in match_df.iterrows():
+                    fname    = str(mrow.get('Filename', ''))
+                    wav_path = str(mrow.get('matched_wav', ''))
+                    if not fname or not wav_path or wav_path == 'nan':
+                        continue
+                    m = _ts_re_mw.search(fname)
+                    if not m:
+                        continue
+                    site = _site_from_path_mw(wav_path)
+                    key  = f'{m.group(1)}_{m.group(2)}_{site}'
+                    wav_map[key] = wav_path
+
+                def _feather_ck(stem: str) -> Optional[str]:
+                    m = _ts_re_mw.search(str(stem))
+                    if not m:
+                        return None
+                    s = str(stem).lower()
+                    site = next(
+                        (v for k, v in _PREFIX_TO_SITE.items()
+                         if s.startswith(k)), 'unknown'
+                    )
+                    return f'{m.group(1)}_{m.group(2)}_{site}'
+
+                chirps_df['matched_wav'] = (
+                    chirps_df['Filename']
+                    .map(_feather_ck)
+                    .map(lambda k: wav_map.get(k) if k else None)
+                )
+                n_wav_resolved = int(chirps_df['matched_wav'].notna().sum())
+                log.info(
+                    f'matched_wav resolved for '
+                    f'{n_wav_resolved:,} / {len(chirps_df):,} chirp rows'
                 )
             except Exception as exc:
                 log.warn(f'Could not compute TimeInOrigRecording: {exc}')
@@ -950,6 +1013,7 @@ class SpeciesLabeler:
             {'parameter': 'n_chirps_unlabeled', 'value': n_chirps_unlabeled},
             {'parameter': 'n_skipped',          'value': len(done_filenames)},
             {'parameter': 'n_time_resolved',    'value': n_time_resolved},
+            {'parameter': 'n_wav_resolved',     'value': int(chirps_df['matched_wav'].notna().sum()) if 'matched_wav' in chirps_df.columns else 0},
             {'parameter': 'elapsed_secs',       'value': round(elapsed, 1)},
         ]).to_csv(config_path, index=False)
         log.info(f'Wrote config to {config_path}')
@@ -963,6 +1027,8 @@ class SpeciesLabeler:
             n_chirps_unlabeled = n_chirps_unlabeled,
             n_skipped          = len(done_filenames),
             n_time_resolved    = n_time_resolved,
+            n_wav_resolved     = int(chirps_df['matched_wav'].notna().sum())
+                                 if 'matched_wav' in chirps_df.columns else 0,
             elapsed_secs       = elapsed,
         )
 
