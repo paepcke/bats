@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-16 10:05:10
+# @Last Modified time: 2026-03-16 15:34:45
 # **********************************************************
 
 """
@@ -651,6 +651,7 @@ class ChirpSpectroExtractor:
             'crop_path', 'partition', 'species', 'species_prob',
             'file_id', 'Filename',
             'time_in_orig_rec_ms', 'time_in_file_ms', 'match_quality',
+            'matched_wav',
         ])
         if not manifest_exists:
             manifest_writer.writeheader()
@@ -718,6 +719,7 @@ class ChirpSpectroExtractor:
                                 'time_in_orig_rec_ms': row['TimeInOrigRecording'],
                                 'time_in_file_ms'    : row['TimeInFile'],
                                 'match_quality'      : row.get('match_quality', ''),
+                                'matched_wav'        : row.get('matched_wav', ''),
                             })
                             n_written += 1
                         except Exception as exc:

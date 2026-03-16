@@ -5,7 +5,17 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 18:03:21
+# @Last Modified time: 2026-03-16 15:35:45
+#
+# **********************************************************
+#!/usr/bin/env python
+# **********************************************************
+#
+# @Author: Andreas Paepcke
+# @Date:   2026-03-11 15:59:39
+# @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
+# @Last Modified by:   Andreas Paepcke
+# @Last Modified time: 2026-03-15
 #
 # **********************************************************
 
@@ -615,47 +625,56 @@ class SpeciesLabeler:
             f'(YYYYMMDD_HHMMSS_site → recording_start_time)'
         )
 
-        # ── Vectorised computation ─────────────────────────────────────────
-        # Build arrays aligned to chirps_df for fast computation.
-        filenames    = chirps_df['Filename'].astype(str).values
-        time_in_file = pd.to_numeric(
-            chirps_df['TimeInFile'], errors='coerce'
-        ).values
+        # ── Fully vectorised computation ───────────────────────────────────
+        # Key insight: there are ~471k unique Filename values across ~4.5M
+        # chirp rows.  Computing diff_secs per unique Filename (one pass)
+        # and then joining back to chirps_df is ~10x faster than a Python
+        # loop over every row.
 
-        result_vals = [pd.NA] * len(chirps_df)
-
-        for i, (fname, tif) in enumerate(zip(filenames, time_in_file)):
-            if pd.isna(tif):
-                continue
-            site = _site_from_feather_stem(fname)
-            key  = _compound_key_from_stem(fname, site)
+        # Step 1: build a per-unique-Filename lookup table.
+        unique_fnames = chirps_df['Filename'].dropna().unique()
+        fname_records = []
+        for fname in unique_fnames:
+            fname_str = str(fname)
+            site  = _site_from_feather_stem(fname_str)
+            key   = _compound_key_from_stem(fname_str, site)
             if key is None:
                 continue
             rec_start = rec_start_map.get(key)
             if rec_start is None:
                 continue
-
-            # Extract fragment HHMMSS from the key (last 6 chars before site).
-            m = _FRAG_TS_RE.search(fname)
+            m = _FRAG_TS_RE.search(fname_str)
             if not m:
                 continue
             frag_hhmmss = m.group(2)
-
             frag_secs = SpeciesLabeler._hhmmss_to_seconds(frag_hhmmss)
             rec_secs  = SpeciesLabeler._hhmmss_to_seconds(rec_start)
             if frag_secs is None or rec_secs is None:
                 continue
-
             diff_secs = frag_secs - rec_secs
             if diff_secs < 0:
                 diff_secs += 86_400
-            # Cap at recording max length to catch midnight-crossing artefacts.
             if diff_secs > 55:
                 diff_secs = 0
+            fname_records.append({
+                'Filename':  fname_str,
+                'diff_ms':   diff_secs * 1000.0,
+            })
 
-            result_vals[i] = diff_secs * 1000.0 + float(tif)
+        if not fname_records:
+            return pd.array([pd.NA] * len(chirps_df), dtype='Float64')
 
-        return pd.array(result_vals, dtype='Float64')
+        # Step 2: merge diff_ms onto chirps_df by Filename, then add TimeInFile.
+        fname_df = pd.DataFrame(fname_records)
+        merged   = chirps_df[['Filename', 'TimeInFile']].copy()
+        merged['Filename'] = merged['Filename'].astype(str)
+        merged   = merged.merge(fname_df, on='Filename', how='left')
+
+        time_in_file = pd.to_numeric(merged['TimeInFile'], errors='coerce')
+        diff_ms      = pd.to_numeric(merged['diff_ms'],    errors='coerce')
+
+        result = (diff_ms + time_in_file).where(diff_ms.notna() & time_in_file.notna())
+        return pd.array(result.values, dtype='Float64')
 
     # ------------------------------------------------------------------ #
     #  Done-set helper                                                    #
