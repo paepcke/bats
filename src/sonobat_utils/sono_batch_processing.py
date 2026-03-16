@@ -5,7 +5,7 @@
 # @Date:   2026-03-11 15:59:39
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sono_batch_processing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-15 16:25:16
+# @Last Modified time: 2026-03-15 17:02:38
 #
 # **********************************************************
 
@@ -872,7 +872,10 @@ class SpeciesLabeler:
         if self.match_csv and self.match_csv.exists():
             log.info(f'Computing TimeInOrigRecording from {self.match_csv} ...')
             try:
-                match_df = pd.read_csv(self.match_csv)
+                match_df = pd.read_csv(
+                    self.match_csv,
+                    dtype={'recording_start_time': str, 'fragment_time': str}
+                )                
                 # Strip CRLF artefacts from string columns.
                 for col in ('Filename', 'recording_start_time'):
                     if col in match_df.columns:
