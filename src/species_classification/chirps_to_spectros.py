@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-16 15:34:45
+# @Last Modified time: 2026-03-17 14:58:24
 # **********************************************************
 
 """
@@ -27,17 +27,20 @@ Inputs
     ``species``, ``species_prob``.  Run ``sono_batch_processing.py`` with
     ``--match-csv`` to add ``TimeInOrigRecording`` before using this module.
 
-``match_report.csv``
-    No longer required directly — ``matched_wav`` paths are embedded in
-    the feather file by ``sono_batch_processing.py --match-csv``.
+Fragment ``.wav`` directories
+    Directories containing the 2-second fragment ``.wav`` files produced
+    by SonoBat's Long File Parser (passed via ``--fragment-dirs``).
+    These are at true 250 kHz (TE=1) and provide adequate sample density
+    for high-resolution spectrograms.  ``TimeInFile`` from the feather
+    gives the chirp onset within each fragment.
 
 Pipeline per chirp
 ------------------
-1. Read the full-recording ``.wav`` path from the ``matched_wav`` column
-   of the feather file (set by ``sono_batch_processing.py --match-csv``).
-2. Seek to ``TimeInOrigRecording`` ms within that recording using
-   ``soundfile`` (no full-file load).  This is the chirp onset within
-   the original full recording, not within the 2-second fragment.
+1. Resolve the ``Filename`` stem to its 2-second fragment ``.wav`` path
+   by walking ``--fragment-dirs``.
+2. Seek to ``TimeInFile`` ms within that fragment using ``soundfile``.
+   Fragment files are at true 250 kHz (TE=1), giving adequate sample
+   density for high-resolution spectrograms.
 3. Extract a ``--window-ms`` window centered on the chirp onset.
 4. Compute a linear-scale power spectrogram restricted to
    ``--freq-lo`` – ``--freq-hi`` kHz.
@@ -367,6 +370,7 @@ class ChirpSpectroExtractor:
         self,
         feather_path:   str | Path,
         out_dir:        str | Path,
+        fragment_dirs:  Sequence[str | Path] = (),
         min_prob:       float          = _DEFAULT_MIN_PROB,
         pre_ms:         float          = _DEFAULT_PRE_MS,
         post_ms:        float          = _DEFAULT_POST_MS,
@@ -382,6 +386,7 @@ class ChirpSpectroExtractor:
     ) -> None:
         self.feather_path  = Path(feather_path)
         self.out_dir       = Path(out_dir)
+        self.fragment_dirs = [Path(d) for d in fragment_dirs]
         self.min_prob      = min_prob
         self.pre_ms        = pre_ms
         self.post_ms       = post_ms
@@ -394,6 +399,33 @@ class ChirpSpectroExtractor:
         self.sample             = sample
         self.sample_species     = list(sample_species)
         self.sample_partition   = sample_partition
+
+    # ------------------------------------------------------------------ #
+    #  Fragment index                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _build_fragment_index(self) -> dict[str, str]:
+        """
+        Walk ``self.fragment_dirs`` and build a mapping from fragment stem
+        to absolute ``.wav`` path.
+
+        Fragment stems take the form ``<prefix>-<YYYYMMDD>_<HHMMSS>_2secs``
+        and are identical to the ``Filename`` values in the feather file.
+
+        :return: Dict mapping stem string → absolute path string.
+        """
+        index: dict[str, str] = {}
+        for base in self.fragment_dirs:
+            if not base.exists():
+                log.warn(f'Fragment dir not found: {base}')
+                continue
+            for p in base.rglob('*.wav'):
+                index[p.stem] = str(p.resolve())
+        log.info(
+            f'Fragment index: {len(index):,} stems from '
+            f'{len(self.fragment_dirs)} director(ies)'
+        )
+        return index
 
     # ------------------------------------------------------------------ #
     #  Data loading and preparation                                       #
@@ -423,26 +455,22 @@ class ChirpSpectroExtractor:
                 df[_col] = df[_col].astype(str).str.strip()
         log.info(f'  {len(df):,} total chirp rows')
 
-        # matched_wav and match_quality are now columns in the feather —
-        # no match report join required.
-        for col in ('matched_wav', 'match_quality'):
-            if col not in df.columns:
-                log.warn(
-                    f'Column {col!r} missing from feather. '
-                    'Re-run sono_batch_processing.py with --match-csv.'
-                )
-                sys.exit(1)
-
-        merged = df[
-            df['matched_wav'].notna() &
-            (df['matched_wav'] != '') &
-            (df['matched_wav'] != 'nan') &
-            df['match_quality'].isin(self.match_quality)
-        ].copy()
-        log.info(
-            f'  {len(merged):,} rows with resolved matched_wav '
-            f'(quality filter: {self.match_quality})'
-        )
+        # ── Build fragment index and join fragment paths ──────────────
+        if self.fragment_dirs:
+            frag_index = self._build_fragment_index()
+            df['fragment_wav'] = df['Filename'].map(
+                lambda s: frag_index.get(str(s))
+            )
+            merged = df[df['fragment_wav'].notna()].copy()
+            log.info(
+                f'  {len(merged):,} rows with resolved fragment wav'
+            )
+        else:
+            log.warn(
+                'No --fragment-dirs supplied.  '
+                'Pass fragment .wav directories for crop extraction.'
+            )
+            sys.exit(1)
 
         # Species filter: clean 4-char code only.
         import re
@@ -453,7 +481,7 @@ class ChirpSpectroExtractor:
         )]
         log.info(f'  {len(merged):,} rows with valid species code')
 
-        # Confidence filter — allow NaN prob through if species is present.
+        # Confidence filter.
         prob_ok = merged['species_prob'].isna() | \
                   (merged['species_prob'] >= self.min_prob)
         merged = merged[prob_ok]
@@ -462,33 +490,15 @@ class ChirpSpectroExtractor:
             f'(min_prob={self.min_prob})'
         )
 
-        # Require TimeInOrigRecording — rows without it have no valid
-        # seek position and would produce noise crops.
-        if 'TimeInOrigRecording' not in merged.columns:
-            log.warn(
-                'TimeInOrigRecording column missing from feather. '
-                'Re-run sono_batch_processing.py with --match-csv.'
-            )
-            sys.exit(1)
-        before = len(merged)
-        merged = merged[merged['TimeInOrigRecording'].notna()]
-        dropped = before - len(merged)
-        if dropped:
-            log.info(
-                f'  Dropped {dropped:,} rows with NaN TimeInOrigRecording '
-                f'({len(merged):,} remaining)'
-            )
-
-        needed_cols = ['Filename', 'TimeInFile', 'TimeInOrigRecording',
-                       'species', 'species_prob', 'file_id',
+        needed_cols = ['Filename', 'TimeInFile', 'species',
+                       'species_prob', 'file_id', 'fragment_wav',
                        'matched_wav', 'match_quality']
-        # matched_wav and match_quality already in df from feather.
-        missing = [c for c in needed_cols if c not in merged.columns]
-        if missing:
-            log.warn(f'Missing columns in merged DataFrame: {missing}')
-            sys.exit(1)
-
-        return merged[needed_cols].reset_index(drop=True)
+        # matched_wav/match_quality may be absent on older feathers — tolerate.
+        for opt in ('matched_wav', 'match_quality', 'TimeInOrigRecording'):
+            if opt not in merged.columns:
+                merged[opt] = pd.NA
+        available = [c for c in needed_cols if c in merged.columns]
+        return merged[available].reset_index(drop=True)
 
     # ------------------------------------------------------------------ #
     #  Manifest helpers                                                   #
@@ -678,8 +688,8 @@ class ChirpSpectroExtractor:
                 futures = {
                     pool.submit(
                         _chirp_to_spectro,
-                        row['matched_wav'],
-                        float(row['TimeInOrigRecording']),
+                        row['fragment_wav'],
+                        float(row['TimeInFile']),
                         self.pre_ms,
                         self.post_ms,
                         self.freq_lo_hz,
@@ -716,7 +726,7 @@ class ChirpSpectroExtractor:
                                 'species_prob'       : row.get('species_prob', ''),
                                 'file_id'            : row.get('file_id', ''),
                                 'Filename'           : row['Filename'],
-                                'time_in_orig_rec_ms': row['TimeInOrigRecording'],
+                                'time_in_orig_rec_ms': row.get('TimeInOrigRecording', ''),
                                 'time_in_file_ms'    : row['TimeInFile'],
                                 'match_quality'      : row.get('match_quality', ''),
                                 'matched_wav'        : row.get('matched_wav', ''),
@@ -797,6 +807,18 @@ def _parse_args():
             'the match_report.csv from wav_path_resolver.py.'
         ),
         formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument(
+        '--fragment-dirs',
+        nargs='+',
+        default=[],
+        metavar='DIR',
+        help=(
+            'Directories containing 2-second fragment .wav files\n'
+            '(output of SonoBat Long File Parser).  These are walked\n'
+            'recursively to build a Filename → path index used for\n'
+            'spectrogram extraction via TimeInFile.'
+        ),
     )
     parser.add_argument(
         '--feather',
@@ -922,6 +944,7 @@ def main() -> None:
     extractor = ChirpSpectroExtractor(
         feather_path  = args.feather,
         out_dir       = args.out_dir,
+        fragment_dirs = args.fragment_dirs,
         min_prob      = args.min_prob,
         pre_ms        = args.pre_ms,
         post_ms       = args.post_ms,
