@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2025-11-13 17:58:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2025-11-13 18:19:03
+# @Last Modified time: 2026-03-18 12:01:28
 
 #!/usr/bin/env python3
 """
@@ -31,17 +31,18 @@ class FileStager:
         """
         self.source_dir = Path(source_dir)
         self.num_batches = num_batches
+
+        if not self.source_dir.exists():
+            raise ValueError(f"Source directory does not exist: {source_dir}")
+        
         self.batch_dirs = [
             Path(batch_base) / f"batch{i}" / "input" 
             for i in range(1, num_batches + 1)
         ]
         
-        if not self.source_dir.exists():
-            raise ValueError(f"Source directory does not exist: {source_dir}")
-        
         for batch_dir in self.batch_dirs:
-            if not batch_dir.exists():
-                raise ValueError(f"Batch directory does not exist: {batch_dir}")
+            # Ensure the destination dirs exist:
+            batch_dir.mkdir(parents=True, exist_ok=True)
     
     def get_date_dirs(self, start_date: str = "20000101") -> List[Path]:
         """
@@ -96,7 +97,10 @@ class FileStager:
                 if dest.exists():
                     print(f"  Warning: {dest} already exists, skipping")
                     continue
-                shutil.copytree(date_dir, dest)
+                # Rather then copying the subdirs, move
+                # them to their input destinations:
+                shutil.move(str(date_dir), str(dest))
+                #shutil.copytree(date_dir, dest)
         
         print("\nDistribution complete!" if not dry_run else "\nDry run complete!")
         for i in range(1, self.num_batches + 1):
