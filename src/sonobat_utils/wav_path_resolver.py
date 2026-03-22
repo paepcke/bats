@@ -4,7 +4,7 @@
 # @Date:   2026-03-14 19:02:24
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/wav_path_resolver.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-16 10:31:16
+# @Last Modified time: 2026-03-21 19:24:01
 # **********************************************************
 
 """
@@ -31,8 +31,9 @@ prefixes (``barn-``, ``lake2-``, ``bats-``) to not reliably match the actual
 directory structure on disk.  The only stable identifier is the **date + time**
 embedded in both the fragment stem and the original recording filename:
 
-* Fragment stem:    ``lake2_-20220427_192220_2secs``  -> date ``20220427``, time ``192220``
-* Full recording:  ``barn1_D20220427T194240m165.wav`` -> date ``20220427``, time ``194240``
+* Fragment stem (lake2 / old barn): ``lake2_-20220427_192220_2secs``       -> date ``20220427``, time ``192220``
+* Fragment stem (re-chopped barn):  ``barn_D20220427T192220m382_2secs``    -> date ``20220427``, time ``192220``
+* Full recording:                   ``barn1_D20220427T194240m165.wav``     -> date ``20220427``, time ``194240``
 
 The fragment timestamp is the wall-clock time of that fragment, not the
 recording start time.  Fragment ``192220`` belongs to a recording that
@@ -106,8 +107,12 @@ log = LoggingService()
 # Matches full-recording filenames: *_D20220327T194240*.wav
 _FULL_REC_RE = re.compile(r'_D(\d{8})T(\d{6})')
 
-# Matches fragment filenames: *20220427_192220*.wav  (with optional prefix chars)
-_FRAGMENT_RE = re.compile(r'(\d{8})_(\d{6})')
+# Matches fragment filenames in either naming convention:
+#   old style (lake2 + old barn): lake2_-20220427_192220_2secs  → YYYYMMDD_HHMMSS
+#   new style (re-chopped barn):  barn_D20220702T235738m823_2secs → DYYYYMMDDTHHMMSS
+# The optional D? and [T_] alternation make both formats yield the same two
+# capture groups: group(1)=YYYYMMDD, group(2)=HHMMSS.
+_FRAGMENT_RE = re.compile(r'D?(\d{8})[T_](\d{6})')
 
 # Assumed maximum recording duration — fragment timestamps must fall within
 # [rec_start, rec_start + _MAX_REC_DUR_S] to count as a window match.
@@ -385,8 +390,10 @@ class WavPathResolver:
         """
         Parse a fragment ``.wav`` filename for date and time.
 
-        Expects ``<YYYYMMDD>_<HHMMSS>`` anywhere in the stem,
-        e.g. ``lake2_-20220427_192220_2secs.wav``.
+        Accepts either the old-style ``<YYYYMMDD>_<HHMMSS>`` format used by
+        lake2 fragments (e.g. ``lake2_-20220427_192220_2secs.wav``) or the
+        new-style ``D<YYYYMMDD>T<HHMMSS>`` format produced by the re-chopped
+        barn fragments (e.g. ``barn_D20220702T235738m823_2secs.wav``).
 
         :param path: Path to candidate ``.wav`` file.
         :return:     :class:`WavEntry` or ``None`` if pattern not found.
@@ -412,9 +419,11 @@ class WavPathResolver:
         """
         Extract ``(YYYYMMDD, HHMMSS)`` from a feather ``Filename`` stem.
 
-        The stem may carry an arbitrary location prefix before the date,
-        e.g. ``lake2_-20220427_192220_2secs`` or ``barn-20220427_192220_2secs``.
-        The date+time are identified via :data:`_FRAGMENT_RE`.
+        The stem may carry an arbitrary location prefix before the date.
+        Both naming conventions are accepted via :data:`_FRAGMENT_RE`:
+
+        * old style (lake2 + old barn): ``lake2_-20220427_192220_2secs``
+        * new style (re-chopped barn):  ``barn_D20220702T235738m823_2secs``
 
         :param stem: ``Filename`` value from the feather file (no extension).
         :return:     ``(date_str, time_str)`` or ``('', '')`` if unparseable.
