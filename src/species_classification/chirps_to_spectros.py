@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-17 14:58:24
+# @Last Modified time: 2026-03-27 09:33:20
 # **********************************************************
 
 """
@@ -490,10 +490,18 @@ class ChirpSpectroExtractor:
             f'(min_prob={self.min_prob})'
         )
 
-        needed_cols = ['Filename', 'TimeInFile', 'species',
-                       'species_prob', 'file_id', 'fragment_wav',
+        # Bug fix: match_quality filter was documented but never applied.
+        if 'match_quality' in merged.columns and self.match_quality:
+            merged = merged[merged['match_quality'].isin(self.match_quality)]
+            log.info(
+                f'  {len(merged):,} rows after match_quality filter '
+                f'(accepted: {sorted(self.match_quality)})'
+            )
+
+        needed_cols = ['Filename', 'TimeInFile', 'TimeInOrigRecording',
+                       'species', 'species_prob', 'file_id', 'fragment_wav',
                        'matched_wav', 'match_quality']
-        # matched_wav/match_quality may be absent on older feathers — tolerate.
+        # Some columns may be absent on older feathers — fill with NA.
         for opt in ('matched_wav', 'match_quality', 'TimeInOrigRecording'):
             if opt not in merged.columns:
                 merged[opt] = pd.NA
@@ -644,9 +652,11 @@ class ChirpSpectroExtractor:
             (self.out_dir / part).mkdir(exist_ok=True)
 
         # Per-partition counters for sequential PNG naming.
-        # Load existing counts from manifest if incremental.
+        # For incremental runs load existing counts from manifest so PNG
+        # numbering continues correctly.  For fresh runs start at zero.
         partition_counters: dict[str, int] = {}
-        if manifest_path.exists():
+        if done_set and manifest_path.exists():
+            # Incremental run: resume numbering from existing manifest.
             try:
                 mdf = pd.read_csv(manifest_path, usecols=['partition'])
                 for pt, cnt in mdf['partition'].value_counts().items():
@@ -654,16 +664,27 @@ class ChirpSpectroExtractor:
             except Exception:
                 pass
 
-        # ── Open manifest for appending ───────────────────────────────
-        manifest_exists = manifest_path.exists()
-        manifest_fh = open(manifest_path, 'a', newline='')
-        manifest_writer = csv.DictWriter(manifest_fh, fieldnames=[
+        # ── Open manifest for writing (temp → atomic rename on success) ──
+        # Writing to a temp file and renaming on completion prevents a
+        # stale or corrupt manifest from a prior run being appended to,
+        # which would mix PNG references across two different runs.
+        _MANIFEST_FIELDS = [
             'crop_path', 'partition', 'species', 'species_prob',
             'file_id', 'Filename',
             'time_in_orig_rec_ms', 'time_in_file_ms', 'match_quality',
             'matched_wav',
-        ])
-        if not manifest_exists:
+        ]
+        is_incremental = bool(done_set)
+        if is_incremental:
+            # Append mode: continue an existing manifest.
+            manifest_fh = open(manifest_path, 'a', newline='')
+            manifest_writer = csv.DictWriter(manifest_fh, fieldnames=_MANIFEST_FIELDS)
+            manifest_tmp_path = None  # no rename needed
+        else:
+            # Fresh run: write to a temp file, rename atomically at the end.
+            manifest_tmp_path = manifest_path.with_suffix('.tmp')
+            manifest_fh = open(manifest_tmp_path, 'w', newline='')
+            manifest_writer = csv.DictWriter(manifest_fh, fieldnames=_MANIFEST_FIELDS)
             manifest_writer.writeheader()
 
         # ── Parallel extraction ───────────────────────────────────────
@@ -744,6 +765,10 @@ class ChirpSpectroExtractor:
         if pbar:
             pbar.close()
         manifest_fh.close()
+
+        # Atomically promote temp manifest to final path (fresh runs only).
+        if manifest_tmp_path is not None:
+            manifest_tmp_path.replace(manifest_path)
 
         # ── Write config ──────────────────────────────────────────────
         elapsed = time.perf_counter() - _t0
