@@ -3,8 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-03-25 19:42:48
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-25 19:52:34
-
+# @Last Modified time: 2026-03-26 22:42:46
 """
 day_date_dirs_to_numeric_dirs.py -- Rename week-range directories to numeric date format.
 
@@ -41,22 +40,67 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Month-name → month-number lookup (abbreviated, title-cased)
+# Month-name → month-number lookups
 # ---------------------------------------------------------------------------
+
+# Abbreviated month names (3 letters, title-cased)
+# Canonical 3-letter abbreviations plus common variants found in the wild:
+#   "Sept" (4-letter) and full names used without spaces (June, July, etc.)
 MONTH_ABBREVS: dict[str, int] = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4,
     "May": 5, "Jun": 6, "Jul": 7, "Aug": 8,
     "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+    # 4-letter variant
+    "Sept": 9,
+    # Full names used as prefixes (June11-18, July1, etc.)
+    "January": 1, "February": 2, "March": 3, "April": 4,
+    "June": 6, "July": 7, "August": 8,
+    "September": 9, "October": 10, "November": 11, "December": 12,
 }
 
-# Matches patterns such as:
-#   Apr16-23        → month=Apr, start_day=16
-#   Apr30-May8      → month=Apr, start_day=30
-#   Aug13-19        → month=Aug, start_day=13
-_DIR_PATTERN = re.compile(
-    r"^(?P<month>[A-Za-z]{3})(?P<day>\d{1,2})"   # leading month + start day
-    r"-"                                            # separator
-    r"(?:[A-Za-z]{3})?\d{1,2}$"                   # optional end-month + end day
+# Full month names — used by the ``N-MonthName`` format
+MONTH_FULL: dict[str, int] = {
+    "January": 1, "February": 2, "March": 3, "April": 4,
+    "May": 5, "June": 6, "July": 7, "August": 8,
+    "September": 9, "October": 10, "November": 11, "December": 12,
+}
+
+# ---------------------------------------------------------------------------
+# Directory-name patterns, tried in order.  All formats seen so far:
+#
+#  Pattern A — alpha-prefix, no space:
+#    Apr16-23 / Apr30-May8 / June11-18 / June25-July1 / Sept10-17 / Sept30-Oct7
+#    ^<MonToken><day>-[<MonToken>]<day>$
+#    MonToken may be 3 letters (Apr), 4 letters (Sept), or a full name (June).
+#
+#  Pattern B — alpha-prefix, space before digits:
+#    Nov 13-20  /  Oct 30-Nov 7  /  Sep 25-Oct 2
+#    ^<Mon3> <day>-[<Mon3> ]<day>$   (space variant, always 3-letter prefix)
+#
+#  Pattern C — numeric month + full name: 3-March / 8-August
+#    ^<N>-<MonthName>$
+# ---------------------------------------------------------------------------
+
+# A: any alphabetic month token (3-letter, 4-letter "Sept", or full name like
+#    "June"/"July") immediately followed by digits; optional end-month token
+#    and end-day.  The token is greedy-longest so "June" beats "Jun".
+_PAT_A = re.compile(
+    r"^(?P<month>[A-Za-z]+?)(?P<day>\d{1,2})"    # Mon-token + start-day
+    r"-"
+    r"(?:[A-Za-z]+)?\d{1,2}$"                     # optional end-Mon + end-day
+)
+
+# B: exactly 3-letter abbreviated month, a space, then digits; optional
+#    end-month (with or without a trailing space before the end-day).
+_PAT_B = re.compile(
+    r"^(?P<month>[A-Za-z]{3})\s(?P<day>\d{1,2})"  # Mon3<space>start-day
+    r"-"
+    r"(?:[A-Za-z]{3}\s?)?\d{1,2}$"                 # optional end-Mon(+space?) + end-day
+)
+
+# C: bare month number, hyphen, full month name  (e.g. "3-March", "11-November")
+_PAT_C = re.compile(
+    r"^(?P<month_num>\d{1,2})-(?P<month_name>[A-Za-z]+)$"
 )
 
 
@@ -118,28 +162,64 @@ class DirRenamer:
     def _parse_dir_name(self, name: str) -> str | None:
         """Parse a date-range directory name and return the target ``YYYYMMDD`` string.
 
-        :param name: The bare directory name to parse (e.g. ``"Apr16-23"``).
-        :return: A string like ``"20220416"``, or ``None`` if ``name`` does not
-                 match the expected pattern or contains an invalid date.
+        Four directory-name formats are recognised:
+
+        * **Format A** (alpha prefix, no space): ``Apr16-23``, ``June11-18``,
+          ``June25-July1``, ``Sept10-17``, ``Sept30-Oct7``
+        * **Format B** (3-letter abbrev + space): ``Nov 13-20``, ``Oct 30-Nov 7``
+        * **Format C** (numeric month + full name): ``3-March``, ``8-August``
+
+        In formats A and B the *start* month and day are extracted; the end
+        portion of the range is discarded.  In format C the month number is
+        used directly and the first day of that month is assumed (day = 1).
+        Unrecognised names (e.g. ``"Nov-Feb Bat Calls"``) return ``None``.
+
+        :param name: The bare directory name to parse (e.g. ``"June11-18"``).
+        :return: A string like ``"20210611"``, or ``None`` if ``name`` does not
+                 match any recognised pattern or encodes an invalid calendar date.
         """
-        match = _DIR_PATTERN.match(name)
-        if match is None:
-            return None
+        # --- Format A: AprDD-... / JuneDD-... / SeptDD-... / June25-July1 ---
+        # MONTH_ABBREVS covers 3-letter, 4-letter (Sept), and full-name prefixes.
+        m = _PAT_A.match(name)
+        if m:
+            month_str = m.group("month").capitalize()
+            day = int(m.group("day"))
+            month = MONTH_ABBREVS.get(month_str)
+            if month is not None:
+                return self._make_date_str(month, day)
 
-        month_str = match.group("month").capitalize()  # normalise case
-        day = int(match.group("day"))
-        month = MONTH_ABBREVS.get(month_str)
+        # --- Format B: Apr DD-...  or  Oct 30-Nov 7 ---
+        m = _PAT_B.match(name)
+        if m:
+            month_str = m.group("month").capitalize()
+            day = int(m.group("day"))
+            month = MONTH_ABBREVS.get(month_str)
+            if month is not None:
+                return self._make_date_str(month, day)
 
-        if month is None:
-            return None  # unrecognised month abbreviation
+        # --- Format C: 3-March, 11-November ---
+        m = _PAT_C.match(name)
+        if m:
+            month_num = int(m.group("month_num"))
+            month_name = m.group("month_name").capitalize()
+            # Accept if the numeric month matches the spelled-out name
+            expected = MONTH_FULL.get(month_name)
+            if expected is not None and expected == month_num:
+                return self._make_date_str(month_num, 1)  # use day 1
 
+        return None
+
+    def _make_date_str(self, month: int, day: int) -> str | None:
+        """Build a ``YYYYMMDD`` string from month and day, using :attr:`year`.
+
+        :param month: Calendar month number (1-12).
+        :param day: Calendar day number (1-31).
+        :return: Formatted date string, or ``None`` if the combination is invalid.
+        """
         try:
-            parsed_date = date(self.year, month, day)
+            return date(self.year, month, day).strftime("%Y%m%d")
         except ValueError:
-            # day/month combination is not a real calendar date
             return None
-
-        return parsed_date.strftime("%Y%m%d")
 
     def _rename(self, src: Path, dest: Path) -> None:
         """Rename ``src`` to ``dest``, respecting the dry-run flag.
