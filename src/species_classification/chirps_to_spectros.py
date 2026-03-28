@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-27 09:33:20
+# @Last Modified time: 2026-03-27 17:48:52
 # **********************************************************
 
 """
@@ -490,12 +490,16 @@ class ChirpSpectroExtractor:
             f'(min_prob={self.min_prob})'
         )
 
-        # Bug fix: match_quality filter was documented but never applied.
+        # match_quality filter: keep rows whose quality is in the accepted set,
+        # plus rows where match_quality is NaN (chirps from feathers produced
+        # before the wav-matcher was run — their fragment_wav path was resolved
+        # directly from the Filename stem and is valid).
         if 'match_quality' in merged.columns and self.match_quality:
-            merged = merged[merged['match_quality'].isin(self.match_quality)]
+            mq = merged['match_quality']
+            merged = merged[mq.isna() | mq.isin(self.match_quality)]
             log.info(
                 f'  {len(merged):,} rows after match_quality filter '
-                f'(accepted: {sorted(self.match_quality)})'
+                f'(accepted: {sorted(self.match_quality)} + NaN)'
             )
 
         needed_cols = ['Filename', 'TimeInFile', 'TimeInOrigRecording',
