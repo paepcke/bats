@@ -5,7 +5,7 @@
 # @Date:   2026-03-30 10:38:02
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/bat_chops_deduping.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-30 10:38:45
+# @Last Modified time: 2026-03-30 10:59:35
 #
 # **********************************************************
 
@@ -18,32 +18,51 @@ chops and true duplicates.
 
 Workflow
 --------
-  1. On quintus:
-       python chop_dedup.py --machine quintus \\
-                            --root-dir /qnap/bats/barn_sonobat3_2_processed \\
-                            --output quintus_stems.json
+  1. On quintus::
 
-  2. On sextus:
-       python chop_dedup.py --machine sextus \\
-                            --root-dir /data/win_share \\
-                            --output sextus_stems.json
+       python src/sonobat_utils/bat_chops_deduping.py --scan --machine quintus \\
+           --root-dir /qnap/bats/barn_sonobat3_2_processed \\
+           --output /qnap/bats/quintus_chops_file_stems.json
 
-  3. Copy one JSON to the other machine, then run:
-       python chop_dedup.py --compare \\
-                            --stems-a quintus_stems.json \\
-                            --stems-b sextus_stems.json \\
-                            --audio-check          # optional: hash audio payload
-                            --transfer-list sextus_to_transfer.txt
+  2. On sextus::
 
-Module docstring note: the '_2secs' suffix present on quintus filenames is
-stripped automatically so stems match between machines.
+       python src/sonobat_utils/bat_chops_deduping.py --scan --machine sextus \\
+           --root-dir /data/win_share/chopped_files \\
+           --output /data/win_share/sextus_chops_file_stems.json
+
+  3. Copy one JSON to the other machine, then compare::
+
+       python src/sonobat_utils/bat_chops_deduping.py --compare \\
+           --stems-a /qnap/bats/quintus_chops_file_stems.json \\
+           --stems-b /data/win_share/sextus_chops_file_stems.json \\
+           --audio-check \\
+           --transfer-list /data/win_share/sextus_to_transfer.txt
+
+Batch discovery
+---------------
+The scanner looks for subdirectories of *root-dir* whose names match
+``<batch-root-nm><n>`` for n = 1, 2, 3, … (consecutive integers starting
+at 1).  Scanning stops at the first gap.  Any other subdirectories of
+*root-dir* are ignored.  The default batch root name is ``"batch"``, so
+the scanner finds ``batch1``, ``batch2``, ``batch3``, ``batch4``, etc.
+
+JSON format
+-----------
+Each entry in the ``"stems"`` dict maps a normalised stem to a record::
+
+    {
+      "path":  "/data/win_share/chopped_files/batch4/chopped34/barn-20220723_220147.wav",
+      "batch": 4
+    }
+
+The ``"_2secs"`` suffix present on quintus filenames is stripped
+automatically so stems match between machines.
 """
 
 import argparse
 import hashlib
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -59,8 +78,45 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# WAV header size to skip when comparing audio payload
+# Bytes to skip at the start of a WAV file when comparing audio payload
 _WAV_HEADER_BYTES = 44
+
+# Default prefix for batch subdirectory names
+_DEFAULT_BATCH_ROOT_NM = "batch"
+
+
+# ---------------------------------------------------------------------------
+# StemRecord  (thin typed dict stand-in)
+# ---------------------------------------------------------------------------
+
+class StemRecord:
+    """Holds the path and batch number for a single chop file.
+
+    :param path: Absolute path to the .wav file.
+    :param batch: Batch number (integer) under which the file was found.
+    """
+
+    __slots__ = ("path", "batch")
+
+    def __init__(self, path: str, batch: int) -> None:
+        self.path = path
+        self.batch = batch
+
+    def to_dict(self) -> dict:
+        """Serialise to a plain dict for JSON output.
+
+        :return: ``{"path": ..., "batch": ...}`` dict.
+        """
+        return {"path": self.path, "batch": self.batch}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StemRecord":
+        """Deserialise from a plain dict loaded from JSON.
+
+        :param data: Dict with ``"path"`` and ``"batch"`` keys.
+        :return: New :class:`StemRecord` instance.
+        """
+        return cls(path=data["path"], batch=data["batch"])
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +124,12 @@ _WAV_HEADER_BYTES = 44
 # ---------------------------------------------------------------------------
 
 class ChopDeduplicator:
-    """Scan a directory tree for .wav chop files and emit a stem→path map.
+    """Scan batch subdirectories under *root_dir* for .wav chop files.
+
+    Only subdirectories named ``<batch_root_nm>1``, ``<batch_root_nm>2``,
+    … are scanned; scanning stops at the first gap (e.g. if ``batch3``
+    does not exist, ``batch4`` is not checked).  All other subdirectories
+    of *root_dir* are ignored.
 
     A *stem* is the filename without extension and without the ``_2secs``
     suffix that quintus files carry, e.g.::
@@ -80,43 +141,50 @@ class ChopDeduplicator:
     enabling direct set arithmetic across machines.
 
     :param machine: Human-readable machine label (e.g. ``"quintus"``).
-    :param root_dir: Root directory to walk recursively.
+    :param root_dir: Parent directory that contains the batch subdirectories.
+    :param batch_root_nm: Common name prefix for batch dirs (default ``"batch"``).
     """
 
     _SUFFIX_TO_STRIP = "_2secs"
 
-    def __init__(self, machine: str, root_dir: Path) -> None:
+    def __init__(
+        self,
+        machine: str,
+        root_dir: Path,
+        batch_root_nm: str = _DEFAULT_BATCH_ROOT_NM,
+    ) -> None:
         self.machine = machine
         self.root_dir = root_dir
-        # stem → absolute path string
-        self._stem_map: dict[str, str] = {}
+        self.batch_root_nm = batch_root_nm
+        # stem → StemRecord
+        self._stem_map: dict[str, StemRecord] = {}
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def scan(self) -> dict[str, str]:
-        """Walk *root_dir* and build the stem→path mapping.
+    def scan(self) -> dict[str, StemRecord]:
+        """Discover batch dirs and build the stem→StemRecord mapping.
 
-        :return: Dict mapping stem to absolute file path.
+        Batch directories ``<batch_root_nm>1``, ``<batch_root_nm>2``, …
+        are probed in order; the first missing one stops the search.
+
+        :return: Dict mapping normalised stem to :class:`StemRecord`.
         """
-        log.info("[%s] Scanning %s …", self.machine, self.root_dir)
-        count = 0
-        for wav_path in self.root_dir.rglob("*.wav"):
-            stem = self._to_stem(wav_path.name)
-            if stem in self._stem_map:
-                log.warning(
-                    "[%s] Duplicate stem %r — keeping first hit, skipping %s",
-                    self.machine, stem, wav_path,
-                )
-            else:
-                self._stem_map[stem] = str(wav_path)
-            count += 1
-            if count % 50_000 == 0:
-                log.info("[%s]   … %d files scanned so far", self.machine, count)
+        batch_dirs = self._discover_batch_dirs()
+        if not batch_dirs:
+            log.warning(
+                "[%s] No batch directories found under %s with prefix %r",
+                self.machine, self.root_dir, self.batch_root_nm,
+            )
+            return self._stem_map
 
-        log.info("[%s] Done — %d .wav files, %d unique stems",
-                 self.machine, count, len(self._stem_map))
+        for batch_num, batch_dir in batch_dirs:
+            self._scan_batch(batch_num, batch_dir)
+
+        total = len(self._stem_map)
+        log.info("[%s] Grand total: %d unique stems across %d batches",
+                 self.machine, total, len(batch_dirs))
         return self._stem_map
 
     def save(self, output_path: Path) -> None:
@@ -127,15 +195,81 @@ class ChopDeduplicator:
         payload = {
             "machine": self.machine,
             "root_dir": str(self.root_dir),
-            "stems": self._stem_map,
+            "batch_root_nm": self.batch_root_nm,
+            "stems": {stem: rec.to_dict() for stem, rec in self._stem_map.items()},
         }
         with output_path.open("w") as fh:
             json.dump(payload, fh, indent=2)
-        log.info("[%s] Stem map written to %s", self.machine, output_path)
+        log.info("[%s] Stem map written to %s  (%d entries)",
+                 self.machine, output_path, len(self._stem_map))
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Private helpers
     # ------------------------------------------------------------------
+
+    def _discover_batch_dirs(self) -> list[tuple[int, Path]]:
+        """Return an ordered list of (batch_number, path) for existing batch dirs.
+
+        Probes ``<batch_root_nm>1``, ``<batch_root_nm>2``, … and stops at
+        the first gap.
+
+        :return: List of (int, Path) tuples in ascending batch order.
+        """
+        found: list[tuple[int, Path]] = []
+        n = 1
+        while True:
+            candidate = self.root_dir / f"{self.batch_root_nm}{n}"
+            if candidate.is_dir():
+                found.append((n, candidate))
+                log.info("[%s] Found batch dir: %s", self.machine, candidate)
+                n += 1
+            else:
+                if n == 1:
+                    log.warning(
+                        "[%s] %s does not exist — no batches found",
+                        self.machine, candidate,
+                    )
+                else:
+                    log.info(
+                        "[%s] %s not found — stopping batch search at %d batches",
+                        self.machine, candidate, len(found),
+                    )
+                break
+        return found
+
+    def _scan_batch(self, batch_num: int, batch_dir: Path) -> None:
+        """Walk one batch directory and add its stems to the map.
+
+        :param batch_num: Integer batch number (for the StemRecord).
+        :param batch_dir: Absolute path to the batch subdirectory.
+        """
+        log.info("[%s] Scanning batch%d at %s …", self.machine, batch_num, batch_dir)
+        count = 0
+        for wav_path in batch_dir.rglob("*.wav"):
+            stem = self._to_stem(wav_path.name)
+            if stem in self._stem_map:
+                existing = self._stem_map[stem]
+                log.warning(
+                    "[%s] Duplicate stem %r — already seen in batch%d (%s), "
+                    "skipping batch%d path %s",
+                    self.machine, stem, existing.batch, existing.path,
+                    batch_num, wav_path,
+                )
+            else:
+                self._stem_map[stem] = StemRecord(
+                    path=str(wav_path), batch=batch_num
+                )
+            count += 1
+            if count % 50_000 == 0:
+                log.info(
+                    "[%s]   batch%d … %d files scanned so far",
+                    self.machine, batch_num, count,
+                )
+
+        log.info(
+            "[%s] batch%d done — %d .wav files, running total %d unique stems",
+            self.machine, batch_num, count, len(self._stem_map),
+        )
 
     @classmethod
     def _to_stem(cls, filename: str) -> str:
@@ -151,7 +285,7 @@ class ChopDeduplicator:
 
 
 # ---------------------------------------------------------------------------
-# Comparator
+# ChopComparator
 # ---------------------------------------------------------------------------
 
 class ChopComparator:
@@ -159,25 +293,26 @@ class ChopComparator:
 
     Classification
     --------------
-    * **sextus-only** — safe to copy to quintus (no stem overlap).
+    * **b-only** — stem present only in map B (sextus); safe to copy.
     * **overlap** — same stem on both sides; may or may not be true
       duplicates depending on audio payload.
-    * **quintus-only** — already on quintus, not relevant for transfer.
+    * **a-only** — stem present only in map A (quintus); not relevant
+      for the transfer direction.
 
     If *audio_check* is True, overlapping files are further resolved by
     comparing the MD5 of their audio payload (bytes after the WAV header).
 
-    :param map_a: Stem map from machine A (quintus, dict ``stem→path``).
-    :param map_b: Stem map from machine B (sextus, dict ``stem→path``).
+    :param map_a: Stem map from machine A (quintus).
+    :param map_b: Stem map from machine B (sextus).
     :param label_a: Label for machine A.
     :param label_b: Label for machine B.
-    :param audio_check: When True, hash audio payloads for overlaps.
+    :param audio_check: When True, hash audio payloads for overlapping stems.
     """
 
     def __init__(
         self,
-        map_a: dict[str, str],
-        map_b: dict[str, str],
+        map_a: dict[str, StemRecord],
+        map_b: dict[str, StemRecord],
         label_a: str = "quintus",
         label_b: str = "sextus",
         audio_check: bool = False,
@@ -195,40 +330,43 @@ class ChopComparator:
         self.only_b: set[str] = self.stems_b - self.stems_a
         self.overlap: set[str] = self.stems_a & self.stems_b
 
-        # Filled by resolve_overlaps()
+        # Populated by resolve_overlaps()
         self.true_duplicates: list[str] = []
         self.content_differs: list[str] = []
-        self.unresolved: list[str] = []   # one/both files missing locally
+        self.unresolved: list[str] = []   # one or both files not locally accessible
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def report(self) -> None:
-        """Print a summary of the comparison to stdout."""
+        """Log a summary of the set comparison."""
         log.info("=== Comparison Summary ===")
         log.info("  %-12s only : %d", self._label_a, len(self.only_a))
         log.info("  %-12s only : %d", self._label_b, len(self.only_b))
         log.info("  Overlap (same stem) : %d", len(self.overlap))
 
     def resolve_overlaps(self) -> None:
-        """Classify overlapping stems by audio-payload hash.
+        """Classify overlapping stems by audio-payload MD5.
 
         Populates :attr:`true_duplicates`, :attr:`content_differs`, and
-        :attr:`unresolved`.  Skips hashing if *audio_check* is False —
-        all overlaps go into *unresolved*.
+        :attr:`unresolved`.  If *audio_check* is False all overlaps are
+        placed in *unresolved* without any file I/O.
         """
         if not self._audio_check:
-            log.info("--audio-check not set; %d overlaps left unresolved",
-                     len(self.overlap))
+            log.info(
+                "--audio-check not set; %d overlaps left unresolved",
+                len(self.overlap),
+            )
             self.unresolved = sorted(self.overlap)
             return
 
-        log.info("Hashing audio payload for %d overlapping stems …",
-                 len(self.overlap))
+        log.info(
+            "Hashing audio payload for %d overlapping stems …", len(self.overlap)
+        )
         for i, stem in enumerate(sorted(self.overlap), 1):
-            path_a = self._map_a[stem]
-            path_b = self._map_b[stem]
+            path_a = self._map_a[stem].path
+            path_b = self._map_b[stem].path
             hash_a = self._audio_hash(path_a)
             hash_b = self._audio_hash(path_b)
 
@@ -239,7 +377,7 @@ class ChopComparator:
             else:
                 self.content_differs.append(stem)
 
-            if i % 1000 == 0:
+            if i % 1_000 == 0:
                 log.info("  … %d / %d hashed", i, len(self.overlap))
 
         log.info("  True duplicates       : %d", len(self.true_duplicates))
@@ -249,34 +387,38 @@ class ChopComparator:
     def write_transfer_list(self, output_path: Path) -> None:
         """Write a newline-separated list of *label_b* paths to transfer.
 
-        Includes all *label_b*-only paths plus any overlaps where content
-        differs (those need a rename to avoid a silent overwrite).
+        Includes all *label_b*-only paths.  Overlapping stems where audio
+        content differs are also included, annotated with a ``# RENAME``
+        comment so they can be handled without silently overwriting the
+        existing quintus copy.
 
         :param output_path: Destination file.
         """
         lines: list[str] = []
 
         for stem in sorted(self.only_b):
-            lines.append(self._map_b[stem])
+            lines.append(self._map_b[stem].path)
 
         if self.content_differs:
             log.warning(
                 "%d overlapping stems have DIFFERENT audio content — "
-                "they will be included in the transfer list with a "
-                "'_sb' rename annotation.",
+                "included in transfer list with a '# RENAME' annotation.",
                 len(self.content_differs),
             )
             for stem in sorted(self.content_differs):
-                # Annotate so the caller knows to rename on arrival
-                lines.append(f"{self._map_b[stem]}  # RENAME: {stem}_sb.wav")
+                lines.append(
+                    f"{self._map_b[stem].path}  # RENAME: {stem}_sb.wav"
+                )
 
         with output_path.open("w") as fh:
             fh.write("\n".join(lines) + "\n")
 
-        log.info("Transfer list written to %s  (%d entries)", output_path, len(lines))
+        log.info(
+            "Transfer list written to %s  (%d entries)", output_path, len(lines)
+        )
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Private helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -303,24 +445,33 @@ class ChopComparator:
 
 
 # ---------------------------------------------------------------------------
-# CLI helpers
+# JSON I/O helper
 # ---------------------------------------------------------------------------
 
-def _load_stem_file(path: Path) -> tuple[str, dict[str, str]]:
-    """Load a JSON stem file produced by --scan mode.
+def _load_stem_file(path: Path) -> tuple[str, dict[str, StemRecord]]:
+    """Load a JSON stem file produced by scan mode.
 
     :param path: Path to the JSON file.
-    :return: Tuple of (machine_label, stem_map).
+    :return: Tuple of (machine_label, stem_map) where stem_map maps each
+             stem string to a :class:`StemRecord`.
     """
     with path.open() as fh:
         data = json.load(fh)
-    return data["machine"], data["stems"]
+    stem_map: dict[str, StemRecord] = {
+        stem: StemRecord.from_dict(rec)
+        for stem, rec in data["stems"].items()
+    }
+    return data["machine"], stem_map
 
+
+# ---------------------------------------------------------------------------
+# Argument parser
+# ---------------------------------------------------------------------------
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Return the CLI argument parser.
 
-    :return: Configured ArgumentParser instance.
+    :return: Configured :class:`argparse.ArgumentParser` instance.
     """
     parser = argparse.ArgumentParser(
         description=(
@@ -334,7 +485,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--scan",
         action="store_true",
-        help="Walk root-dir and produce a stem-map JSON file.",
+        help="Walk batch subdirs under root-dir and produce a stem-map JSON.",
     )
     mode.add_argument(
         "--compare",
@@ -342,7 +493,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Compare two stem-map JSON files produced by --scan.",
     )
 
-    # Scan options
+    # ---- Scan options ------------------------------------------------
     scan_grp = parser.add_argument_group("Scan options")
     scan_grp.add_argument(
         "--machine",
@@ -353,37 +504,51 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--root-dir",
         metavar="DIR",
         type=Path,
-        help="Root directory to scan recursively.",
+        help=(
+            "Parent directory that contains the batch subdirectories "
+            "(e.g. /data/win_share/chopped_files)."
+        ),
+    )
+    scan_grp.add_argument(
+        "--batch-root-nm",
+        metavar="PREFIX",
+        default=_DEFAULT_BATCH_ROOT_NM,
+        help=(
+            f"Common name prefix for batch subdirectories "
+            f"(default: '{_DEFAULT_BATCH_ROOT_NM}'). "
+            f"The scanner looks for <PREFIX>1, <PREFIX>2, … stopping at "
+            f"the first gap."
+        ),
     )
     scan_grp.add_argument(
         "--output",
         metavar="FILE",
         type=Path,
         default=None,
-        help="Output JSON file (default: <machine>_stems.json).",
+        help="Output JSON file (default: <machine>_chops_file_stems.json).",
     )
 
-    # Compare options
+    # ---- Compare options ---------------------------------------------
     cmp_grp = parser.add_argument_group("Compare options")
     cmp_grp.add_argument(
         "--stems-a",
         metavar="FILE",
         type=Path,
-        help="Stem-map JSON from machine A (e.g. quintus).",
+        help="Stem-map JSON from machine A (typically quintus).",
     )
     cmp_grp.add_argument(
         "--stems-b",
         metavar="FILE",
         type=Path,
-        help="Stem-map JSON from machine B (e.g. sextus).",
+        help="Stem-map JSON from machine B (typically sextus).",
     )
     cmp_grp.add_argument(
         "--audio-check",
         action="store_true",
         help=(
-            "For overlapping stems, compare audio payload MD5 to distinguish "
-            "true duplicates from files with different content. "
-            "Both files must be locally accessible."
+            "For overlapping stems, compare audio-payload MD5 to distinguish "
+            "true duplicates from files with genuinely different content. "
+            "Both files must be locally accessible when this flag is used."
         ),
     )
     cmp_grp.add_argument(
@@ -391,21 +556,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         type=Path,
         default=Path("transfer_list.txt"),
-        help="Output file listing paths from stems-b that are safe to transfer "
-             "(default: transfer_list.txt).",
+        help=(
+            "Output file listing stems-b paths that are safe to transfer "
+            "(default: transfer_list.txt)."
+        ),
     )
 
     return parser
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Runner
 # ---------------------------------------------------------------------------
 
 class Runner:
-    """Top-level orchestrator; parses args and dispatches to scan or compare.
+    """Top-level orchestrator: parse args and dispatch to scan or compare.
 
-    :param argv: Argument list (defaults to sys.argv[1:]).
+    :param argv: Argument list (defaults to ``sys.argv[1:]``).
     """
 
     def __init__(self, argv: Optional[list[str]] = None) -> None:
@@ -415,7 +582,7 @@ class Runner:
     def run(self) -> int:
         """Execute the requested mode.
 
-        :return: Exit code (0 = success).
+        :return: Exit code (0 = success, 1 = error).
         """
         if self._args.scan:
             return self._do_scan()
@@ -437,9 +604,13 @@ class Runner:
             log.error("root-dir does not exist: %s", args.root_dir)
             return 1
 
-        output = args.output or Path(f"{args.machine}_stems.json")
+        output = args.output or Path(f"{args.machine}_chops_file_stems.json")
 
-        dedup = ChopDeduplicator(machine=args.machine, root_dir=args.root_dir)
+        dedup = ChopDeduplicator(
+            machine=args.machine,
+            root_dir=args.root_dir,
+            batch_root_nm=args.batch_root_nm,
+        )
         dedup.scan()
         dedup.save(output)
         return 0
@@ -451,13 +622,19 @@ class Runner:
         """
         args = self._args
         if not args.stems_a or not args.stems_b:
-            self._parser.error("--stems-a and --stems-b are required in compare mode")
+            self._parser.error(
+                "--stems-a and --stems-b are required in compare mode"
+            )
 
         label_a, map_a = _load_stem_file(args.stems_a)
         label_b, map_b = _load_stem_file(args.stems_b)
 
-        log.info("Loaded %d stems from %s (%s)", len(map_a), args.stems_a, label_a)
-        log.info("Loaded %d stems from %s (%s)", len(map_b), args.stems_b, label_b)
+        log.info(
+            "Loaded %d stems from %s  (machine: %s)", len(map_a), args.stems_a, label_a
+        )
+        log.info(
+            "Loaded %d stems from %s  (machine: %s)", len(map_b), args.stems_b, label_b
+        )
 
         cmp = ChopComparator(
             map_a=map_a,
