@@ -5,16 +5,24 @@
 # @Date:   2026-03-30 10:38:02
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/bat_chops_deduping.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-30 10:59:35
+# @Last Modified time: 2026-03-30 11:51:17
 #
 # **********************************************************
-
+#!/usr/bin/env python3
 """
 bat_chops_deduping.py — Bat chop deduplication helper.
 
-Run on each machine to produce a stem-list file, then transfer one list
-to the other machine and run with --compare to find safe-to-transfer
-chops and true duplicates.
+Three actions drive the full workflow:
+
+**scan** — walk batch subdirectories on one machine and write a stem-map JSON.
+
+**compare** — load two stem-map JSONs, report set overlap, and write a
+transfer list of files that exist only on machine B.
+
+**copy-overlaps** — load two stem-map JSONs, build a ``--files-from`` list
+of the overlapping stems from the *from-machine* side, then execute a single
+``rsync`` call over SSH that copies those files to *dest-dir* on the
+*to-machine*, preserving the batch subdirectory structure from the source.
 
 Workflow
 --------
@@ -35,8 +43,25 @@ Workflow
        python src/sonobat_utils/bat_chops_deduping.py --compare \\
            --stems-a /qnap/bats/quintus_chops_file_stems.json \\
            --stems-b /data/win_share/sextus_chops_file_stems.json \\
-           --audio-check \\
            --transfer-list /data/win_share/sextus_to_transfer.txt
+
+  4. Copy overlapping chops from quintus to a quarantine dir on sextus::
+
+       python src/sonobat_utils/bat_chops_deduping.py --copy-overlaps \\
+           --stems-a /qnap/bats/quintus_chops_file_stems.json \\
+           --stems-b /data/win_share/sextus_chops_file_stems.json \\
+           --from-machine quintus \\
+           --to-machine sextus \\
+           --dest-dir /data/win_share/quintus_overlap_chops
+
+  5. Once the quarantine copies are local, re-run --compare with
+     --audio-check to resolve true duplicates (both paths now local)::
+
+       python src/sonobat_utils/bat_chops_deduping.py --compare \\
+           --stems-a /data/win_share/quintus_overlap_chops_stems.json \\
+           --stems-b /data/win_share/sextus_chops_file_stems.json \\
+           --audio-check \\
+           --transfer-list /data/win_share/confirmed_safe_to_transfer.txt
 
 Batch discovery
 ---------------
@@ -63,7 +88,10 @@ import argparse
 import hashlib
 import json
 import logging
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -86,7 +114,7 @@ _DEFAULT_BATCH_ROOT_NM = "batch"
 
 
 # ---------------------------------------------------------------------------
-# StemRecord  (thin typed dict stand-in)
+# StemRecord
 # ---------------------------------------------------------------------------
 
 class StemRecord:
@@ -166,9 +194,6 @@ class ChopDeduplicator:
     def scan(self) -> dict[str, StemRecord]:
         """Discover batch dirs and build the stem→StemRecord mapping.
 
-        Batch directories ``<batch_root_nm>1``, ``<batch_root_nm>2``, …
-        are probed in order; the first missing one stops the search.
-
         :return: Dict mapping normalised stem to :class:`StemRecord`.
         """
         batch_dirs = self._discover_batch_dirs()
@@ -182,9 +207,10 @@ class ChopDeduplicator:
         for batch_num, batch_dir in batch_dirs:
             self._scan_batch(batch_num, batch_dir)
 
-        total = len(self._stem_map)
-        log.info("[%s] Grand total: %d unique stems across %d batches",
-                 self.machine, total, len(batch_dirs))
+        log.info(
+            "[%s] Grand total: %d unique stems across %d batches",
+            self.machine, len(self._stem_map), len(batch_dirs),
+        )
         return self._stem_map
 
     def save(self, output_path: Path) -> None:
@@ -200,8 +226,10 @@ class ChopDeduplicator:
         }
         with output_path.open("w") as fh:
             json.dump(payload, fh, indent=2)
-        log.info("[%s] Stem map written to %s  (%d entries)",
-                 self.machine, output_path, len(self._stem_map))
+        log.info(
+            "[%s] Stem map written to %s  (%d entries)",
+            self.machine, output_path, len(self._stem_map),
+        )
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -333,7 +361,7 @@ class ChopComparator:
         # Populated by resolve_overlaps()
         self.true_duplicates: list[str] = []
         self.content_differs: list[str] = []
-        self.unresolved: list[str] = []   # one or both files not locally accessible
+        self.unresolved: list[str] = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -445,11 +473,188 @@ class ChopComparator:
 
 
 # ---------------------------------------------------------------------------
+# OverlapCopier
+# ---------------------------------------------------------------------------
+
+class OverlapCopier:
+    """Copy overlapping chops from one machine to a quarantine dir on another.
+
+    Builds a temporary ``--files-from`` list of source paths (relative to
+    the filesystem root ``/``) for all stems present in both stem maps, then
+    executes a single ``rsync`` call over SSH.  The ``--relative`` flag
+    causes rsync to recreate the batch subdirectory path from the source
+    verbatim under *dest_dir* on the destination.
+
+    The SSH user defaults to the current ``$USER``, assumed identical on
+    both machines.
+
+    :param map_a: Stem map from machine A.
+    :param map_b: Stem map from machine B.
+    :param label_a: Label for machine A (as stored in the JSON).
+    :param label_b: Label for machine B (as stored in the JSON).
+    :param from_machine: Hostname of the machine to copy from.
+    :param to_machine: Hostname of the machine to copy to.
+    :param dest_dir: Absolute path on *to_machine* for the copied files.
+    :param ssh_user: SSH username (default: ``$USER``).
+    :param dry_run: When True, pass ``--dry-run`` to rsync.
+    """
+
+    def __init__(
+        self,
+        map_a: dict[str, StemRecord],
+        map_b: dict[str, StemRecord],
+        label_a: str,
+        label_b: str,
+        from_machine: str,
+        to_machine: str,
+        dest_dir: Path,
+        ssh_user: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> None:
+        self._map_a = map_a
+        self._map_b = map_b
+        self._label_a = label_a
+        self._label_b = label_b
+        self._from_machine = from_machine
+        self._to_machine = to_machine
+        self._dest_dir = dest_dir
+        self._ssh_user = ssh_user or os.environ.get("USER") or os.environ.get("LOGNAME")
+        self._dry_run = dry_run
+
+        self._overlap: set[str] = set(map_a) & set(map_b)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def copy(self) -> int:
+        """Build the files-from list and invoke rsync.
+
+        The source map is chosen by matching *from_machine* against the
+        machine labels stored in each stem map's origin JSON.  If
+        *from_machine* matches *label_a*, paths are taken from *map_a*;
+        otherwise from *map_b*.
+
+        :return: rsync exit code (0 = success).
+        """
+        if not self._overlap:
+            log.info("No overlapping stems — nothing to copy.")
+            return 0
+
+        log.info(
+            "Preparing to copy %d overlapping chops from %s to %s:%s",
+            len(self._overlap), self._from_machine,
+            self._to_machine, self._dest_dir,
+        )
+
+        source_map = self._select_source_map()
+        files_from_path = self._write_files_from(source_map)
+        return self._run_rsync(files_from_path)
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _select_source_map(self) -> dict[str, StemRecord]:
+        """Return the stem map whose machine label matches *from_machine*.
+
+        Falls back to *map_a* with a warning if neither label matches
+        exactly (e.g. short hostname vs FQDN).
+
+        :return: The stem map to use as the rsync source.
+        """
+        if self._from_machine == self._label_a:
+            log.info("Source map: %s", self._label_a)
+            return self._map_a
+        if self._from_machine == self._label_b:
+            log.info("Source map: %s", self._label_b)
+            return self._map_b
+        log.warning(
+            "--from-machine %r does not exactly match either JSON label "
+            "(%r, %r) — defaulting to stems-a (%s).",
+            self._from_machine, self._label_a, self._label_b, self._label_a,
+        )
+        return self._map_a
+
+    def _write_files_from(self, source_map: dict[str, StemRecord]) -> Path:
+        """Write a temporary file of source-relative paths for rsync.
+
+        rsync's ``--files-from`` expects paths relative to the source
+        root argument (here ``/``), so the leading ``/`` is stripped from
+        each absolute path.
+
+        :param source_map: Stem map whose paths form the copy list.
+        :return: Path to the temporary files-from file.
+        """
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            prefix="bat_chops_overlap_",
+            suffix=".txt",
+            delete=False,
+        )
+        for stem in sorted(self._overlap):
+            abs_path = source_map[stem].path
+            rel_path = abs_path.lstrip("/")
+            tmp.write(rel_path + "\n")
+        tmp.close()
+        log.info(
+            "files-from list written to %s  (%d entries)",
+            tmp.name, len(self._overlap),
+        )
+        return Path(tmp.name)
+
+    def _run_rsync(self, files_from_path: Path) -> int:
+        """Execute a single rsync call and stream its output.
+
+        Uses ``--relative`` so the full batch subdirectory path from the
+        source is recreated verbatim under *dest_dir* on the destination.
+
+        Command structure::
+
+            rsync --archive --relative --human-readable --progress \\
+                  [--dry-run] \\
+                  --files-from=<list> \\
+                  <user>@<from_machine>:/ \\
+                  <dest_dir>/
+
+        :param files_from_path: Path to the temporary files-from list.
+        :return: rsync exit code.
+        """
+        dest_str = str(self._dest_dir).rstrip("/") + "/"
+        cmd = [
+            "rsync",
+            "--archive",
+            "--relative",
+            "--human-readable",
+            "--progress",
+            f"--files-from={files_from_path}",
+        ]
+        if self._dry_run:
+            cmd.append("--dry-run")
+            log.info("DRY RUN — no files will be transferred.")
+
+        cmd += [f"{self._ssh_user}@{self._from_machine}:/", dest_str]
+
+        log.info("rsync command:\n  %s", " ".join(cmd))
+
+        try:
+            result = subprocess.run(cmd, check=False)
+        finally:
+            files_from_path.unlink(missing_ok=True)
+
+        if result.returncode == 0:
+            log.info("rsync completed successfully.")
+        else:
+            log.error("rsync exited with code %d.", result.returncode)
+        return result.returncode
+
+
+# ---------------------------------------------------------------------------
 # JSON I/O helper
 # ---------------------------------------------------------------------------
 
 def _load_stem_file(path: Path) -> tuple[str, dict[str, StemRecord]]:
-    """Load a JSON stem file produced by scan mode.
+    """Load a JSON stem file produced by --scan mode.
 
     :param path: Path to the JSON file.
     :return: Tuple of (machine_label, stem_map) where stem_map maps each
@@ -476,7 +681,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Bat chop deduplication helper.\n\n"
-            "Run in --scan mode on each machine, then --compare on either."
+            "Three actions: --scan, --compare, --copy-overlaps."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -485,16 +690,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--scan",
         action="store_true",
-        help="Walk batch subdirs under root-dir and produce a stem-map JSON.",
+        help="Walk batch subdirs under --root-dir and produce a stem-map JSON.",
     )
     mode.add_argument(
         "--compare",
         action="store_true",
-        help="Compare two stem-map JSON files produced by --scan.",
+        help="Compare two stem-map JSONs and write a transfer list.",
+    )
+    mode.add_argument(
+        "--copy-overlaps",
+        action="store_true",
+        help=(
+            "Copy chops that appear in both stem maps from --from-machine "
+            "to --dest-dir on --to-machine via a single rsync call."
+        ),
     )
 
     # ---- Scan options ------------------------------------------------
-    scan_grp = parser.add_argument_group("Scan options")
+    scan_grp = parser.add_argument_group("Scan options  (--scan)")
     scan_grp.add_argument(
         "--machine",
         metavar="NAME",
@@ -504,10 +717,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--root-dir",
         metavar="DIR",
         type=Path,
-        help=(
-            "Parent directory that contains the batch subdirectories "
-            "(e.g. /data/win_share/chopped_files)."
-        ),
+        help="Parent directory that contains the batch subdirectories.",
     )
     scan_grp.add_argument(
         "--batch-root-nm",
@@ -516,8 +726,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             f"Common name prefix for batch subdirectories "
             f"(default: '{_DEFAULT_BATCH_ROOT_NM}'). "
-            f"The scanner looks for <PREFIX>1, <PREFIX>2, … stopping at "
-            f"the first gap."
+            f"The scanner probes <PREFIX>1, <PREFIX>2, … stopping at the "
+            f"first gap."
         ),
     )
     scan_grp.add_argument(
@@ -528,27 +738,32 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Output JSON file (default: <machine>_chops_file_stems.json).",
     )
 
-    # ---- Compare options ---------------------------------------------
-    cmp_grp = parser.add_argument_group("Compare options")
-    cmp_grp.add_argument(
+    # ---- Shared: compare + copy-overlaps -----------------------------
+    shared_grp = parser.add_argument_group(
+        "Shared options  (--compare and --copy-overlaps)"
+    )
+    shared_grp.add_argument(
         "--stems-a",
         metavar="FILE",
         type=Path,
         help="Stem-map JSON from machine A (typically quintus).",
     )
-    cmp_grp.add_argument(
+    shared_grp.add_argument(
         "--stems-b",
         metavar="FILE",
         type=Path,
         help="Stem-map JSON from machine B (typically sextus).",
     )
+
+    # ---- Compare options ---------------------------------------------
+    cmp_grp = parser.add_argument_group("Compare options  (--compare)")
     cmp_grp.add_argument(
         "--audio-check",
         action="store_true",
         help=(
             "For overlapping stems, compare audio-payload MD5 to distinguish "
             "true duplicates from files with genuinely different content. "
-            "Both files must be locally accessible when this flag is used."
+            "Both files must be locally accessible."
         ),
     )
     cmp_grp.add_argument(
@@ -562,6 +777,33 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ---- Copy-overlaps options ---------------------------------------
+    cp_grp = parser.add_argument_group("Copy-overlaps options  (--copy-overlaps)")
+    cp_grp.add_argument(
+        "--from-machine",
+        metavar="HOST",
+        help="Hostname to copy overlapping chops FROM (must match JSON label).",
+    )
+    cp_grp.add_argument(
+        "--to-machine",
+        metavar="HOST",
+        help="Hostname to copy overlapping chops TO.",
+    )
+    cp_grp.add_argument(
+        "--dest-dir",
+        metavar="DIR",
+        type=Path,
+        help=(
+            "Absolute path on --to-machine where overlapping chops land, "
+            "with batch subdirectory structure preserved from the source."
+        ),
+    )
+    cp_grp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Pass --dry-run to rsync; log the command without transferring data.",
+    )
+
     return parser
 
 
@@ -570,7 +812,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 class Runner:
-    """Top-level orchestrator: parse args and dispatch to scan or compare.
+    """Top-level orchestrator: parse args and dispatch to the chosen action.
 
     :param argv: Argument list (defaults to ``sys.argv[1:]``).
     """
@@ -580,13 +822,15 @@ class Runner:
         self._args = self._parser.parse_args(argv)
 
     def run(self) -> int:
-        """Execute the requested mode.
+        """Execute the requested action.
 
         :return: Exit code (0 = success, 1 = error).
         """
         if self._args.scan:
             return self._do_scan()
-        return self._do_compare()
+        if self._args.compare:
+            return self._do_compare()
+        return self._do_copy_overlaps()
 
     # ------------------------------------------------------------------
 
@@ -597,9 +841,9 @@ class Runner:
         """
         args = self._args
         if not args.machine:
-            self._parser.error("--machine is required in scan mode")
+            self._parser.error("--machine is required with --scan")
         if not args.root_dir:
-            self._parser.error("--root-dir is required in scan mode")
+            self._parser.error("--root-dir is required with --scan")
         if not args.root_dir.is_dir():
             log.error("root-dir does not exist: %s", args.root_dir)
             return 1
@@ -622,19 +866,13 @@ class Runner:
         """
         args = self._args
         if not args.stems_a or not args.stems_b:
-            self._parser.error(
-                "--stems-a and --stems-b are required in compare mode"
-            )
+            self._parser.error("--stems-a and --stems-b are required with --compare")
 
         label_a, map_a = _load_stem_file(args.stems_a)
         label_b, map_b = _load_stem_file(args.stems_b)
 
-        log.info(
-            "Loaded %d stems from %s  (machine: %s)", len(map_a), args.stems_a, label_a
-        )
-        log.info(
-            "Loaded %d stems from %s  (machine: %s)", len(map_b), args.stems_b, label_b
-        )
+        log.info("Loaded %d stems from %s  (machine: %s)", len(map_a), args.stems_a, label_a)
+        log.info("Loaded %d stems from %s  (machine: %s)", len(map_b), args.stems_b, label_b)
 
         cmp = ChopComparator(
             map_a=map_a,
@@ -647,6 +885,44 @@ class Runner:
         cmp.resolve_overlaps()
         cmp.write_transfer_list(args.transfer_list)
         return 0
+
+    def _do_copy_overlaps(self) -> int:
+        """Execute copy-overlaps mode.
+
+        :return: rsync exit code, or 1 on argument error.
+        """
+        args = self._args
+        missing = [
+            opt for opt, val in [
+                ("--stems-a",      args.stems_a),
+                ("--stems-b",      args.stems_b),
+                ("--from-machine", args.from_machine),
+                ("--to-machine",   args.to_machine),
+                ("--dest-dir",     args.dest_dir),
+            ] if not val
+        ]
+        if missing:
+            self._parser.error(
+                f"--copy-overlaps requires: {', '.join(missing)}"
+            )
+
+        label_a, map_a = _load_stem_file(args.stems_a)
+        label_b, map_b = _load_stem_file(args.stems_b)
+
+        log.info("Loaded %d stems from %s  (machine: %s)", len(map_a), args.stems_a, label_a)
+        log.info("Loaded %d stems from %s  (machine: %s)", len(map_b), args.stems_b, label_b)
+
+        copier = OverlapCopier(
+            map_a=map_a,
+            map_b=map_b,
+            label_a=label_a,
+            label_b=label_b,
+            from_machine=args.from_machine,
+            to_machine=args.to_machine,
+            dest_dir=args.dest_dir,
+            dry_run=args.dry_run,
+        )
+        return copier.copy()
 
 
 if __name__ == "__main__":
