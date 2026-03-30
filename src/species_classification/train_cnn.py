@@ -4,7 +4,7 @@
 # @Date:   2026-03-16 15:41:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/train_cnn.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-30 09:20:35
+# @Last Modified time: 2026-03-30 12:32:24
 # **********************************************************
 
 """
@@ -50,8 +50,12 @@ DDP strategy
 * ``DistributedSampler`` ensures each GPU sees a non-overlapping shard of
   the training data each epoch, with shuffling coordinated across ranks.
 * Gradients are all-reduced automatically by DDP after each backward pass.
-* Validation, test evaluation, checkpoint saving, and logging are performed
-  only on rank 0 to avoid duplicate writes.
+* Validation runs on **all ranks** via a ``DistributedSampler`` on the val
+  set; metrics are all-reduced so rank 0 receives the global average.  This
+  keeps both processes active and prevents the NCCL watchdog from timing out
+  while rank 0 would otherwise validate alone.
+* Checkpoint saving, test evaluation, and logging are performed only on
+  rank 0 to avoid duplicate writes.
 * Class weights are broadcast from rank 0 to all ranks after construction.
 * Batch size in ``--batch`` is **per GPU**; effective batch size =
   ``--batch × n_gpus``.
@@ -71,13 +75,30 @@ Training strategy
 
 Outputs (all written to ``--out-dir`` by rank 0)
 -------------------------------------------------
-``best_model.pt``       State dict of the epoch with highest val accuracy.
-``final_model.pt``      State dict after the last epoch.
-``label_encoder.json``  Maps integer class index ↔ species string.
-``train_config.csv``    All run hyperparameters for reproducibility.
-``train_log.csv``       Per-epoch: loss, accuracy, val_loss, val_accuracy.
-``confusion_matrix.png``  Confusion matrix on held-out test set.
+``best_model.pt``           State dict of the epoch with highest val accuracy.
+``final_model.pt``          State dict after the last epoch.
+``checkpoint_latest.pt``    Full training state saved after every epoch (model
+                            weights, optimizer, scheduler, epoch, best_val_acc,
+                            log_rows).  Used by ``--resume`` to continue a
+                            crashed run.
+``checkpoint_epoch_N.pt``   Periodic snapshot every ``--ckpt-every`` epochs
+                            (default: disabled).
+``label_encoder.json``      Maps integer class index ↔ species string.
+``train_config.csv``        All run hyperparameters for reproducibility.
+``train_log.csv``           Per-epoch: loss, accuracy, val_loss, val_accuracy.
+``confusion_matrix.png``    Confusion matrix on held-out test set.
 ``classification_report.txt``  Per-class precision/recall/F1 on test set.
+
+Resuming after a crash
+-----------------------
+Add ``--resume`` to the original launch command and re-run.  The trainer
+will load ``checkpoint_latest.pt`` from ``--out-dir``, restore model /
+optimizer / scheduler state, and continue from the next epoch::
+
+    torchrun --nproc_per_node=2 train_cnn.py \\
+        --manifest /qnap/bats/jr_pipeline/data/bat_crops/manifest.csv \\
+        --out-dir  /qnap/bats/jr_pipeline/models/efficientnet_b0_v1 \\
+        --epochs   25 --batch 64 --workers 8 --resume
 """
 
 from __future__ import annotations
@@ -497,6 +518,14 @@ class CnnTrainer:
     :param device_str:          ``'cuda'``, ``'cpu'``, or ``'auto'``.
                                 Ignored in DDP mode (device set by local rank).
     :param seed:                Random seed.
+    :param resume:              If ``True``, load ``checkpoint_latest.pt`` from
+                                ``out_dir`` and continue training from the next
+                                epoch.  A missing checkpoint is a warning, not
+                                an error; training starts from scratch instead.
+    :param ckpt_every:          Save a named ``checkpoint_epoch_N.pt`` every
+                                this many epochs in addition to
+                                ``checkpoint_latest.pt``.  0 disables periodic
+                                snapshots (default).
     """
 
     def __init__(
@@ -517,6 +546,8 @@ class CnnTrainer:
         n_workers:           int            = _DEFAULT_WORKERS,
         device_str:          str            = 'auto',
         seed:                int            = 42,
+        resume:              bool           = False,
+        ckpt_every:          int            = 0,
     ) -> None:
         self.manifest_csv        = Path(manifest_csv)
         self.out_dir             = Path(out_dir)
@@ -534,6 +565,8 @@ class CnnTrainer:
         self.n_workers           = n_workers
         self.seed                = seed
         self.device_str          = device_str
+        self.resume              = resume
+        self.ckpt_every          = ckpt_every
 
     # ------------------------------------------------------------------ #
     #  Data loading                                                        #
@@ -664,11 +697,19 @@ class CnnTrainer:
             pin_memory  = True,
             drop_last   = True,
         )
-        # Val/test only on rank 0 — no sampler needed.
+        # Val loader: use DistributedSampler in DDP mode so all ranks
+        # participate in validation (avoids NCCL watchdog timeout while
+        # rank 0 runs the full val epoch alone).
+        val_sampler = DistributedSampler(
+            ChirpCropDataset(val_df, augment=False),
+            num_replicas=world_size, rank=rank, shuffle=False,
+        ) if world_size > 1 else None
+
         val_loader = DataLoader(
             ChirpCropDataset(val_df, augment=False),
             batch_size  = self.batch_size * 2,
             shuffle     = False,
+            sampler     = val_sampler,
             num_workers = self.n_workers,
             pin_memory  = True,
         )
@@ -705,8 +746,55 @@ class CnnTrainer:
         best_val_acc = 0.0
         best_epoch   = 0
         log_rows: list[dict] = []
+        start_epoch  = 1
 
-        for epoch in range(1, self.epochs + 1):
+        # ── Resume from checkpoint ─────────────────────────────────────
+        ckpt_path = self.out_dir / 'checkpoint_latest.pt'
+        if self.resume and ckpt_path.exists():
+            if is_main:
+                log.info(f'Resuming from checkpoint: {ckpt_path}')
+            ckpt = torch.load(ckpt_path, map_location=device)
+
+            # Restore model weights (unwrap DDP to load state dict).
+            base = model.module if isinstance(model, DDP) else model
+            base.load_state_dict(ckpt['model_state'])
+
+            # Restore the correct phase + optimizer + scheduler.
+            resumed_epoch = ckpt['epoch']           # last *completed* epoch
+            start_epoch   = resumed_epoch + 1
+            best_val_acc  = ckpt['best_val_acc']
+            best_epoch    = ckpt['best_epoch']
+            log_rows      = ckpt.get('log_rows', [])
+
+            # Re-enter the right phase so optimizer/scheduler match.
+            if resumed_epoch >= self.freeze_epochs:
+                unfreeze_all(model)
+                optimizer = torch.optim.AdamW(
+                    model.parameters(),
+                    lr           = self.lr * self.backbone_lr_factor,
+                    weight_decay = self.weight_decay,
+                )
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=self.epochs - self.freeze_epochs
+                )
+
+            optimizer.load_state_dict(ckpt['optimizer_state'])
+            scheduler.load_state_dict(ckpt['scheduler_state'])
+
+            if is_main:
+                log.info(
+                    f'Resumed: starting at epoch {start_epoch}/{self.epochs}, '
+                    f'best_val_acc so far = {best_val_acc:.4f} '
+                    f'(epoch {best_epoch})'
+                )
+        elif self.resume:
+            if is_main:
+                log.warn(
+                    f'--resume requested but no checkpoint found at {ckpt_path}; '
+                    'starting from scratch.'
+                )
+
+        for epoch in range(start_epoch, self.epochs + 1):
 
             # Advance DistributedSampler epoch so each GPU gets a fresh shard.
             if train_sampler is not None:
@@ -731,12 +819,17 @@ class CnnTrainer:
                 device, train=True, rank=rank, world_size=world_size,
             )
 
-            # Validation on rank 0 only (no DistributedSampler on val_loader).
+            # Validation runs on ALL ranks (each sees its shard via
+            # val_sampler).  run_epoch all-reduces metrics, so rank 0
+            # receives the global val loss/acc.  This keeps both processes
+            # active and prevents the NCCL watchdog from timing out.
+            val_loss, val_acc = run_epoch(
+                model, val_loader, criterion, None,
+                device, train=False, rank=rank, world_size=world_size,
+            )
+
+            # Logging and checkpointing on rank 0 only.
             if is_main:
-                val_loss, val_acc = run_epoch(
-                    model, val_loader, criterion, None,
-                    device, train=False, rank=0, world_size=1,
-                )
                 log.info(
                     f'Epoch {epoch:3d}/{self.epochs}  '
                     f'train_loss={train_loss:.4f}  train_acc={train_acc:.4f}  '
@@ -761,6 +854,25 @@ class CnnTrainer:
                         f'  ✓ New best val_acc={best_val_acc:.4f}'
                         ' — saved best_model.pt'
                     )
+
+                # ── Per-epoch checkpoint (always) ──────────────────────
+                base = model.module if isinstance(model, DDP) else model
+                ckpt = {
+                    'epoch':           epoch,
+                    'model_state':     base.state_dict(),
+                    'optimizer_state': optimizer.state_dict(),
+                    'scheduler_state': scheduler.state_dict(),
+                    'best_val_acc':    best_val_acc,
+                    'best_epoch':      best_epoch,
+                    'log_rows':        log_rows,
+                }
+                torch.save(ckpt, self.out_dir / 'checkpoint_latest.pt')
+
+                # Optional periodic named snapshot.
+                if self.ckpt_every > 0 and epoch % self.ckpt_every == 0:
+                    snap = self.out_dir / f'checkpoint_epoch_{epoch:04d}.pt'
+                    torch.save(ckpt, snap)
+                    log.info(f'  📸 Periodic snapshot saved: {snap.name}')
 
             # Barrier: all ranks wait before next epoch.
             if world_size > 1:
@@ -860,6 +972,14 @@ def _parse_args():
     parser.add_argument('--workers',   type=int,   default=_DEFAULT_WORKERS)
     parser.add_argument('--device',    default='auto')
     parser.add_argument('--seed',      type=int,   default=42)
+    parser.add_argument(
+        '--resume', action='store_true',
+        help='Continue from checkpoint_latest.pt in --out-dir.',
+    )
+    parser.add_argument(
+        '--ckpt-every', type=int, default=0, metavar='N',
+        help='Save a named checkpoint_epoch_N.pt every N epochs (0 = disabled).',
+    )
 
     args = parser.parse_args()
     if not Path(args.manifest).exists():
@@ -888,6 +1008,8 @@ def main() -> None:
         n_workers           = args.workers,
         device_str          = args.device,
         seed                = args.seed,
+        resume              = args.resume,
+        ckpt_every          = args.ckpt_every,
     )
     trainer.run()
 
