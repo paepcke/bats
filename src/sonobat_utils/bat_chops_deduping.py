@@ -5,10 +5,10 @@
 # @Date:   2026-03-30 10:38:02
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/bat_chops_deduping.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-30 11:51:17
+# @Last Modified time: 2026-03-30 12:15:55
 #
 # **********************************************************
-#!/usr/bin/env python3
+
 """
 bat_chops_deduping.py — Bat chop deduplication helper.
 
@@ -19,10 +19,11 @@ Three actions drive the full workflow:
 **compare** — load two stem-map JSONs, report set overlap, and write a
 transfer list of files that exist only on machine B.
 
-**copy-overlaps** — load two stem-map JSONs, build a ``--files-from`` list
-of the overlapping stems from the *from-machine* side, then execute a single
-``rsync`` call over SSH that copies those files to *dest-dir* on the
-*to-machine*, preserving the batch subdirectory structure from the source.
+**copy-overlaps** — load two stem-map JSONs, compute the common ancestor of
+all overlapping source paths, write a ``--files-from`` list of paths relative
+to that ancestor, then execute a single ``rclone copy`` call that copies those
+files to *dest-dir*, preserving the batch subdirectory structure from the
+source.
 
 Workflow
 --------
@@ -45,14 +46,17 @@ Workflow
            --stems-b /data/win_share/sextus_chops_file_stems.json \\
            --transfer-list /data/win_share/sextus_to_transfer.txt
 
-  4. Copy overlapping chops from quintus to a quarantine dir on sextus::
+  4. Copy overlapping chops from quintus to a quarantine dir on sextus.
+     The rclone remote name for the source machine must be supplied via
+     ``--rclone-remote`` (here ``stanford`` as configured in rclone.conf)::
 
        python src/sonobat_utils/bat_chops_deduping.py --copy-overlaps \\
-           --stems-a /qnap/bats/quintus_chops_file_stems.json \\
+           --stems-a /data/win_share/quintus_chops_file_stems.json \\
            --stems-b /data/win_share/sextus_chops_file_stems.json \\
            --from-machine quintus \\
            --to-machine sextus \\
-           --dest-dir /data/win_share/quintus_overlap_chops
+           --rclone-remote stanford \\
+           --dest-dir /raid/bat_wavs/dedup_temp_overlapping_chops
 
   5. Once the quarantine copies are local, re-run --compare with
      --audio-check to resolve true duplicates (both paths now local)::
@@ -479,25 +483,34 @@ class ChopComparator:
 class OverlapCopier:
     """Copy overlapping chops from one machine to a quarantine dir on another.
 
-    Builds a temporary ``--files-from`` list of source paths (relative to
-    the filesystem root ``/``) for all stems present in both stem maps, then
-    executes a single ``rsync`` call over SSH.  The ``--relative`` flag
-    causes rsync to recreate the batch subdirectory path from the source
-    verbatim under *dest_dir* on the destination.
+    Strategy: compute the longest common ancestor of all overlapping source
+    paths, write a ``--files-from`` list of paths *relative to that ancestor*,
+    then execute a single ``rclone copy`` call::
 
-    The SSH user defaults to the current ``$USER``, assumed identical on
-    both machines.
+        rclone copy <rclone_remote>:<common_ancestor> <dest_dir> \\
+            --files-from=<tmp> \\
+            --transfers 16 --checkers 32 --buffer-size 32M \\
+            --progress --ignore-checksum [--dry-run]
+
+    The batch subdirectory structure below the common ancestor is preserved
+    verbatim under *dest_dir*.
 
     :param map_a: Stem map from machine A.
     :param map_b: Stem map from machine B.
     :param label_a: Label for machine A (as stored in the JSON).
     :param label_b: Label for machine B (as stored in the JSON).
-    :param from_machine: Hostname of the machine to copy from.
-    :param to_machine: Hostname of the machine to copy to.
-    :param dest_dir: Absolute path on *to_machine* for the copied files.
-    :param ssh_user: SSH username (default: ``$USER``).
-    :param dry_run: When True, pass ``--dry-run`` to rsync.
+    :param from_machine: Machine label to copy from (must match a JSON label).
+    :param to_machine: Machine label to copy to.
+    :param rclone_remote: rclone remote name for *from_machine*
+                          (e.g. ``"stanford"``).
+    :param dest_dir: Absolute local path where overlapping chops will land.
+    :param dry_run: When True, pass ``--dry-run`` to rclone.
     """
+
+    # Proven performance settings — hardcoded for this hardware pair
+    _RCLONE_TRANSFERS = 16
+    _RCLONE_CHECKERS  = 32
+    _RCLONE_BUFFER    = "32M"
 
     def __init__(
         self,
@@ -507,8 +520,8 @@ class OverlapCopier:
         label_b: str,
         from_machine: str,
         to_machine: str,
+        rclone_remote: str,
         dest_dir: Path,
-        ssh_user: Optional[str] = None,
         dry_run: bool = False,
     ) -> None:
         self._map_a = map_a
@@ -517,8 +530,8 @@ class OverlapCopier:
         self._label_b = label_b
         self._from_machine = from_machine
         self._to_machine = to_machine
+        self._rclone_remote = rclone_remote
         self._dest_dir = dest_dir
-        self._ssh_user = ssh_user or os.environ.get("USER") or os.environ.get("LOGNAME")
         self._dry_run = dry_run
 
         self._overlap: set[str] = set(map_a) & set(map_b)
@@ -528,14 +541,9 @@ class OverlapCopier:
     # ------------------------------------------------------------------
 
     def copy(self) -> int:
-        """Build the files-from list and invoke rsync.
+        """Compute common ancestor, write files-from list, invoke rclone.
 
-        The source map is chosen by matching *from_machine* against the
-        machine labels stored in each stem map's origin JSON.  If
-        *from_machine* matches *label_a*, paths are taken from *map_a*;
-        otherwise from *map_b*.
-
-        :return: rsync exit code (0 = success).
+        :return: rclone exit code (0 = success).
         """
         if not self._overlap:
             log.info("No overlapping stems — nothing to copy.")
@@ -548,20 +556,20 @@ class OverlapCopier:
         )
 
         source_map = self._select_source_map()
-        files_from_path = self._write_files_from(source_map)
-        return self._run_rsync(files_from_path)
+        common_ancestor, files_from_path = self._write_files_from(source_map)
+        return self._run_rclone(common_ancestor, files_from_path)
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
     def _select_source_map(self) -> dict[str, StemRecord]:
-        """Return the stem map whose machine label matches *from_machine*.
+        """Return the stem map whose label matches *from_machine*.
 
         Falls back to *map_a* with a warning if neither label matches
         exactly (e.g. short hostname vs FQDN).
 
-        :return: The stem map to use as the rsync source.
+        :return: The stem map to use as the rclone source.
         """
         if self._from_machine == self._label_a:
             log.info("Source map: %s", self._label_a)
@@ -576,16 +584,24 @@ class OverlapCopier:
         )
         return self._map_a
 
-    def _write_files_from(self, source_map: dict[str, StemRecord]) -> Path:
-        """Write a temporary file of source-relative paths for rsync.
+    def _write_files_from(
+        self, source_map: dict[str, StemRecord]
+    ) -> tuple[str, Path]:
+        """Compute the common ancestor and write a relative files-from list.
 
-        rsync's ``--files-from`` expects paths relative to the source
-        root argument (here ``/``), so the leading ``/`` is stripped from
-        each absolute path.
+        rclone's ``--files-from`` expects paths relative to the source
+        directory passed to ``rclone copy``.  We derive that source directory
+        as the longest common path prefix across all overlapping files using
+        :func:`os.path.commonpath`, then strip it from each absolute path to
+        produce the relative entries.
 
-        :param source_map: Stem map whose paths form the copy list.
-        :return: Path to the temporary files-from file.
+        :param source_map: Stem map whose overlap paths form the copy list.
+        :return: Tuple of (common_ancestor_str, path_to_tmp_files_from_file).
         """
+        overlap_paths = [source_map[stem].path for stem in self._overlap]
+        common_ancestor = os.path.commonpath(overlap_paths)
+        log.info("Common ancestor of overlap paths: %s", common_ancestor)
+
         tmp = tempfile.NamedTemporaryFile(
             mode="w",
             prefix="bat_chops_overlap_",
@@ -594,48 +610,48 @@ class OverlapCopier:
         )
         for stem in sorted(self._overlap):
             abs_path = source_map[stem].path
-            rel_path = abs_path.lstrip("/")
+            rel_path = os.path.relpath(abs_path, common_ancestor)
             tmp.write(rel_path + "\n")
         tmp.close()
         log.info(
             "files-from list written to %s  (%d entries)",
             tmp.name, len(self._overlap),
         )
-        return Path(tmp.name)
+        return common_ancestor, Path(tmp.name)
 
-    def _run_rsync(self, files_from_path: Path) -> int:
-        """Execute a single rsync call and stream its output.
-
-        Uses ``--relative`` so the full batch subdirectory path from the
-        source is recreated verbatim under *dest_dir* on the destination.
+    def _run_rclone(self, common_ancestor: str, files_from_path: Path) -> int:
+        """Execute a single rclone copy call and stream its output.
 
         Command structure::
 
-            rsync --archive --relative --human-readable --progress \\
-                  [--dry-run] \\
-                  --files-from=<list> \\
-                  <user>@<from_machine>:/ \\
-                  <dest_dir>/
+            rclone copy <remote>:<common_ancestor> <dest_dir> \\
+                --files-from=<list> \\
+                --transfers 16 --checkers 32 --buffer-size 32M \\
+                --progress --ignore-checksum [--dry-run]
 
+        :param common_ancestor: Absolute path on the source machine used as
+                                the rclone source directory.
         :param files_from_path: Path to the temporary files-from list.
-        :return: rsync exit code.
+        :return: rclone exit code.
         """
-        dest_str = str(self._dest_dir).rstrip("/") + "/"
+        source = f"{self._rclone_remote}:{common_ancestor}"
+        dest   = str(self._dest_dir)
+
         cmd = [
-            "rsync",
-            "--archive",
-            "--relative",
-            "--human-readable",
-            "--progress",
+            "rclone", "copy",
+            source, dest,
             f"--files-from={files_from_path}",
+            f"--transfers={self._RCLONE_TRANSFERS}",
+            f"--checkers={self._RCLONE_CHECKERS}",
+            f"--buffer-size={self._RCLONE_BUFFER}",
+            "--progress",
+            "--ignore-checksum",
         ]
         if self._dry_run:
             cmd.append("--dry-run")
             log.info("DRY RUN — no files will be transferred.")
 
-        cmd += [f"{self._ssh_user}@{self._from_machine}:/", dest_str]
-
-        log.info("rsync command:\n  %s", " ".join(cmd))
+        log.info("rclone command:\n  %s", " ".join(cmd))
 
         try:
             result = subprocess.run(cmd, check=False)
@@ -643,9 +659,9 @@ class OverlapCopier:
             files_from_path.unlink(missing_ok=True)
 
         if result.returncode == 0:
-            log.info("rsync completed successfully.")
+            log.info("rclone completed successfully.")
         else:
-            log.error("rsync exited with code %d.", result.returncode)
+            log.error("rclone exited with code %d.", result.returncode)
         return result.returncode
 
 
@@ -782,26 +798,34 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     cp_grp.add_argument(
         "--from-machine",
         metavar="HOST",
-        help="Hostname to copy overlapping chops FROM (must match JSON label).",
+        help="Machine label to copy overlapping chops FROM (must match JSON label).",
     )
     cp_grp.add_argument(
         "--to-machine",
         metavar="HOST",
-        help="Hostname to copy overlapping chops TO.",
+        help="Machine label to copy overlapping chops TO.",
+    )
+    cp_grp.add_argument(
+        "--rclone-remote",
+        metavar="REMOTE",
+        help=(
+            "rclone remote name for --from-machine as configured in rclone.conf "
+            "(e.g. 'stanford')."
+        ),
     )
     cp_grp.add_argument(
         "--dest-dir",
         metavar="DIR",
         type=Path,
         help=(
-            "Absolute path on --to-machine where overlapping chops land, "
-            "with batch subdirectory structure preserved from the source."
+            "Absolute local path where overlapping chops land, with batch "
+            "subdirectory structure preserved from the source."
         ),
     )
     cp_grp.add_argument(
         "--dry-run",
         action="store_true",
-        help="Pass --dry-run to rsync; log the command without transferring data.",
+        help="Pass --dry-run to rclone; log the command without transferring data.",
     )
 
     return parser
@@ -889,16 +913,17 @@ class Runner:
     def _do_copy_overlaps(self) -> int:
         """Execute copy-overlaps mode.
 
-        :return: rsync exit code, or 1 on argument error.
+        :return: rclone exit code, or 1 on argument error.
         """
         args = self._args
         missing = [
             opt for opt, val in [
-                ("--stems-a",      args.stems_a),
-                ("--stems-b",      args.stems_b),
-                ("--from-machine", args.from_machine),
-                ("--to-machine",   args.to_machine),
-                ("--dest-dir",     args.dest_dir),
+                ("--stems-a",       args.stems_a),
+                ("--stems-b",       args.stems_b),
+                ("--from-machine",  args.from_machine),
+                ("--to-machine",    args.to_machine),
+                ("--rclone-remote", args.rclone_remote),
+                ("--dest-dir",      args.dest_dir),
             ] if not val
         ]
         if missing:
@@ -919,6 +944,7 @@ class Runner:
             label_b=label_b,
             from_machine=args.from_machine,
             to_machine=args.to_machine,
+            rclone_remote=args.rclone_remote,
             dest_dir=args.dest_dir,
             dry_run=args.dry_run,
         )
