@@ -4,22 +4,32 @@
 # @Date:   2026-03-16 15:41:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/train_cnn.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-16 15:49:49
+# @Last Modified time: 2026-03-30 09:11:25
 # **********************************************************
-#!/usr/bin/env python
-# **********************************************************
-#
-# @Author: Andreas Paepcke
-# @Date:   2026-03-16
-# @File:   src/species_classification/train_cnn.py
-#
-# **********************************************************
-
 """
 train_cnn.py
 ============
 Fine-tune EfficientNet-B0 on per-chirp spectrogram crops produced by
 ``chirps_to_spectros.py`` for bat species classification.
+
+Supports single-GPU and multi-GPU training via PyTorch
+DistributedDataParallel (DDP).  Launch with ``torchrun`` for multi-GPU:
+
+    torchrun --nproc_per_node=2 train_cnn.py \\
+        --manifest  /qnap/bats/jr_pipeline/data/bat_crops/manifest.csv \\
+        --out-dir   /qnap/bats/jr_pipeline/models/efficientnet_b0_v1 \\
+        --epochs    25 \\
+        --batch     64 \\
+        --workers   8
+
+Single-GPU (unchanged from before):
+
+    python train_cnn.py \\
+        --manifest  /qnap/bats/jr_pipeline/data/bat_crops/manifest.csv \\
+        --out-dir   /qnap/bats/jr_pipeline/models/efficientnet_b0_v1 \\
+        --epochs    25 \\
+        --batch     64 \\
+        --workers   8
 
 Overview
 --------
@@ -32,6 +42,19 @@ The train/validation/test split is made at the **``file_id`` level**
 2-second fragment land in the same split.  This prevents any information
 leakage between splits that would arise from splitting at the chirp level.
 
+DDP strategy
+------------
+* One process per GPU, launched via ``torchrun --nproc_per_node=N``.
+* Each process owns one GPU (``local_rank``).
+* ``DistributedSampler`` ensures each GPU sees a non-overlapping shard of
+  the training data each epoch, with shuffling coordinated across ranks.
+* Gradients are all-reduced automatically by DDP after each backward pass.
+* Validation, test evaluation, checkpoint saving, and logging are performed
+  only on rank 0 to avoid duplicate writes.
+* Class weights are broadcast from rank 0 to all ranks after construction.
+* Batch size in ``--batch`` is **per GPU**; effective batch size =
+  ``--batch × n_gpus``.
+
 Architecture
 ------------
 EfficientNet-B0 pretrained on ImageNet.  The classifier head is replaced
@@ -41,53 +64,26 @@ to 3 channels before passing to the network (ImageNet weights expect RGB).
 Training strategy
 -----------------
 * Phase 1 (head only, ``--freeze-epochs`` epochs): only the new classifier
-  head is trained; the EfficientNet backbone is frozen.  Allows the head
-  to reach a reasonable starting point before the backbone weights are
-  perturbed.
+  head is trained; the EfficientNet backbone is frozen.
 * Phase 2 (full fine-tune, remaining epochs): entire network is trained
   with a lower learning rate (``--lr`` × ``--backbone-lr-factor``).
 
-Outputs (all written to ``--out-dir``)
----------------------------------------
-``best_model.pt``
-    State dict of the epoch with the highest validation accuracy.
-``final_model.pt``
-    State dict after the last epoch.
-``label_encoder.json``
-    Maps integer class index ↔ species string.
-``train_config.csv``
-    All run hyperparameters for reproducibility.
-``train_log.csv``
-    Per-epoch: loss, accuracy, val_loss, val_accuracy.
-``confusion_matrix.png``
-    Confusion matrix on the held-out test set using ``best_model.pt``.
-``classification_report.txt``
-    Per-class precision/recall/F1 on the test set.
-
-Typical usage
--------------
-::
-
-    python train_cnn.py \\
-        --manifest  /raid/bats/jr_pipeline/data/bat_crops/manifest.csv \\
-        --out-dir   /raid/bats/models/efficientnet_b0_v1 \\
-        --epochs    40 \\
-        --batch     64 \\
-        --workers   8
-
-To restrict to a subset of species::
-
-    python train_cnn.py \\
-        --manifest  /raid/bats/jr_pipeline/data/bat_crops/manifest.csv \\
-        --out-dir   /raid/bats/models/top5_v1 \\
-        --species   Myca Myyu Lano Tabr Laci \\
-        --epochs    40
+Outputs (all written to ``--out-dir`` by rank 0)
+-------------------------------------------------
+``best_model.pt``       State dict of the epoch with highest val accuracy.
+``final_model.pt``      State dict after the last epoch.
+``label_encoder.json``  Maps integer class index ↔ species string.
+``train_config.csv``    All run hyperparameters for reproducibility.
+``train_log.csv``       Per-epoch: loss, accuracy, val_loss, val_accuracy.
+``confusion_matrix.png``  Confusion matrix on held-out test set.
+``classification_report.txt``  Per-class precision/recall/F1 on test set.
 """
 
 from __future__ import annotations
 
 import csv
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -97,8 +93,11 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 import torch
+import torch.distributed as dist
 import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
 from torchvision import transforms
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 from PIL import Image
@@ -120,15 +119,49 @@ log = LoggingService()
 _DEFAULT_EPOCHS:            int   = 40
 _DEFAULT_BATCH:             int   = 64
 _DEFAULT_LR:                float = 1e-3
-_DEFAULT_BACKBONE_LR_FACTOR:float = 0.1    # backbone LR = LR × factor
-_DEFAULT_FREEZE_EPOCHS:     int   = 5      # epochs to train head only
+_DEFAULT_BACKBONE_LR_FACTOR:float = 0.1
+_DEFAULT_FREEZE_EPOCHS:     int   = 5
 _DEFAULT_WEIGHT_DECAY:      float = 1e-4
 _DEFAULT_WORKERS:           int   = 4
 _DEFAULT_VAL_FRAC:          float = 0.15
 _DEFAULT_TEST_FRAC:         float = 0.15
 _DEFAULT_MIN_PROB:          float = 0.80
-_DEFAULT_MIN_CROPS:         int   = 50     # drop species with fewer crops
+_DEFAULT_MIN_CROPS:         int   = 50
 _IMG_SIZE:                  int   = 224
+
+
+# ---------------------------------------------------------------------------
+# DDP helpers
+# ---------------------------------------------------------------------------
+
+def _is_ddp() -> bool:
+    """Return True if we were launched under torchrun (DDP mode)."""
+    return 'RANK' in os.environ and 'WORLD_SIZE' in os.environ
+
+
+def _setup_ddp() -> tuple[int, int, torch.device]:
+    """
+    Initialise the DDP process group and return (rank, world_size, device).
+
+    :return: ``(rank, world_size, device)``
+    """
+    dist.init_process_group(backend='nccl')
+    rank       = dist.get_rank()
+    world_size = dist.get_world_size()
+    local_rank = int(os.environ['LOCAL_RANK'])
+    device     = torch.device(f'cuda:{local_rank}')
+    torch.cuda.set_device(device)
+    return rank, world_size, device
+
+
+def _teardown_ddp() -> None:
+    """Clean up the DDP process group."""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def _is_rank0(rank: int) -> bool:
+    return rank == 0
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +182,6 @@ class ChirpCropDataset(Dataset):
     :param img_size:   Resize target (square).
     """
 
-    # ImageNet normalisation statistics — applied after grayscale → RGB copy.
     _MEAN = [0.485, 0.456, 0.406]
     _STD  = [0.229, 0.224, 0.225]
 
@@ -165,7 +197,7 @@ class ChirpCropDataset(Dataset):
         base = [
             transforms.Resize((img_size, img_size)),
             transforms.ToTensor(),
-            transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # L → RGB
+            transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
             transforms.Normalize(self._MEAN, self._STD),
         ]
         aug = [
@@ -200,11 +232,7 @@ def make_splits(
     Split *df* into train/val/test at the ``file_id`` level, stratified by
     each fragment's modal species label.
 
-    Splitting at ``file_id`` level ensures all chirps from the same 2-second
-    fragment land in the same split, preventing leakage.
-
-    :param df:        Full crop DataFrame with ``file_id`` and ``species``
-                      columns.
+    :param df:        Full crop DataFrame with ``file_id`` and ``species``.
     :param val_frac:  Fraction of file_ids for validation.
     :param test_frac: Fraction of file_ids for test.
     :param seed:      Random seed for reproducibility.
@@ -212,7 +240,6 @@ def make_splits(
     """
     rng = np.random.default_rng(seed)
 
-    # One row per file_id: modal species determines stratum.
     fid_species = (
         df.groupby('file_id')['species']
         .agg(lambda s: s.mode().iloc[0])
@@ -230,20 +257,15 @@ def make_splits(
         n_val    = max(1, int(round(n * val_frac)))
         n_train  = n - n_test - n_val
         if n_train < 1:
-            # Too few fragments for this species — put everything in train.
             train_fids.extend(fids.tolist())
             continue
         test_fids .extend(fids[:n_test].tolist())
         val_fids  .extend(fids[n_test:n_test + n_val].tolist())
         train_fids.extend(fids[n_test + n_val:].tolist())
 
-    train_set = set(train_fids)
-    val_set   = set(val_fids)
-    test_set  = set(test_fids)
-
-    train_df = df[df['file_id'].isin(train_set)].copy()
-    val_df   = df[df['file_id'].isin(val_set)].copy()
-    test_df  = df[df['file_id'].isin(test_set)].copy()
+    train_df = df[df['file_id'].isin(set(train_fids))].copy()
+    val_df   = df[df['file_id'].isin(set(val_fids))].copy()
+    test_df  = df[df['file_id'].isin(set(test_fids))].copy()
 
     log.info(
         f'Split: {len(train_df):,} train / {len(val_df):,} val / '
@@ -261,15 +283,11 @@ def build_model(n_classes: int, device: torch.device) -> nn.Module:
     """
     Build EfficientNet-B0 with a fresh classifier head sized to *n_classes*.
 
-    Pretrained ImageNet weights are loaded for the backbone.  The original
-    classifier (1000-class) is replaced with ``Linear(1280, n_classes)``.
-
     :param n_classes: Number of bat species classes.
     :param device:    Target device.
     :return:          Model moved to *device*.
     """
     model = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
-    # EfficientNet-B0 classifier: Sequential(Dropout, Linear(1280, 1000))
     in_features = model.classifier[1].in_features
     model.classifier = nn.Sequential(
         nn.Dropout(p=0.2, inplace=True),
@@ -282,9 +300,11 @@ def freeze_backbone(model: nn.Module) -> None:
     """
     Freeze all parameters except the classifier head.
 
-    :param model: EfficientNet-B0 model.
+    :param model: EfficientNet-B0 model (may be DDP-wrapped).
     """
-    for name, param in model.named_parameters():
+    # Unwrap DDP to access named parameters.
+    base = model.module if isinstance(model, DDP) else model
+    for name, param in base.named_parameters():
         if 'classifier' not in name:
             param.requires_grad = False
 
@@ -293,9 +313,10 @@ def unfreeze_all(model: nn.Module) -> None:
     """
     Unfreeze all parameters.
 
-    :param model: EfficientNet-B0 model.
+    :param model: EfficientNet-B0 model (may be DDP-wrapped).
     """
-    for param in model.parameters():
+    base = model.module if isinstance(model, DDP) else model
+    for param in base.parameters():
         param.requires_grad = True
 
 
@@ -310,25 +331,33 @@ def run_epoch(
     optimizer: Optional[torch.optim.Optimizer],
     device:    torch.device,
     train:     bool,
+    rank:      int = 0,
+    world_size:int = 1,
 ) -> tuple[float, float]:
     """
     Run one epoch of training or evaluation.
 
-    :param model:     The model.
-    :param loader:    DataLoader for this split.
-    :param criterion: Loss function.
-    :param optimizer: Optimiser (``None`` during eval).
-    :param device:    Compute device.
-    :param train:     If ``True``, update weights; else eval mode.
-    :return:          ``(mean_loss, accuracy)``
+    In DDP mode, loss and accuracy are all-reduced across ranks so the
+    returned values are the global average (rank 0 receives the result).
+
+    :param model:      The model (may be DDP-wrapped).
+    :param loader:     DataLoader for this split.
+    :param criterion:  Loss function.
+    :param optimizer:  Optimiser (``None`` during eval).
+    :param device:     Compute device.
+    :param train:      If ``True``, update weights; else eval mode.
+    :param rank:       This process's rank.
+    :param world_size: Total number of processes.
+    :return:           ``(mean_loss, accuracy)`` — global average in DDP mode.
     """
     model.train(train)
     total_loss = 0.0
     n_correct  = 0
     n_total    = 0
 
-    ctx = torch.enable_grad() if train else torch.no_grad()
-    pbar = tqdm(loader, leave=False) if _TQDM else loader
+    ctx  = torch.enable_grad() if train else torch.no_grad()
+    # Show progress bar only on rank 0 to avoid interleaved output.
+    pbar = tqdm(loader, leave=False) if (_TQDM and rank == 0) else loader
 
     with ctx:
         for imgs, labels in pbar:
@@ -348,6 +377,13 @@ def run_epoch(
             n_correct  += (preds == labels).sum().item()
             n_total    += len(labels)
 
+    # All-reduce across DDP ranks so rank 0 gets global metrics.
+    if world_size > 1:
+        t = torch.tensor([total_loss, float(n_correct), float(n_total)],
+                         device=device)
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+        total_loss, n_correct, n_total = t[0].item(), t[1].item(), t[2].item()
+
     return total_loss / max(n_total, 1), n_correct / max(n_total, 1)
 
 
@@ -366,9 +402,9 @@ def evaluate_test(
 ) -> None:
     """
     Run model on the test set, write confusion matrix PNG and
-    classification report TXT.
+    classification report TXT.  Called on rank 0 only.
 
-    :param model:        Trained model in eval mode.
+    :param model:        Trained model (may be DDP-wrapped; unwrapped here).
     :param test_df:      Test split DataFrame.
     :param label_to_idx: Species → integer index mapping.
     :param device:       Compute device.
@@ -381,6 +417,9 @@ def evaluate_test(
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     import seaborn as sns
+
+    # Unwrap DDP for inference.
+    base_model = model.module if isinstance(model, DDP) else model
 
     idx_to_label = {v: k for k, v in label_to_idx.items()}
     class_names  = [idx_to_label[i] for i in range(len(label_to_idx))]
@@ -395,18 +434,20 @@ def evaluate_test(
 
     all_preds  = []
     all_labels = []
-    model.eval()
+    base_model.eval()
 
     with torch.no_grad():
         for imgs, labels in loader:
-            imgs   = imgs.to(device, non_blocking=True)
-            preds  = model(imgs).argmax(dim=1).cpu().numpy()
+            imgs  = imgs.to(device, non_blocking=True)
+            preds = base_model(imgs).argmax(dim=1).cpu().numpy()
             all_preds .extend(preds.tolist())
             all_labels.extend(labels.numpy().tolist())
 
-    # Confusion matrix
-    cm = confusion_matrix(all_labels, all_preds, labels=list(range(len(class_names))))
-    fig, ax = plt.subplots(figsize=(max(8, len(class_names)), max(6, len(class_names) - 2)))
+    cm = confusion_matrix(all_labels, all_preds,
+                          labels=list(range(len(class_names))))
+    fig, ax = plt.subplots(
+        figsize=(max(8, len(class_names)), max(6, len(class_names) - 2))
+    )
     sns.heatmap(
         cm, annot=True, fmt='d', cmap='Blues',
         xticklabels=class_names, yticklabels=class_names, ax=ax,
@@ -419,7 +460,6 @@ def evaluate_test(
     plt.close(fig)
     log.info(f'Saved confusion matrix to {out_dir / "confusion_matrix.png"}')
 
-    # Classification report
     report = classification_report(
         all_labels, all_preds,
         target_names=class_names, digits=3, zero_division=0,
@@ -429,30 +469,32 @@ def evaluate_test(
 
 
 # ---------------------------------------------------------------------------
-# Main training function
+# Main training class
 # ---------------------------------------------------------------------------
 
 class CnnTrainer:
     """
     Fine-tune EfficientNet-B0 on bat species spectrogram crops.
 
-    :param manifest_csv:        Path to manifest CSV from
-                                ``chirps_to_spectros.py``.
+    Supports single-GPU and multi-GPU (DDP) training.  In DDP mode, launch
+    with ``torchrun --nproc_per_node=N``; batch size is **per GPU**.
+
+    :param manifest_csv:        Path to manifest CSV from chirps_to_spectros.
     :param out_dir:             Output directory for checkpoints and logs.
     :param species:             If non-empty, restrict to these species codes.
     :param min_prob:            Minimum ``species_prob`` to include a crop.
     :param min_crops_per_class: Drop species with fewer crops than this.
     :param epochs:              Total training epochs.
-    :param freeze_epochs:       Epochs to train classifier head only before
-                                unfreezing the backbone.
-    :param batch_size:          Training batch size.
+    :param freeze_epochs:       Epochs to train classifier head only.
+    :param batch_size:          Training batch size **per GPU**.
     :param lr:                  Initial learning rate (head phase).
-    :param backbone_lr_factor:  Backbone LR = lr × factor (full fine-tune phase).
+    :param backbone_lr_factor:  Backbone LR = lr × factor (full fine-tune).
     :param weight_decay:        AdamW weight decay.
     :param val_frac:            Fraction of file_ids for validation.
     :param test_frac:           Fraction of file_ids for test.
-    :param n_workers:           DataLoader worker processes.
+    :param n_workers:           DataLoader worker processes per GPU.
     :param device_str:          ``'cuda'``, ``'cpu'``, or ``'auto'``.
+                                Ignored in DDP mode (device set by local rank).
     :param seed:                Random seed.
     """
 
@@ -490,11 +532,7 @@ class CnnTrainer:
         self.test_frac           = test_frac
         self.n_workers           = n_workers
         self.seed                = seed
-
-        if device_str == 'auto':
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        else:
-            self.device = torch.device(device_str)
+        self.device_str          = device_str
 
     # ------------------------------------------------------------------ #
     #  Data loading                                                        #
@@ -503,13 +541,6 @@ class CnnTrainer:
     def _load_manifest(self) -> pd.DataFrame:
         """
         Load and filter the manifest CSV.
-
-        Filters applied in order:
-        1. ``species`` not NaN and matches ``[A-Z][a-z]{3}`` pattern.
-        2. ``species_prob`` >= ``self.min_prob`` (or NaN — kept with warning).
-        3. ``crop_path`` file must exist on disk.
-        4. If ``self.species`` non-empty, restrict to those species.
-        5. Drop species with fewer than ``self.min_crops_per_class`` crops.
 
         :return: Filtered DataFrame ready for splitting.
         """
@@ -520,22 +551,18 @@ class CnnTrainer:
         df = pd.read_csv(self.manifest_csv)
         log.info(f'  {len(df):,} total rows')
 
-        # Species filter
         df = df[df['species'].notna()]
         df = df[df['species'].apply(lambda s: bool(_sp_re.match(str(s))))]
         log.info(f'  {len(df):,} rows with valid species code')
 
-        # Confidence filter
         prob_col = pd.to_numeric(df['species_prob'], errors='coerce')
         df = df[prob_col.isna() | (prob_col >= self.min_prob)]
         log.info(f'  {len(df):,} rows after confidence filter (min_prob={self.min_prob})')
 
-        # Species subset filter
         if self.species:
             df = df[df['species'].isin(self.species)]
             log.info(f'  {len(df):,} rows after species filter {self.species}')
 
-        # Drop species below minimum crop count
         counts = df['species'].value_counts()
         valid_species = counts[counts >= self.min_crops_per_class].index
         dropped = counts[counts < self.min_crops_per_class]
@@ -547,7 +574,6 @@ class CnnTrainer:
         df = df[df['species'].isin(valid_species)]
         log.info(f'  {len(df):,} rows after min-crops filter')
 
-        # Verify crop files exist (sample check on first 100)
         missing = [p for p in df['crop_path'].iloc[:100] if not Path(p).exists()]
         if missing:
             log.warn(f'{len(missing)} sample crop paths not found on disk '
@@ -562,53 +588,82 @@ class CnnTrainer:
 
     def run(self) -> None:
         """
-        Execute the full training pipeline:
-        load → split → build model → train → evaluate → save artefacts.
+        Execute the full training pipeline.
+
+        Automatically detects DDP mode (torchrun) vs single-GPU/CPU mode.
+        In DDP mode heavy setup (data loading, model build) runs on all
+        ranks, but logging, checkpointing, and evaluation only on rank 0.
         """
         _t0 = time.perf_counter()
-        self.out_dir.mkdir(parents=True, exist_ok=True)
-        torch.manual_seed(self.seed)
-        np.random.seed(self.seed)
 
-        # ── Load and split ─────────────────────────────────────────────
+        # ── DDP / device setup ─────────────────────────────────────────
+        if _is_ddp():
+            rank, world_size, device = _setup_ddp()
+        else:
+            rank, world_size = 0, 1
+            if self.device_str == 'auto':
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            else:
+                device = torch.device(self.device_str)
+
+        is_main = _is_rank0(rank)
+
+        if is_main:
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+
+        torch.manual_seed(self.seed + rank)   # different seed per rank for augmentation
+        np.random.seed(self.seed + rank)
+
+        # ── Load and split (all ranks, same data) ─────────────────────
+        # All ranks load the full manifest so splits are identical.
         df = self._load_manifest()
 
-        # Encode species labels as integers
         species_list  = sorted(df['species'].unique().tolist())
         label_to_idx  = {sp: i for i, sp in enumerate(species_list)}
         idx_to_label  = {i: sp for sp, i in label_to_idx.items()}
         n_classes     = len(species_list)
         df['label']   = df['species'].map(label_to_idx)
-        log.info(f'{n_classes} classes: {species_list}')
 
-        # Save label encoder
-        (self.out_dir / 'label_encoder.json').write_text(
-            json.dumps({'label_to_idx': label_to_idx,
-                        'idx_to_label': {str(k): v for k, v in idx_to_label.items()}},
-                       indent=2)
-        )
+        if is_main:
+            log.info(f'{n_classes} classes: {species_list}')
+            (self.out_dir / 'label_encoder.json').write_text(
+                json.dumps({'label_to_idx': label_to_idx,
+                            'idx_to_label': {str(k): v
+                                             for k, v in idx_to_label.items()}},
+                           indent=2)
+            )
 
         train_df, val_df, test_df = make_splits(
             df, self.val_frac, self.test_frac, self.seed
         )
 
-        # Class weights for imbalanced dataset (inverse frequency)
-        train_counts = train_df['label'].value_counts().sort_index()
+        # ── Class weights (rank 0 computes, broadcasts to all) ─────────
+        train_counts  = train_df['label'].value_counts().sort_index()
         class_weights = torch.tensor(
             [1.0 / max(train_counts.get(i, 1), 1) for i in range(n_classes)],
             dtype=torch.float32,
-        ).to(self.device)
+        ).to(device)
         class_weights = class_weights / class_weights.sum() * n_classes
+        if world_size > 1:
+            dist.broadcast(class_weights, src=0)
 
         # ── DataLoaders ────────────────────────────────────────────────
+        train_sampler = DistributedSampler(
+            ChirpCropDataset(train_df, augment=True),
+            num_replicas=world_size, rank=rank, shuffle=True,
+            seed=self.seed,
+        ) if world_size > 1 else None
+
         train_loader = DataLoader(
             ChirpCropDataset(train_df, augment=True),
             batch_size  = self.batch_size,
-            shuffle     = True,
+            shuffle     = (train_sampler is None),
+            sampler     = train_sampler,
             num_workers = self.n_workers,
             pin_memory  = True,
             drop_last   = True,
         )
+        # Val/test only on rank 0 — no sampler needed.
         val_loader = DataLoader(
             ChirpCropDataset(val_df, augment=False),
             batch_size  = self.batch_size * 2,
@@ -618,9 +673,16 @@ class CnnTrainer:
         )
 
         # ── Model ──────────────────────────────────────────────────────
-        log.info(f'Building EfficientNet-B0 ({n_classes} classes) on {self.device}')
-        model     = build_model(n_classes, self.device)
+        if is_main:
+            log.info(
+                f'Building EfficientNet-B0 ({n_classes} classes) on {device}'
+                + (f' × {world_size} GPUs (DDP)' if world_size > 1 else '')
+            )
+        model     = build_model(n_classes, device)
         criterion = nn.CrossEntropyLoss(weight=class_weights)
+
+        if world_size > 1:
+            model = DDP(model, device_ids=[device.index])
 
         # ── Phase 1: head only ─────────────────────────────────────────
         freeze_backbone(model)
@@ -632,16 +694,23 @@ class CnnTrainer:
             optimizer, T_max=self.freeze_epochs
         )
 
-        log.info(f'Phase 1: training head only for {self.freeze_epochs} epochs')
+        if is_main:
+            log.info(f'Phase 1: training head only for {self.freeze_epochs} epochs')
 
-        best_val_acc  = 0.0
-        best_epoch    = 0
+        best_val_acc = 0.0
+        best_epoch   = 0
         log_rows: list[dict] = []
 
         for epoch in range(1, self.epochs + 1):
-            # Switch to full fine-tune after freeze_epochs
+
+            # Advance DistributedSampler epoch so each GPU gets a fresh shard.
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+
+            # Switch to full fine-tune after freeze_epochs.
             if epoch == self.freeze_epochs + 1:
-                log.info('Phase 2: unfreezing backbone, reducing LR')
+                if is_main:
+                    log.info('Phase 2: unfreezing backbone, reducing LR')
                 unfreeze_all(model)
                 optimizer = torch.optim.AdamW(
                     model.parameters(),
@@ -653,76 +722,101 @@ class CnnTrainer:
                 )
 
             train_loss, train_acc = run_epoch(
-                model, train_loader, criterion, optimizer, self.device, train=True
+                model, train_loader, criterion, optimizer,
+                device, train=True, rank=rank, world_size=world_size,
             )
-            val_loss, val_acc = run_epoch(
-                model, val_loader, criterion, None, self.device, train=False
-            )
+
+            # Validation on rank 0 only (no DistributedSampler on val_loader).
+            if is_main:
+                val_loss, val_acc = run_epoch(
+                    model, val_loader, criterion, None,
+                    device, train=False, rank=0, world_size=1,
+                )
+                log.info(
+                    f'Epoch {epoch:3d}/{self.epochs}  '
+                    f'train_loss={train_loss:.4f}  train_acc={train_acc:.4f}  '
+                    f'val_loss={val_loss:.4f}  val_acc={val_acc:.4f}'
+                )
+                log_rows.append({
+                    'epoch':      epoch,
+                    'train_loss': round(train_loss, 6),
+                    'train_acc':  round(train_acc,  6),
+                    'val_loss':   round(val_loss,   6),
+                    'val_acc':    round(val_acc,    6),
+                })
+
+                if val_acc > best_val_acc:
+                    best_val_acc = val_acc
+                    best_epoch   = epoch
+                    # Save unwrapped state dict.
+                    base = model.module if isinstance(model, DDP) else model
+                    torch.save(base.state_dict(),
+                               self.out_dir / 'best_model.pt')
+                    log.info(
+                        f'  ✓ New best val_acc={best_val_acc:.4f}'
+                        ' — saved best_model.pt'
+                    )
+
+            # Barrier: all ranks wait before next epoch.
+            if world_size > 1:
+                dist.barrier()
+
             scheduler.step()
 
-            log.info(
-                f'Epoch {epoch:3d}/{self.epochs}  '
-                f'train_loss={train_loss:.4f}  train_acc={train_acc:.4f}  '
-                f'val_loss={val_loss:.4f}  val_acc={val_acc:.4f}'
+        # ── Save final model (rank 0) ───────────────────────────────────
+        if is_main:
+            base = model.module if isinstance(model, DDP) else model
+            torch.save(base.state_dict(), self.out_dir / 'final_model.pt')
+            log.info(f'Saved final_model.pt  (best was epoch {best_epoch})')
+
+            pd.DataFrame(log_rows).to_csv(
+                self.out_dir / 'train_log.csv', index=False
             )
-            log_rows.append({
-                'epoch':      epoch,
-                'train_loss': round(train_loss, 6),
-                'train_acc':  round(train_acc,  6),
-                'val_loss':   round(val_loss,   6),
-                'val_acc':    round(val_acc,    6),
-            })
 
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                best_epoch   = epoch
-                torch.save(model.state_dict(), self.out_dir / 'best_model.pt')
-                log.info(f'  ✓ New best val_acc={best_val_acc:.4f} — saved best_model.pt')
+            # ── Test evaluation ────────────────────────────────────────
+            log.info('Loading best_model.pt for test evaluation ...')
+            base = model.module if isinstance(model, DDP) else model
+            base.load_state_dict(
+                torch.load(self.out_dir / 'best_model.pt',
+                           map_location=device)
+            )
+            evaluate_test(
+                model, test_df, label_to_idx,
+                device, self.batch_size * 2, self.n_workers, self.out_dir,
+            )
 
-        torch.save(model.state_dict(), self.out_dir / 'final_model.pt')
-        log.info(f'Saved final_model.pt  (best was epoch {best_epoch})')
+            # ── Config CSV ─────────────────────────────────────────────
+            elapsed = time.perf_counter() - _t0
+            pd.DataFrame([
+                {'parameter': 'manifest_csv',        'value': str(self.manifest_csv)},
+                {'parameter': 'out_dir',             'value': str(self.out_dir)},
+                {'parameter': 'n_classes',           'value': n_classes},
+                {'parameter': 'species',             'value': str(species_list)},
+                {'parameter': 'epochs',              'value': self.epochs},
+                {'parameter': 'freeze_epochs',       'value': self.freeze_epochs},
+                {'parameter': 'batch_size_per_gpu',  'value': self.batch_size},
+                {'parameter': 'effective_batch_size','value': self.batch_size * world_size},
+                {'parameter': 'world_size',          'value': world_size},
+                {'parameter': 'lr',                  'value': self.lr},
+                {'parameter': 'backbone_lr_factor',  'value': self.backbone_lr_factor},
+                {'parameter': 'weight_decay',        'value': self.weight_decay},
+                {'parameter': 'val_frac',            'value': self.val_frac},
+                {'parameter': 'test_frac',           'value': self.test_frac},
+                {'parameter': 'min_prob',            'value': self.min_prob},
+                {'parameter': 'min_crops_per_class', 'value': self.min_crops_per_class},
+                {'parameter': 'device',              'value': str(device)},
+                {'parameter': 'seed',                'value': self.seed},
+                {'parameter': 'best_epoch',          'value': best_epoch},
+                {'parameter': 'best_val_acc',        'value': round(best_val_acc, 6)},
+                {'parameter': 'elapsed_secs',        'value': round(elapsed, 1)},
+            ]).to_csv(self.out_dir / 'train_config.csv', index=False)
 
-        # ── Training log ───────────────────────────────────────────────
-        pd.DataFrame(log_rows).to_csv(self.out_dir / 'train_log.csv', index=False)
+            log.info(
+                f'Training complete in {elapsed/60:.1f} min  '
+                f'best val_acc={best_val_acc:.4f} at epoch {best_epoch}'
+            )
 
-        # ── Test evaluation ────────────────────────────────────────────
-        log.info('Loading best_model.pt for test evaluation ...')
-        model.load_state_dict(
-            torch.load(self.out_dir / 'best_model.pt', map_location=self.device)
-        )
-        evaluate_test(
-            model, test_df, label_to_idx,
-            self.device, self.batch_size * 2, self.n_workers, self.out_dir,
-        )
-
-        # ── Config CSV ─────────────────────────────────────────────────
-        elapsed = time.perf_counter() - _t0
-        pd.DataFrame([
-            {'parameter': 'manifest_csv',        'value': str(self.manifest_csv)},
-            {'parameter': 'out_dir',             'value': str(self.out_dir)},
-            {'parameter': 'n_classes',           'value': n_classes},
-            {'parameter': 'species',             'value': str(species_list)},
-            {'parameter': 'epochs',              'value': self.epochs},
-            {'parameter': 'freeze_epochs',       'value': self.freeze_epochs},
-            {'parameter': 'batch_size',          'value': self.batch_size},
-            {'parameter': 'lr',                  'value': self.lr},
-            {'parameter': 'backbone_lr_factor',  'value': self.backbone_lr_factor},
-            {'parameter': 'weight_decay',        'value': self.weight_decay},
-            {'parameter': 'val_frac',            'value': self.val_frac},
-            {'parameter': 'test_frac',           'value': self.test_frac},
-            {'parameter': 'min_prob',            'value': self.min_prob},
-            {'parameter': 'min_crops_per_class', 'value': self.min_crops_per_class},
-            {'parameter': 'device',              'value': str(self.device)},
-            {'parameter': 'seed',                'value': self.seed},
-            {'parameter': 'best_epoch',          'value': best_epoch},
-            {'parameter': 'best_val_acc',        'value': round(best_val_acc, 6)},
-            {'parameter': 'elapsed_secs',        'value': round(elapsed, 1)},
-        ]).to_csv(self.out_dir / 'train_config.csv', index=False)
-
-        log.info(
-            f'Training complete in {elapsed/60:.1f} min  '
-            f'best val_acc={best_val_acc:.4f} at epoch {best_epoch}'
-        )
+        _teardown_ddp()
 
 
 # ---------------------------------------------------------------------------
@@ -736,85 +830,40 @@ def _parse_args():
         prog='train_cnn',
         description=(
             'Fine-tune EfficientNet-B0 on bat species spectrogram crops.\n\n'
-            'Input: manifest.csv from chirps_to_spectros.py\n'
-            'Output: model checkpoints, training log, confusion matrix'
+            'Single GPU:\n'
+            '  python train_cnn.py --manifest ... --out-dir ...\n\n'
+            'Multi-GPU (DDP):\n'
+            '  torchrun --nproc_per_node=2 train_cnn.py --manifest ... --out-dir ...\n\n'
+            'Batch size is per GPU in both modes.'
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
-    parser.add_argument(
-        '--manifest', required=True, metavar='CSV',
-        help='manifest.csv from chirps_to_spectros.py',
-    )
-    parser.add_argument(
-        '--out-dir', required=True, metavar='DIR',
-        help='output directory for checkpoints and logs',
-    )
-    parser.add_argument(
-        '--species', nargs='+', default=[], metavar='SP',
-        help='restrict to these species codes (default: all)',
-    )
-    parser.add_argument(
-        '--epochs', type=int, default=_DEFAULT_EPOCHS,
-        help=f'total training epochs (default: {_DEFAULT_EPOCHS})',
-    )
-    parser.add_argument(
-        '--freeze-epochs', type=int, default=_DEFAULT_FREEZE_EPOCHS,
-        help=f'epochs to train head only (default: {_DEFAULT_FREEZE_EPOCHS})',
-    )
-    parser.add_argument(
-        '--batch', type=int, default=_DEFAULT_BATCH,
-        help=f'batch size (default: {_DEFAULT_BATCH})',
-    )
-    parser.add_argument(
-        '--lr', type=float, default=_DEFAULT_LR,
-        help=f'initial learning rate (default: {_DEFAULT_LR})',
-    )
-    parser.add_argument(
-        '--backbone-lr-factor', type=float, default=_DEFAULT_BACKBONE_LR_FACTOR,
-        help=f'backbone LR = lr × factor (default: {_DEFAULT_BACKBONE_LR_FACTOR})',
-    )
-    parser.add_argument(
-        '--weight-decay', type=float, default=_DEFAULT_WEIGHT_DECAY,
-        help=f'AdamW weight decay (default: {_DEFAULT_WEIGHT_DECAY})',
-    )
-    parser.add_argument(
-        '--val-frac', type=float, default=_DEFAULT_VAL_FRAC,
-        help=f'validation fraction of file_ids (default: {_DEFAULT_VAL_FRAC})',
-    )
-    parser.add_argument(
-        '--test-frac', type=float, default=_DEFAULT_TEST_FRAC,
-        help=f'test fraction of file_ids (default: {_DEFAULT_TEST_FRAC})',
-    )
-    parser.add_argument(
-        '--min-prob', type=float, default=_DEFAULT_MIN_PROB,
-        help=f'minimum species_prob (default: {_DEFAULT_MIN_PROB})',
-    )
-    parser.add_argument(
-        '--min-crops', type=int, default=_DEFAULT_MIN_CROPS,
-        help=f'minimum crops per species (default: {_DEFAULT_MIN_CROPS})',
-    )
-    parser.add_argument(
-        '--workers', type=int, default=_DEFAULT_WORKERS,
-        help=f'DataLoader worker processes (default: {_DEFAULT_WORKERS})',
-    )
-    parser.add_argument(
-        '--device', default='auto',
-        help='cuda / cpu / auto (default: auto)',
-    )
-    parser.add_argument(
-        '--seed', type=int, default=42,
-        help='random seed (default: 42)',
-    )
+    parser.add_argument('--manifest', required=True, metavar='CSV')
+    parser.add_argument('--out-dir',  required=True, metavar='DIR')
+    parser.add_argument('--species',  nargs='+', default=[], metavar='SP')
+    parser.add_argument('--epochs',   type=int,   default=_DEFAULT_EPOCHS)
+    parser.add_argument('--freeze-epochs', type=int, default=_DEFAULT_FREEZE_EPOCHS)
+    parser.add_argument('--batch',    type=int,   default=_DEFAULT_BATCH)
+    parser.add_argument('--lr',       type=float, default=_DEFAULT_LR)
+    parser.add_argument('--backbone-lr-factor', type=float,
+                        default=_DEFAULT_BACKBONE_LR_FACTOR)
+    parser.add_argument('--weight-decay', type=float, default=_DEFAULT_WEIGHT_DECAY)
+    parser.add_argument('--val-frac',  type=float, default=_DEFAULT_VAL_FRAC)
+    parser.add_argument('--test-frac', type=float, default=_DEFAULT_TEST_FRAC)
+    parser.add_argument('--min-prob',  type=float, default=_DEFAULT_MIN_PROB)
+    parser.add_argument('--min-crops', type=int,   default=_DEFAULT_MIN_CROPS)
+    parser.add_argument('--workers',   type=int,   default=_DEFAULT_WORKERS)
+    parser.add_argument('--device',    default='auto')
+    parser.add_argument('--seed',      type=int,   default=42)
 
     args = parser.parse_args()
-
     if not Path(args.manifest).exists():
         parser.error(f'manifest not found: {args.manifest}')
-
     return args
 
 
 def main() -> None:
+    """CLI entry point."""
     args = _parse_args()
 
     trainer = CnnTrainer(
