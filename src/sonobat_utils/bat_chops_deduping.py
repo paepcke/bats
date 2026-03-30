@@ -5,7 +5,7 @@
 # @Date:   2026-03-30 10:38:02
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/bat_chops_deduping.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-30 12:15:55
+# @Last Modified time: 2026-03-30 13:35:04
 #
 # **********************************************************
 
@@ -59,13 +59,19 @@ Workflow
            --dest-dir /raid/bat_wavs/dedup_temp_overlapping_chops
 
   5. Once the quarantine copies are local, re-run --compare with
-     --audio-check to resolve true duplicates (both paths now local)::
+     --audio-check.  The sidecar written by --copy-overlaps
+     (~/.bat_chops_deduping_state.json) is read automatically and the
+     quarantine directory is walked to build a filename→path lookup —
+     no extra arguments needed::
 
        python src/sonobat_utils/bat_chops_deduping.py --compare \\
-           --stems-a /data/win_share/quintus_overlap_chops_stems.json \\
+           --stems-a /data/win_share/quintus_chops_file_stems.json \\
            --stems-b /data/win_share/sextus_chops_file_stems.json \\
            --audio-check \\
            --transfer-list /data/win_share/confirmed_safe_to_transfer.txt
+
+     To point at a different quarantine directory pass ``--quarantine-dir``,
+     or suppress automatic remapping with ``--no-rebase``.
 
 Batch discovery
 ---------------
@@ -540,9 +546,19 @@ class OverlapCopier:
     # Public API
     # ------------------------------------------------------------------
 
-    def copy(self) -> int:
+    def copy(
+        self,
+        stems_a_path: Optional[Path] = None,
+        stems_b_path: Optional[Path] = None,
+    ) -> int:
         """Compute common ancestor, write files-from list, invoke rclone.
 
+        On success writes a sidecar state file so that the subsequent
+        ``--compare --audio-check`` invocation can automatically rebase
+        stems-a paths to the local quarantine directory.
+
+        :param stems_a_path: Path to the stems-a JSON (recorded in sidecar).
+        :param stems_b_path: Path to the stems-b JSON (recorded in sidecar).
         :return: rclone exit code (0 = success).
         """
         if not self._overlap:
@@ -557,7 +573,15 @@ class OverlapCopier:
 
         source_map = self._select_source_map()
         common_ancestor, files_from_path = self._write_files_from(source_map)
-        return self._run_rclone(common_ancestor, files_from_path)
+        rc = self._run_rclone(common_ancestor, files_from_path)
+
+        if rc == 0 and stems_a_path and stems_b_path:
+            StateManager().save(
+                dest_dir=self._dest_dir,
+                stems_a=stems_a_path,
+                stems_b=stems_b_path,
+            )
+        return rc
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -663,6 +687,130 @@ class OverlapCopier:
         else:
             log.error("rclone exited with code %d.", result.returncode)
         return result.returncode
+
+
+# ---------------------------------------------------------------------------
+# StateManager
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# StateManager
+# ---------------------------------------------------------------------------
+
+class StateManager:
+    """Read and write the sidecar state file that passes quarantine info
+    between ``--copy-overlaps`` and ``--compare``.
+
+    The sidecar lives at ``~/.bat_chops_deduping_state.json`` and is written
+    only on a successful (exit-code 0) rclone run.  On ``--compare`` it is
+    loaded automatically and :meth:`remap_to_quarantine` is called to rewrite
+    stems-a paths so that the audio hash comparison uses the locally available
+    quarantine copies rather than the remote quintus paths.
+
+    Remapping strategy
+    ------------------
+    Rather than fragile prefix substitution, the quarantine directory is
+    walked recursively to build a ``basename → absolute_path`` lookup.  For
+    each stem in *map_a* whose filename (basename) appears in the quarantine,
+    the path is silently replaced.  Stems not present in the quarantine are
+    left pointing at their original path — during ``--audio-check`` those will
+    produce a "file not found" warning and be placed in *unresolved*, which is
+    the correct outcome (they are not overlap candidates).
+
+    :param sidecar_path: Override the default sidecar location (for testing).
+    """
+
+    DEFAULT_PATH: Path = Path.home() / ".bat_chops_deduping_state.json"
+
+    def __init__(self, sidecar_path: Optional[Path] = None) -> None:
+        self._path = sidecar_path or self.DEFAULT_PATH
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def save(
+        self,
+        dest_dir: Path,
+        stems_a: Path,
+        stems_b: Path,
+    ) -> None:
+        """Persist quarantine info to the sidecar file.
+
+        :param dest_dir: Local destination root passed to rclone.
+        :param stems_a: Path to the stems-a JSON (for human reference).
+        :param stems_b: Path to the stems-b JSON (for human reference).
+        """
+        payload = {
+            "dest_dir": str(dest_dir),
+            "stems_a":  str(stems_a),
+            "stems_b":  str(stems_b),
+        }
+        with self._path.open("w") as fh:
+            json.dump(payload, fh, indent=2)
+        log.info("Sidecar state written to %s", self._path)
+
+    def load(self) -> Optional[dict]:
+        """Load the sidecar file if it exists.
+
+        :return: Parsed dict, or None if the sidecar does not exist.
+        """
+        if not self._path.exists():
+            return None
+        with self._path.open() as fh:
+            data = json.load(fh)
+        log.info("Sidecar state loaded from %s", self._path)
+        return data
+
+    def remap_to_quarantine(
+        self,
+        stem_map: dict[str, StemRecord],
+        quarantine_dir: Path,
+    ) -> dict[str, StemRecord]:
+        """Return a new stem map with paths remapped to local quarantine files.
+
+        Walks *quarantine_dir* recursively once to build a
+        ``basename → absolute_path`` index, then rewrites every
+        :class:`StemRecord` in *stem_map* whose filename is found in that
+        index.  Records not found are passed through unchanged.
+
+        :param stem_map: Original stem map (not mutated).
+        :param quarantine_dir: Root of the local quarantine directory tree.
+        :return: New stem map with remapped paths where quarantine files exist.
+        """
+        log.info("Building filename index from quarantine dir: %s", quarantine_dir)
+        filename_index: dict[str, str] = {}
+        for wav_path in quarantine_dir.rglob("*.wav"):
+            name = wav_path.name
+            if name in filename_index:
+                log.warning(
+                    "Duplicate filename in quarantine dir — "
+                    "keeping first hit, ignoring %s", wav_path,
+                )
+            else:
+                filename_index[name] = str(wav_path)
+
+        log.info("Quarantine index built: %d unique filenames", len(filename_index))
+
+        remapped: dict[str, StemRecord] = {}
+        hit = 0
+        miss = 0
+        for stem, rec in stem_map.items():
+            basename = Path(rec.path).name
+            if basename in filename_index:
+                remapped[stem] = StemRecord(
+                    path=filename_index[basename], batch=rec.batch
+                )
+                hit += 1
+            else:
+                remapped[stem] = rec
+                miss += 1
+
+        log.info(
+            "Quarantine remap: %d paths remapped, %d left at original location",
+            hit, miss,
+        )
+        return remapped
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +931,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     cmp_grp.add_argument(
+        "--quarantine-dir",
+        metavar="DIR",
+        type=Path,
+        default=None,
+        help=(
+            "Local directory containing quarantine copies of overlapping chops "
+            "(written by --copy-overlaps).  Overrides the dest_dir recorded in "
+            "the sidecar state file.  The directory is walked recursively and "
+            "stems-a paths are remapped by filename match."
+        ),
+    )
+    cmp_grp.add_argument(
+        "--no-rebase",
+        action="store_true",
+        help="Ignore the sidecar state file and do not remap stems-a paths.",
+    )
+    cmp_grp.add_argument(
         "--transfer-list",
         metavar="FILE",
         type=Path,
@@ -886,6 +1051,11 @@ class Runner:
     def _do_compare(self) -> int:
         """Execute compare mode.
 
+        If a sidecar state file exists (written by a previous --copy-overlaps
+        run), stems-a paths are automatically remapped to the local quarantine
+        directory by filename lookup.  Pass --no-rebase to suppress this, or
+        --quarantine-dir to point at a different directory.
+
         :return: Exit code.
         """
         args = self._args
@@ -898,6 +1068,8 @@ class Runner:
         log.info("Loaded %d stems from %s  (machine: %s)", len(map_a), args.stems_a, label_a)
         log.info("Loaded %d stems from %s  (machine: %s)", len(map_b), args.stems_b, label_b)
 
+        map_a = self._maybe_remap(map_a, args)
+
         cmp = ChopComparator(
             map_a=map_a,
             map_b=map_b,
@@ -909,6 +1081,55 @@ class Runner:
         cmp.resolve_overlaps()
         cmp.write_transfer_list(args.transfer_list)
         return 0
+
+    @staticmethod
+    def _maybe_remap(
+        map_a: dict[str, StemRecord],
+        args: argparse.Namespace,
+    ) -> dict[str, StemRecord]:
+        """Remap stems-a paths to local quarantine copies where available.
+
+        Priority:
+        1. ``--no-rebase`` → return *map_a* unchanged.
+        2. ``--quarantine-dir DIR`` → walk DIR, remap by filename.
+        3. Sidecar exists → use its ``dest_dir``, remap by filename.
+        4. No sidecar → return *map_a* unchanged.
+
+        :param map_a: Stem map from machine A.
+        :param args: Parsed CLI namespace.
+        :return: Possibly remapped stem map.
+        """
+        mgr = StateManager()
+
+        if args.no_rebase:
+            log.info("--no-rebase set; skipping quarantine remap.")
+            return map_a
+
+        if args.quarantine_dir:
+            if not args.quarantine_dir.is_dir():
+                raise SystemExit(
+                    f"ERROR: --quarantine-dir does not exist: {args.quarantine_dir}"
+                )
+            log.info("Using explicit --quarantine-dir: %s", args.quarantine_dir)
+            return mgr.remap_to_quarantine(map_a, args.quarantine_dir)
+
+        state = mgr.load()
+        if state:
+            dest_dir = Path(state["dest_dir"])
+            if not dest_dir.is_dir():
+                log.warning(
+                    "Sidecar dest_dir %s does not exist on this machine — "
+                    "skipping quarantine remap.  Use --quarantine-dir to "
+                    "specify the correct path.", dest_dir,
+                )
+                return map_a
+            log.info(
+                "Auto-remap from sidecar dest_dir: %s", dest_dir,
+            )
+            return mgr.remap_to_quarantine(map_a, dest_dir)
+
+        log.info("No sidecar found and no --quarantine-dir; stems-a paths unchanged.")
+        return map_a
 
     def _do_copy_overlaps(self) -> int:
         """Execute copy-overlaps mode.
@@ -948,7 +1169,10 @@ class Runner:
             dest_dir=args.dest_dir,
             dry_run=args.dry_run,
         )
-        return copier.copy()
+        return copier.copy(
+            stems_a_path=args.stems_a,
+            stems_b_path=args.stems_b,
+        )
 
 
 if __name__ == "__main__":
