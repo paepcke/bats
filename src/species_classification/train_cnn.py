@@ -4,8 +4,9 @@
 # @Date:   2026-03-16 15:41:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/train_cnn.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-30 09:11:25
+# @Last Modified time: 2026-03-30 09:20:35
 # **********************************************************
+
 """
 train_cnn.py
 ============
@@ -682,7 +683,11 @@ class CnnTrainer:
         criterion = nn.CrossEntropyLoss(weight=class_weights)
 
         if world_size > 1:
-            model = DDP(model, device_ids=[device.index])
+            # find_unused_parameters=True is required during Phase 1
+            # when the backbone is frozen and its parameters receive no
+            # gradients.  The overhead in Phase 2 is negligible.
+            model = DDP(model, device_ids=[device.index],
+                        find_unused_parameters=True)
 
         # ── Phase 1: head only ─────────────────────────────────────────
         freeze_backbone(model)
