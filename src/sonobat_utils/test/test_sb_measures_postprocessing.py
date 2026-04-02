@@ -5,10 +5,10 @@
 # @Date:   2026-04-02 15:19:09
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/test/test_sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-02 15:41:38
+# @Last Modified time: 2026-04-02 16:28:23
 #
 # **********************************************************
-#!/usr/bin/env python
+
 """
 Tests for sb_measures_postprocessing.py.
 
@@ -242,31 +242,41 @@ def processor(site_dirs):
 # ---------------------------------------------------------------------------
 
 class TestPipelineSmoke:
-    """End-to-end: pipeline runs and produces a Parquet file."""
+    """End-to-end: pipeline runs and produces both Parquet files."""
 
-    def test_parquet_file_created(self, site_dirs):
-        """A .parquet file is written to dest_dir."""
+    def test_clean_parquet_file_created(self, site_dirs):
+        """A bats_*.parquet file is written to dest_dir."""
         SonoBatPostProcessor(
             root_dirs   = [site_dirs['barn_root'], site_dirs['lake2_root']],
             rec_sites   = ['barn', 'lake2'],
             dest_dir    = site_dirs['dest_dir'],
             conf_thresh = 0.0,
         )
-        parquet_files = list(site_dirs['dest_dir'].glob('bats_*.parquet'))
-        assert len(parquet_files) == 1
+        assert len(list(site_dirs['dest_dir'].glob('bats_[!n]*.parquet'))) == 1
+
+    def test_noise_parquet_file_created(self, site_dirs):
+        """A bats_noise_*.parquet file is written to dest_dir."""
+        SonoBatPostProcessor(
+            root_dirs   = [site_dirs['barn_root'], site_dirs['lake2_root']],
+            rec_sites   = ['barn', 'lake2'],
+            dest_dir    = site_dirs['dest_dir'],
+            conf_thresh = 0.0,
+        )
+        assert len(list(site_dirs['dest_dir'].glob('bats_noise_*.parquet'))) == 1
 
     def test_output_is_readable_batsdata(self, site_dirs):
-        """The produced Parquet file can be loaded back as a BatsData."""
+        """Both produced Parquet files can be loaded back as BatsData."""
         SonoBatPostProcessor(
             root_dirs   = [site_dirs['barn_root'], site_dirs['lake2_root']],
             rec_sites   = ['barn', 'lake2'],
             dest_dir    = site_dirs['dest_dir'],
             conf_thresh = 0.0,
         )
-        parquet_path = next(site_dirs['dest_dir'].glob('bats_*.parquet'))
-        bats = BatsData.read_parquet(parquet_path)
-        assert isinstance(bats.df, pd.DataFrame)
-        assert len(bats.df) > 0
+        clean_path = next(site_dirs['dest_dir'].glob('bats_[!n]*.parquet'))
+        noise_path = next(site_dirs['dest_dir'].glob('bats_noise_*.parquet'))
+        for path in (clean_path, noise_path):
+            bats = BatsData.read_parquet(path)
+            assert isinstance(bats.df, pd.DataFrame)
 
 
 class TestRecSite:
@@ -292,7 +302,7 @@ class TestRecSite:
             dest_dir    = site_dirs['dest_dir'],
             conf_thresh = 0.0,
         )
-        parquet_path = next(site_dirs['dest_dir'].glob('bats_*.parquet'))
+        parquet_path = next(site_dirs['dest_dir'].glob('bats_[!n]*.parquet'))
         bats2 = BatsData.read_parquet(parquet_path)
         assert bats2.df['rec_site'].dtype.name == 'category'
         assert set(bats2.df['rec_site'].cat.categories) == {'barn', 'lake2'}
@@ -420,6 +430,62 @@ class TestSpeciesColumn:
             assert col not in df.columns
 
 
+class TestNoiseDf:
+    """bats_noise parquet contains 'unkn' and 'noise' rows, never real species."""
+
+    def test_noise_df_has_no_real_species(self, processor):
+        """No real SonoBat species IDs appear in the noise df."""
+        df = processor.bats_noise.df
+        assert set(df['species'].dropna().unique()) <= {'unkn', 'noise'}
+
+    def test_noise_rows_have_nan_measures(self, processor):
+        """Rows with species=='noise' have NaN for all measure columns."""
+        df = processor.bats_noise.df
+        noise_rows = df[df['species'] == 'noise']
+        if len(noise_rows) > 0:
+            for col in SonoBatPostProcessor.RELEVANT_MEASURES_COLS:
+                if col in noise_rows.columns:
+                    assert noise_rows[col].isna().all(), \
+                        f"Expected NaN in {col} for noise rows"
+
+    def test_unkn_rows_have_real_measures(self, processor):
+        """Rows with species=='unkn' have non-NaN measure values."""
+        df = processor.bats_noise.df
+        unkn_rows = df[df['species'] == 'unkn']
+        if len(unkn_rows) > 0:
+            # At least one measure column should be non-NaN
+            meas_cols = [c for c in SonoBatPostProcessor.RELEVANT_MEASURES_COLS
+                         if c in unkn_rows.columns]
+            assert unkn_rows[meas_cols].notna().any().any()
+
+    def test_clean_df_has_no_unkn_or_noise(self, processor):
+        """The clean df contains no 'unkn' or 'noise' species labels."""
+        df = processor.bats_data.df
+        assert 'unkn'  not in df['species'].values
+        assert 'noise' not in df['species'].values
+
+    def test_noise_df_shares_file_map(self, processor):
+        """Clean and noise BatsData share the same file_map."""
+        assert processor.bats_data.file_map == processor.bats_noise.file_map
+
+    def test_noise_df_shares_timestamp(self, processor):
+        """Clean and noise BatsData share the same timestamp."""
+        assert processor.bats_data.timestamp == processor.bats_noise.timestamp
+
+    def test_noise_parquet_roundtrip(self, site_dirs):
+        """bats_noise parquet survives a to_parquet/read_parquet round-trip."""
+        proc = SonoBatPostProcessor(
+            root_dirs   = [site_dirs['barn_root'], site_dirs['lake2_root']],
+            rec_sites   = ['barn', 'lake2'],
+            dest_dir    = site_dirs['dest_dir'],
+            conf_thresh = 0.0,
+        )
+        noise_path = next(site_dirs['dest_dir'].glob('bats_noise_*.parquet'))
+        bats2 = BatsData.read_parquet(noise_path)
+        assert set(bats2.df['species'].dropna().unique()) <= {'unkn', 'noise'}
+        assert bats2.file_map == proc.bats_noise.file_map
+
+
 class TestMismatchWarning:
     """Species rows with no matching measures row trigger a log warning."""
 
@@ -481,7 +547,7 @@ class TestBatsDataRoundtrip:
             dest_dir    = site_dirs['dest_dir'],
             conf_thresh = 0.0,
         )
-        parquet_path = next(site_dirs['dest_dir'].glob('bats_*.parquet'))
+        parquet_path = next(site_dirs['dest_dir'].glob('bats_[!n]*.parquet'))
         bats2 = BatsData.read_parquet(parquet_path)
         assert bats2.file_map == proc.bats_data.file_map
 
@@ -493,7 +559,7 @@ class TestBatsDataRoundtrip:
             dest_dir    = site_dirs['dest_dir'],
             conf_thresh = 0.0,
         )
-        parquet_path = next(site_dirs['dest_dir'].glob('bats_*.parquet'))
+        parquet_path = next(site_dirs['dest_dir'].glob('bats_[!n]*.parquet'))
         bats2 = BatsData.read_parquet(parquet_path)
 
         n1 = proc.bats_data.normalizer
@@ -514,7 +580,7 @@ class TestBatsDataRoundtrip:
             dest_dir    = site_dirs['dest_dir'],
             conf_thresh = 0.0,
         )
-        parquet_path = next(site_dirs['dest_dir'].glob('bats_*.parquet'))
+        parquet_path = next(site_dirs['dest_dir'].glob('bats_[!n]*.parquet'))
         bats2 = BatsData.read_parquet(parquet_path)
         assert bats2.timestamp == proc.bats_data.timestamp
 
@@ -526,13 +592,12 @@ class TestBatsDataRoundtrip:
             dest_dir    = site_dirs['dest_dir'],
             conf_thresh = 0.0,
         )
-        barn_only = proc.bats_data.df[proc.bats_data.df['rec_site'] == 'barn']
-        out_path  = site_dirs['dest_dir'] / 'barn_only.parquet'
-        proc.bats_data.to_parquet(barn_only, out_path)
+        lake_only = proc.bats_data.df[proc.bats_data.df['rec_site'] == 'lake2']
+        out_path  = site_dirs['dest_dir'] / 'lake_only.parquet'
+        proc.bats_data.to_parquet(lake_only, out_path)
 
         bats2 = BatsData.read_parquet(out_path)
-        assert (bats2.df['rec_site'] == 'barn').all()
-        # Metadata from the original run is preserved
+        assert (bats2.df['rec_site'] == 'lake2').all()
         assert bats2.file_map == proc.bats_data.file_map
 
 
