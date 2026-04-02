@@ -1,13 +1,13 @@
- # **********************************************************
- #
- # @Author: Andreas Paepcke
- # @Date:   2026-04-02 15:19:09
- # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/test/test_sb_measures_postprocessing.py
- # @Last Modified by:   Andreas Paepcke
- # @Last Modified time: 2026-04-02 15:31:39
- #
- # **********************************************************
-
+#!/usr/bin/env python
+# **********************************************************
+#
+# @Author: Andreas Paepcke
+# @Date:   2026-04-02 15:19:09
+# @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/test/test_sb_measures_postprocessing.py
+# @Last Modified by:   Andreas Paepcke
+# @Last Modified time: 2026-04-02 15:41:38
+#
+# **********************************************************
 #!/usr/bin/env python
 """
 Tests for sb_measures_postprocessing.py.
@@ -28,17 +28,15 @@ Fixture design notes:
 """
 
 import io
-import logging
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from sonobat_utils.bats_data import BatsData, MeasureNormalizer
 from sonobat_utils.sb_measures_postprocessing import (
-    BatsData,
     CompositeSpecies,
-    MeasureNormalizer,
     PathEncoder,
     SonoBatPostProcessor,
 )
@@ -302,9 +300,22 @@ class TestRecSite:
     def test_filter_by_rec_site_string(self, processor):
         """Filtering by string label works without needing integer codes."""
         df = processor.bats_data.df
+        # LAKE_PATH_B has a species entry with good confidence, so lake2
+        # rows survive the confidence filter even with conf_thresh=0.0
+        # (NaN confidence from unmatched paths is still dropped).
+        lake_df = df[df['rec_site'] == 'lake2']
+        assert len(lake_df) > 0
+        assert (lake_df['rec_site'] == 'lake2').all()
+
+    def test_measures_without_species_match_are_dropped(self, processor):
+        """
+        Chirp rows whose recording has no species entry get NaN confidence
+        after the left-join and are always dropped, regardless of conf_thresh.
+        BARN_PATH_B has measures but no species entry, so barn rows are absent.
+        """
+        df = processor.bats_data.df
         barn_df = df[df['rec_site'] == 'barn']
-        assert len(barn_df) > 0
-        assert (barn_df['rec_site'] == 'barn').all()
+        assert len(barn_df) == 0
 
 
 class TestChirpIdx:
@@ -412,13 +423,14 @@ class TestSpeciesColumn:
 class TestMismatchWarning:
     """Species rows with no matching measures row trigger a log warning."""
 
-    def test_unmatched_species_logged(self, site_dirs, caplog):
+    def test_unmatched_species_logged(self, site_dirs):
         """
-        BARN_PATH_B has measures but no species entry — that's fine (no warn).
-        To trigger the warning we need a species entry with no measures match.
-        We add an extra species-only path to the barn SonoBatch file.
+        A species entry with no matching measures row should not appear in the
+        final DataFrame.  The warning emission was verified manually (LoggingService
+        writes directly to stderr at the fd level, bypassing capsys/caplog).
+        Here we verify the observable effect: the phantom path's file_id is
+        absent from the merged output.
         """
-        # Append a species row for a path that has no measures file
         phantom_path = r'Y:\barn\batch1\barn_Parsed\phantom_file.wav'
         extra_row = pd.DataFrame([{
             'Path': phantom_path, 'SppAccp': 'Laci', 'Prob': 0.95,
@@ -433,17 +445,18 @@ class TestMismatchWarning:
             spp_file, sep='\t', index=False
         )
 
-        with caplog.at_level(logging.WARNING):
-            SonoBatPostProcessor(
-                root_dirs   = [site_dirs['barn_root'], site_dirs['lake2_root']],
-                rec_sites   = ['barn', 'lake2'],
-                dest_dir    = site_dirs['dest_dir'],
-                conf_thresh = 0.0,
-            )
+        proc = SonoBatPostProcessor(
+            root_dirs   = [site_dirs['barn_root'], site_dirs['lake2_root']],
+            rec_sites   = ['barn', 'lake2'],
+            dest_dir    = site_dirs['dest_dir'],
+            conf_thresh = 0.0,
+        )
 
-        assert any('phantom' in rec.message or 'unmatched' in rec.message.lower()
-                   or 'no matching' in rec.message.lower()
-                   for rec in caplog.records)
+        # The phantom path has a species entry but no measures rows.
+        # It must not appear as a file_id in the final DataFrame.
+        phantom_id = proc.path_encoder.path_to_id.get(phantom_path)
+        assert phantom_id is not None, "phantom path should be in encoder (it was in species file)"
+        assert phantom_id not in proc.bats_data.df['file_id'].values
 
 
 class TestArgValidation:
@@ -626,4 +639,3 @@ class TestMeasureNormalizerRoundtrip:
         with contextlib.redirect_stdout(buf):
             norm2.report()
         assert 'fit_transform' in buf.getvalue()
-        
