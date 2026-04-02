@@ -5,12 +5,12 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-01 18:49:55
+# @Last Modified time: 2026-04-01 19:15:36
 #
 # **********************************************************
 
 """
-Input raw data from SonoBat species identification *_Parameters_*.txt
+Input raw data from SonoBat species identification *_CumulativeParameters_*.txt
 files. Remove columns that were determined to not contribute
 much to chirp measures variance.
 
@@ -18,7 +18,7 @@ Analyze the remaining data for outliers and skew.
 
 Phase I: 
 
-1. Collect all relevant *_Parameter_*.txt files (tab-separated files); they
+1. Collect all relevant *_CumulativeParameter_*.txt files (tab-separated files); they
    contain physical measures.
 2. Collect all relevant *_CumulativeSonoBatch_*.txt files; they
    contain species determinations
@@ -150,7 +150,7 @@ class SonoBatPostProcessor:
                           dest_dir: Path
                           ) -> pd.DataFrame:
         '''
-        Starting at the root directory, find files matching *_Parameters_*.txt.
+        Starting at the root directory, find files matching *_CumulativeParameters_*.txt.
         Import all those tab-separated files into one dataframe.
 
         Then drop rows in which any measures are highly skewed, and
@@ -177,7 +177,7 @@ class SonoBatPostProcessor:
         measures_batches: list[pd.DataFrame] = []
 
         if len(measures_files) == 0:
-            raise FileNotFoundError(f"Could not find '*_Parameters_v<version>.txt' files with chirp measures")
+            raise FileNotFoundError(f"Could not find '*_CumulativeParameters_v<version>.txt' files with chirp measures")
         
         for measures_file in measures_files:
             df = pd.read_csv(measures_file, sep='\t')
@@ -490,14 +490,14 @@ class SonoBatPostProcessor:
     def _find_sonobatch_measures_files(self, root: str | Path) -> list[Path]:
         """
         Return all paths under *root* whose filename matches the pattern
-        ``*_Parameters_v<version>.txt``, replicating the behaviour of::
+        ``*_CumulativeParameters_v<version>.txt``, replicating the behaviour of::
 
-            find . -regextype posix-egrep -regex ".*_Parameters_v[0-9.]+\\.txt"
+            find . -regextype posix-egrep -regex ".*_CumulativeParameters_v[0-9.]+\\.txt"
 
         :param root: Directory root to search recursively.
         :return: Sorted list of matching :class:`~pathlib.Path` objects.
         """
-        pattern = re.compile(r'.*_Parameters_v[0-9.]+\.txt$')
+        pattern = re.compile(r'.*_CumulativeParameters_v[0-9.]+\.txt$')
         root = Path(root)
         return sorted(p for p in root.rglob('*') if pattern.match(str(p)))
 
