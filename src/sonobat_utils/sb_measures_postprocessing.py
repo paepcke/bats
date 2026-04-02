@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-01 19:15:36
+# @Last Modified time: 2026-04-02 08:56:35
 #
 # **********************************************************
 
@@ -44,7 +44,8 @@ Make the following adjustments:
 Phase III:
 
 1. Optionally, merge the new normalized data with already
-   existing normalized data.
+   existing normalized data. This will de-normalize, merge, re-process,
+   and normalize the new set.
 
 Output .csv or .feather file.
 """
