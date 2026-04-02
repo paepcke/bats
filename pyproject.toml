@@ -43,7 +43,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["nose2>=0.9.2"]
+test = [
+    "pytest",
+    "pytest-cov",
+    "nose2>=0.9.2"
+    ]
 
 [project.urls]
 Repository = "https://github.com/paepcke/bats.git"

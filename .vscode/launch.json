@@ -410,7 +410,28 @@
             "env": {
                 "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "1.5" 
             }            
+        },
+        {
+            "name": "Python: gather SonoBat outputs into clean df",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/sb_measures_postprocessing.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "--dest-dir", "${workspaceFolder}/src/sonobat_utils/test/tst_results",
+                "--root-dirs", 
+                   "${workspaceFolder}/src/sonobat_utils/test/data/barn",
+                   "${workspaceFolder}/src/sonobat_utils/test/data/lake2",
+                "--rec-sites", "barn", "lake2"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false,
+            "env": {
+                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "1.5" 
+            }            
         }
+
     ],
     "debug.defaultConfiguration": "Python: Test Explorer (unittests)"
 }
