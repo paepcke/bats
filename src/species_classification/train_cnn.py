@@ -4,7 +4,7 @@
 # @Date:   2026-03-16 15:41:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/train_cnn.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-30 12:32:24
+# @Last Modified time: 2026-04-02 19:24:17
 # **********************************************************
 
 """
@@ -69,9 +69,22 @@ to 3 channels before passing to the network (ImageNet weights expect RGB).
 Training strategy
 -----------------
 * Phase 1 (head only, ``--freeze-epochs`` epochs): only the new classifier
-  head is trained; the EfficientNet backbone is frozen.
+  head is trained; the EfficientNet backbone is frozen.  Scheduler:
+  CosineAnnealingLR over the freeze period.
 * Phase 2 (full fine-tune, remaining epochs): entire network is trained
   with a lower learning rate (``--lr`` × ``--backbone-lr-factor``).
+  Scheduler: ReduceLROnPlateau (halves LR after ``--lr-patience`` epochs
+  without val_loss improvement, floor 1e-7).
+* Early stopping: training halts when val_loss has not improved by
+  ``--min-delta`` for ``--patience`` consecutive epochs.  In DDP mode the
+  stop decision is broadcast from rank 0 so all ranks exit together.
+* Class weights use ``1/count^--cw-power`` (default power=0.5, i.e. sqrt),
+  which gives minority species more influence than the raw inverse-count
+  formula while preventing extreme imbalance from dominating the gradient.
+* Augmentation: time shift (RandomAffine translate), frequency warp
+  (RandomAffine shear), brightness/contrast jitter, and SpecAugment-style
+  random erasing.  Horizontal flip is intentionally excluded — a
+  time-reversed chirp is physically meaningless.
 
 Outputs (all written to ``--out-dir`` by rank 0)
 -------------------------------------------------
@@ -150,6 +163,14 @@ _DEFAULT_TEST_FRAC:         float = 0.15
 _DEFAULT_MIN_PROB:          float = 0.80
 _DEFAULT_MIN_CROPS:         int   = 50
 _IMG_SIZE:                  int   = 224
+_DEFAULT_PATIENCE:          int   = 7
+_DEFAULT_LR_PATIENCE:       int   = 3
+_DEFAULT_MIN_DELTA:         float = 1e-4
+_DEFAULT_CW_POWER:          float = 0.5   # 1/count^power; 0.5 = sqrt, 1.0 = inverse
+
+# Species labels that are not SonoBat four-letter codes but are valid
+# training targets (noise class from sb_measures_postprocessing.py).
+_SYNTHETIC_LABELS: frozenset[str] = frozenset({'noise', 'unkn'})
 
 
 # ---------------------------------------------------------------------------
@@ -224,11 +245,18 @@ class ChirpCropDataset(Dataset):
         ]
         aug = [
             transforms.Resize((img_size, img_size)),
-            transforms.RandomHorizontalFlip(p=0.5),
+            # Small time shift (horizontal translate up to 5% of width).
+            # No horizontal flip — a time-reversed chirp is physically meaningless.
+            transforms.RandomAffine(degrees=0, translate=(0.05, 0.0)),
+            # Mild frequency warp (vertical shear).
+            transforms.RandomAffine(degrees=0, shear=(0, 0, -5, 5)),
+            # Brightness/contrast jitter on the spectrogram amplitude.
             transforms.ColorJitter(brightness=0.2, contrast=0.2),
             transforms.ToTensor(),
             transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
             transforms.Normalize(self._MEAN, self._STD),
+            # SpecAugment-style: randomly erase small time-frequency patches.
+            transforms.RandomErasing(p=0.3, scale=(0.02, 0.10), ratio=(0.3, 3.3)),
         ]
         self.transform = transforms.Compose(aug if augment else base)
 
@@ -548,6 +576,10 @@ class CnnTrainer:
         seed:                int            = 42,
         resume:              bool           = False,
         ckpt_every:          int            = 0,
+        patience:            int            = _DEFAULT_PATIENCE,
+        lr_patience:         int            = _DEFAULT_LR_PATIENCE,
+        min_delta:           float          = _DEFAULT_MIN_DELTA,
+        cw_power:            float          = _DEFAULT_CW_POWER,
     ) -> None:
         self.manifest_csv        = Path(manifest_csv)
         self.out_dir             = Path(out_dir)
@@ -567,6 +599,10 @@ class CnnTrainer:
         self.device_str          = device_str
         self.resume              = resume
         self.ckpt_every          = ckpt_every
+        self.patience            = patience
+        self.lr_patience         = lr_patience
+        self.min_delta           = min_delta
+        self.cw_power            = cw_power
 
     # ------------------------------------------------------------------ #
     #  Data loading                                                        #
@@ -586,7 +622,9 @@ class CnnTrainer:
         log.info(f'  {len(df):,} total rows')
 
         df = df[df['species'].notna()]
-        df = df[df['species'].apply(lambda s: bool(_sp_re.match(str(s))))]
+        df = df[df['species'].apply(
+            lambda s: bool(_sp_re.match(str(s))) or s in _SYNTHETIC_LABELS
+        )]
         log.info(f'  {len(df):,} rows with valid species code')
 
         prob_col = pd.to_numeric(df['species_prob'], errors='coerce')
@@ -672,12 +710,20 @@ class CnnTrainer:
         )
 
         # ── Class weights (rank 0 computes, broadcasts to all) ─────────
+        # Use 1/count^cw_power rather than 1/count.  cw_power=0.5 (sqrt)
+        # gives minority classes more influence without letting them
+        # dominate the gradient when the imbalance is extreme (e.g. Myca
+        # at 390K vs Anpa at 17).
         train_counts  = train_df['label'].value_counts().sort_index()
+        raw_weights   = np.array(
+            [1.0 / max(train_counts.get(i, 1), 1) ** self.cw_power
+             for i in range(n_classes)],
+            dtype=np.float32,
+        )
         class_weights = torch.tensor(
-            [1.0 / max(train_counts.get(i, 1), 1) for i in range(n_classes)],
+            raw_weights / raw_weights.sum() * n_classes,
             dtype=torch.float32,
         ).to(device)
-        class_weights = class_weights / class_weights.sum() * n_classes
         if world_size > 1:
             dist.broadcast(class_weights, src=0)
 
@@ -743,10 +789,15 @@ class CnnTrainer:
         if is_main:
             log.info(f'Phase 1: training head only for {self.freeze_epochs} epochs')
 
-        best_val_acc = 0.0
-        best_epoch   = 0
+        best_val_acc  = 0.0
+        best_epoch    = 0
         log_rows: list[dict] = []
-        start_epoch  = 1
+        start_epoch   = 1
+
+        # Early stopping state
+        es_best_loss     = float('inf')
+        es_epochs_waited = 0
+        stop_training    = False
 
         # ── Resume from checkpoint ─────────────────────────────────────
         ckpt_path = self.out_dir / 'checkpoint_latest.pt'
@@ -755,18 +806,17 @@ class CnnTrainer:
                 log.info(f'Resuming from checkpoint: {ckpt_path}')
             ckpt = torch.load(ckpt_path, map_location=device)
 
-            # Restore model weights (unwrap DDP to load state dict).
             base = model.module if isinstance(model, DDP) else model
             base.load_state_dict(ckpt['model_state'])
 
-            # Restore the correct phase + optimizer + scheduler.
-            resumed_epoch = ckpt['epoch']           # last *completed* epoch
-            start_epoch   = resumed_epoch + 1
-            best_val_acc  = ckpt['best_val_acc']
-            best_epoch    = ckpt['best_epoch']
-            log_rows      = ckpt.get('log_rows', [])
+            resumed_epoch    = ckpt['epoch']
+            start_epoch      = resumed_epoch + 1
+            best_val_acc     = ckpt['best_val_acc']
+            best_epoch       = ckpt['best_epoch']
+            log_rows         = ckpt.get('log_rows', [])
+            es_best_loss     = ckpt.get('es_best_loss', float('inf'))
+            es_epochs_waited = ckpt.get('es_epochs_waited', 0)
 
-            # Re-enter the right phase so optimizer/scheduler match.
             if resumed_epoch >= self.freeze_epochs:
                 unfreeze_all(model)
                 optimizer = torch.optim.AdamW(
@@ -774,8 +824,12 @@ class CnnTrainer:
                     lr           = self.lr * self.backbone_lr_factor,
                     weight_decay = self.weight_decay,
                 )
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer, T_max=self.epochs - self.freeze_epochs
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer,
+                    mode     = 'min',
+                    factor   = 0.5,
+                    patience = self.lr_patience,
+                    min_lr   = 1e-7,
                 )
 
             optimizer.load_state_dict(ckpt['optimizer_state'])
@@ -785,7 +839,8 @@ class CnnTrainer:
                 log.info(
                     f'Resumed: starting at epoch {start_epoch}/{self.epochs}, '
                     f'best_val_acc so far = {best_val_acc:.4f} '
-                    f'(epoch {best_epoch})'
+                    f'(epoch {best_epoch}), '
+                    f'early-stop waited {es_epochs_waited}/{self.patience}'
                 )
         elif self.resume:
             if is_main:
@@ -803,15 +858,20 @@ class CnnTrainer:
             # Switch to full fine-tune after freeze_epochs.
             if epoch == self.freeze_epochs + 1:
                 if is_main:
-                    log.info('Phase 2: unfreezing backbone, reducing LR')
+                    log.info('Phase 2: unfreezing backbone, switching to '
+                             'ReduceLROnPlateau scheduler')
                 unfreeze_all(model)
                 optimizer = torch.optim.AdamW(
                     model.parameters(),
                     lr           = self.lr * self.backbone_lr_factor,
                     weight_decay = self.weight_decay,
                 )
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer, T_max=self.epochs - self.freeze_epochs
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer,
+                    mode     = 'min',   # monitor val_loss
+                    factor   = 0.5,
+                    patience = self.lr_patience,
+                    min_lr   = 1e-7,
                 )
 
             train_loss, train_acc = run_epoch(
@@ -846,7 +906,6 @@ class CnnTrainer:
                 if val_acc > best_val_acc:
                     best_val_acc = val_acc
                     best_epoch   = epoch
-                    # Save unwrapped state dict.
                     base = model.module if isinstance(model, DDP) else model
                     torch.save(base.state_dict(),
                                self.out_dir / 'best_model.pt')
@@ -855,30 +914,65 @@ class CnnTrainer:
                         ' — saved best_model.pt'
                     )
 
+                # ── Early stopping (monitor val_loss) ──────────────────
+                if val_loss < es_best_loss - self.min_delta:
+                    es_best_loss     = val_loss
+                    es_epochs_waited = 0
+                else:
+                    es_epochs_waited += 1
+                    log.info(
+                        f'  Early-stop counter: {es_epochs_waited}/{self.patience}'
+                        f'  (best val_loss={es_best_loss:.4f})'
+                    )
+                    if es_epochs_waited >= self.patience:
+                        log.info(
+                            f'  Early stopping triggered at epoch {epoch} '
+                            f'— val_loss has not improved by {self.min_delta} '
+                            f'for {self.patience} epochs.'
+                        )
+                        stop_training = True
+
                 # ── Per-epoch checkpoint (always) ──────────────────────
                 base = model.module if isinstance(model, DDP) else model
                 ckpt = {
-                    'epoch':           epoch,
-                    'model_state':     base.state_dict(),
-                    'optimizer_state': optimizer.state_dict(),
-                    'scheduler_state': scheduler.state_dict(),
-                    'best_val_acc':    best_val_acc,
-                    'best_epoch':      best_epoch,
-                    'log_rows':        log_rows,
+                    'epoch':            epoch,
+                    'model_state':      base.state_dict(),
+                    'optimizer_state':  optimizer.state_dict(),
+                    'scheduler_state':  scheduler.state_dict(),
+                    'best_val_acc':     best_val_acc,
+                    'best_epoch':       best_epoch,
+                    'log_rows':         log_rows,
+                    'es_best_loss':     es_best_loss,
+                    'es_epochs_waited': es_epochs_waited,
                 }
                 torch.save(ckpt, self.out_dir / 'checkpoint_latest.pt')
 
-                # Optional periodic named snapshot.
                 if self.ckpt_every > 0 and epoch % self.ckpt_every == 0:
                     snap = self.out_dir / f'checkpoint_epoch_{epoch:04d}.pt'
                     torch.save(ckpt, snap)
                     log.info(f'  📸 Periodic snapshot saved: {snap.name}')
 
+            # ── DDP-safe early stop: broadcast rank-0 decision ─────────
+            # All ranks must stop together or NCCL collectives will hang.
+            if world_size > 1:
+                stop_flag = torch.tensor(int(stop_training), device=device)
+                dist.broadcast(stop_flag, src=0)
+                stop_training = bool(stop_flag.item())
+
             # Barrier: all ranks wait before next epoch.
             if world_size > 1:
                 dist.barrier()
 
-            scheduler.step()
+            # ── Scheduler step ─────────────────────────────────────────
+            # Phase 1 uses CosineAnnealingLR (step with no args).
+            # Phase 2 uses ReduceLROnPlateau (step with val_loss).
+            if epoch <= self.freeze_epochs:
+                scheduler.step()
+            else:
+                scheduler.step(val_loss)
+
+            if stop_training:
+                break
 
         # ── Save final model (rank 0) ───────────────────────────────────
         if is_main:
@@ -917,10 +1011,14 @@ class CnnTrainer:
                 {'parameter': 'lr',                  'value': self.lr},
                 {'parameter': 'backbone_lr_factor',  'value': self.backbone_lr_factor},
                 {'parameter': 'weight_decay',        'value': self.weight_decay},
+                {'parameter': 'cw_power',            'value': self.cw_power},
                 {'parameter': 'val_frac',            'value': self.val_frac},
                 {'parameter': 'test_frac',           'value': self.test_frac},
                 {'parameter': 'min_prob',            'value': self.min_prob},
                 {'parameter': 'min_crops_per_class', 'value': self.min_crops_per_class},
+                {'parameter': 'patience',            'value': self.patience},
+                {'parameter': 'lr_patience',         'value': self.lr_patience},
+                {'parameter': 'min_delta',           'value': self.min_delta},
                 {'parameter': 'device',              'value': str(device)},
                 {'parameter': 'seed',                'value': self.seed},
                 {'parameter': 'best_epoch',          'value': best_epoch},
@@ -980,6 +1078,36 @@ def _parse_args():
         '--ckpt-every', type=int, default=0, metavar='N',
         help='Save a named checkpoint_epoch_N.pt every N epochs (0 = disabled).',
     )
+    parser.add_argument(
+        '--patience', type=int, default=_DEFAULT_PATIENCE, metavar='N',
+        help=(
+            'Early stopping: stop if val_loss has not improved by '
+            f'--min-delta for this many epochs (default: {_DEFAULT_PATIENCE}).'
+        ),
+    )
+    parser.add_argument(
+        '--lr-patience', type=int, default=_DEFAULT_LR_PATIENCE, metavar='N',
+        help=(
+            'ReduceLROnPlateau: reduce LR after this many epochs without '
+            f'val_loss improvement (default: {_DEFAULT_LR_PATIENCE}). '
+            'Should be less than --patience.'
+        ),
+    )
+    parser.add_argument(
+        '--min-delta', type=float, default=_DEFAULT_MIN_DELTA, metavar='F',
+        help=(
+            'Minimum val_loss improvement to reset early-stop counter '
+            f'(default: {_DEFAULT_MIN_DELTA}).'
+        ),
+    )
+    parser.add_argument(
+        '--cw-power', type=float, default=_DEFAULT_CW_POWER, metavar='F',
+        help=(
+            'Class weight exponent: weight ∝ 1/count^power. '
+            '1.0 = inverse count (strong), 0.5 = sqrt (softer), '
+            f'0.0 = uniform. Default: {_DEFAULT_CW_POWER}.'
+        ),
+    )
 
     args = parser.parse_args()
     if not Path(args.manifest).exists():
@@ -1010,6 +1138,10 @@ def main() -> None:
         seed                = args.seed,
         resume              = args.resume,
         ckpt_every          = args.ckpt_every,
+        patience            = args.patience,
+        lr_patience         = args.lr_patience,
+        min_delta           = args.min_delta,
+        cw_power            = args.cw_power,
     )
     trainer.run()
 
