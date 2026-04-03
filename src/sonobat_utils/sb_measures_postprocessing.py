@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-02 16:28:53
+# @Last Modified time: 2026-04-03 09:04:37
 #
 # **********************************************************
 
@@ -69,10 +69,10 @@ Both files carry the same ancillary metadata (file_id↔path map, normalizer
 state) in their Parquet schema metadata, so no sidecar files are needed.
 
 CLI usage:
-    python sb_measures_postprocessing.py \\
-        --dest-dir /path/to/output \\
-        --root-dirs /data/barn /data/lake2 \\
-        --rec-sites barn lake2 \\
+    python sb_measures_postprocessing.py \
+        --dest-dir /path/to/output \
+        --root-dirs /data/barn /data/lake2 \
+        --rec-sites barn lake2 \
         --conf-thresh 0.50
 """
 
