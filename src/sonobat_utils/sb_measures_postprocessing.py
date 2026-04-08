@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-08 10:52:23
+# @Last Modified time: 2026-04-08 15:53:30
 #
 # **********************************************************
 
@@ -525,6 +525,25 @@ class SonoBatPostProcessor:
                 path = self.path_encoder.id_to_path.get(fid, '<unknown>')
                 self.log.warn(f"  file_id={fid}  path={path}")
 
+        # Deduplicate species rows: the Cumulative files accumulate across
+        # multiple SonoBat runs, so the same Path (file_id) can appear more
+        # than once when multiple batches are passed as root_dirs.  Keep the
+        # row with the highest confidence so the left-join below is 1:1 on
+        # file_id and produces no duplicate chirp rows.
+        n_species_before = len(df_species)
+        df_species = (
+            df_species
+            .sort_values('confidence', ascending=False)
+            .drop_duplicates(subset='file_id', keep='first')
+        )
+        n_dropped = n_species_before - len(df_species)
+        if n_dropped:
+            self.log.info(
+                f"Dropped {n_dropped:,} duplicate species rows "
+                f"(same file_id from overlapping Cumulative files); "
+                f"{len(df_species):,} unique file_ids remain."
+            )
+
         # Left-join: every chirp row gets species/confidence if available
         df_merged = df_measures.merge(
             df_species[['file_id', 'SppAccp', 'confidence']],
@@ -688,6 +707,9 @@ class SonoBatPostProcessor:
         prob[slash_mask] = slash_probs
 
         # --- Vectorized confidence formula ---
+        # consensus = scaled_Maj# / scaled_Accp# (both independently
+        # percentile-scaled, so the ratio can exceed 1.0 in either
+        # direction; clip below handles that).
         consensus = df['Maj_scaled'] / df['Accp_scaled']
         df['confidence'] = prob * (
             cls.WEIGHT_ON_CONSENSUS * consensus
@@ -696,6 +718,11 @@ class SonoBatPostProcessor:
 
         # NaN rows get 0.0 (already 0.0 from prob init, but be explicit)
         df.loc[nan_mask, 'confidence'] = 0.0
+
+        # Clamp to [0, 1]: values above 1 arise when independent
+        # QuantileTransformer scaling pushes Maj_scaled > Accp_scaled,
+        # or when slash-separated Prob components sum above 1.0.
+        df['confidence'] = df['confidence'].clip(0.0, 1.0)
 
         return df
 
