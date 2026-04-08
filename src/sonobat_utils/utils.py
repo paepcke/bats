@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-20 08:53:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-06 17:25:36
+# @Last Modified time: 2026-04-08 13:20:30
 
 # =====================================================================
 # Class Utilities
@@ -21,14 +21,17 @@ class Utils:
     Shared utility methods for data loading and result persistence.
     """
 
+    PARQUET_FILES_THRIFT_LIMIT = 1_000_000_000
+
     #------------------------------------
     # read_df_file
     #-------------------
 
     @staticmethod
-    def read_df_file(fpath: str | Path) -> pd.DataFrame:
+    def read_df_file(fpath: str | Path, **kwargs) -> pd.DataFrame:
         """
-        Read a DataFrame from a .csv or .feather file.
+        Read a DataFrame from a .csv, .feather, or .parquet file.
+        The kwargs are 
 
         :param fpath: Path to the file.
         :return: DataFrame.
@@ -40,16 +43,27 @@ class Utils:
         if not fpath.exists():
             raise FileNotFoundError(f"File {fpath} not found")
         if fpath.suffix == '.feather':
-            df = pd.read_feather(fpath)
+            df = pd.read_feather(fpath, **kwargs)
         elif fpath.suffix in ['.csv', '.tsv']:
             fld_sep = '\t' if fpath.suffix == '.tsv' else ','
-            df = pd.read_csv(fpath, sep=fld_sep)
+            df = pd.read_csv(fpath, sep=fld_sep, **kwargs)
             # If df was saved as df.to_csv() without
             # an addtional index=False arg, we'll have
             # a first column named 'Unnamed: 0'. Remove
             # that if it exists:
             if df.columns[0] == 'Unnamed: 0':
                 df.drop(columns=['Unnamed: 0'], inplace=True)
+        elif fpath.suffix in ['.parquet', '.pq']:
+            # If caller provided a thrift_string_size_limit or
+            # thrift_container_size_limit, it will be respected
+            # by the kwargs.setdefault(...) statements. If not
+            # provided in the call, allow a large amount.
+            df = pd.read_parquet(
+                fpath,
+                kwargs.setdefault('thrift_string_size_limit', Utils.PARQUET_FILES_THRIFT_LIMIT),
+                kwargs.setdefault('thrift_container_size_limit', Utils.PARQUET_FILES_THRIFT_LIMIT),
+                df = pd.read_parquet(fpath, **kwargs)
+                )
         else:
             raise ValueError(f"Unsupported file type: {fpath.suffix}. Use .csv or .feather.")
 
