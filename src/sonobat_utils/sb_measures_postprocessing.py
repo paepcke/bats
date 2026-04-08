@@ -71,7 +71,7 @@ state) in their Parquet schema metadata, so no sidecar files are needed.
 CLI usage:
     python sb_measures_postprocessing.py \
         --dest-dir /path/to/output \
-        --root-dirs /data/barn /data/lake2 \
+        --root-dirs /data2/barn /data2/lake2 \
         --rec-sites barn lake2 \
         --conf-thresh 0.50
 """
@@ -1341,7 +1341,7 @@ def main():
             Each --rec-sites value must correspond positionally to a
             --root-dirs value:
 
-              --root-dirs /data/barn /data/lake2 --rec-sites barn lake2
+              --root-dirs /data2/barn /data2/lake2 --rec-sites barn lake2
         """),
     )
     parser.add_argument(

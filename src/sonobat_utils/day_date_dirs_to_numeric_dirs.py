@@ -26,10 +26,10 @@ Options:
 Examples::
 
     # Perform actual renames
-    python day_date_dirs_to_numeric_dirs.py 2022 /data/bat_surveys
+    python day_date_dirs_to_numeric_dirs.py 2022 /data2/bat_surveys
 
     # Preview what would happen
-    python day_date_dirs_to_numeric_dirs.py --dry-run 2022 /data/bat_surveys
+    python day_date_dirs_to_numeric_dirs.py --dry-run 2022 /data2/bat_surveys
 """
 
 import argparse

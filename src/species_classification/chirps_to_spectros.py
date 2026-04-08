@@ -82,7 +82,7 @@ Typical usage
     python chirps_to_spectros.py \\
         --feather  sonobat3_2_species_ids.feather \\
         --matches  recording_file_locations/match_report.csv \\
-        --out-dir  /data/bat_crops \\
+        --out-dir  /data2/bat_crops \\
         --min-prob 0.80 \\
         --window-ms 50 \\
         --freq-lo 15 \\

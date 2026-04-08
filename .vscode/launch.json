@@ -430,6 +430,30 @@
             "env": {
                 "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "1.5" 
             }            
+        },
+        {
+            "name": "Python: normalize SonoBat paths prior to pipline",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/normalize_chop_stems.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "--sextus-stems", "/data/win_share/sextus_chops_file_stems.json",
+                "--quintus-stems", "/data/win_share/quintus_chops_file_stems.json",
+                "--win-share", "/data/win_share",
+                "--staging-root", "/data/BatsTmp",
+                "--dest-parent", "/qnap/bats/",
+                "--site", "barn",
+                "--sb-version", "3_2",
+                "--transfer-list", "/data/win_share/confirmed_safe_to_transfer.txt",
+                "--dry-run"
+                ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false,
+            "env": {
+                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "1.5" 
+            }            
         }
 
     ],
