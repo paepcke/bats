@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-08 15:53:30
+# @Last Modified time: 2026-04-08 16:39:21
 #
 # **********************************************************
 
@@ -391,9 +391,15 @@ class SonoBatPostProcessor:
         species DataFrames from each.  Both DataFrames retain their 'Path'
         column (not yet encoded) and gain a 'rec_site' Categorical column.
 
+        The 'Path' column in both DataFrames is normalized to the bare
+        filename stem (no directory, no extension) so that Windows-style
+        paths from the SonoBat VM (e.g. ``Y:\\batch4\\...\\lake2_-..._2secs.wav``)
+        match the Linux paths in the CumulativeParameters files.  The stem
+        is the natural unique key used as 'Filename' throughout the pipeline.
+
         'chirp_idx' is added to the measures DataFrame: a 0-based integer
         giving the position of each chirp within its recording, derived by
-        sorting on TimeInFile within each unique Path value.
+        sorting on TimeInFile within each unique Path stem.
 
         :param root_dirs: Directories to search, one per site.
         :param rec_sites: Site label for each directory.
@@ -441,7 +447,33 @@ class SonoBatPostProcessor:
         df_measures = pd.concat(measures_batches, ignore_index=True)
         df_species  = pd.concat(species_batches,  ignore_index=True)
 
-        # chirp_idx: 0-based rank by TimeInFile within each recording (Path)
+        # Normalize the 'Path' column in both DataFrames to the bare filename
+        # stem (no directory, no extension).  The CumulativeSonoBatch files
+        # written by SonoBat on the Windows VMs carry Windows-style paths
+        # (e.g. "Y:\batch4\chopped\...\lake2_-20221226_204358_2secs.wav"),
+        # while the CumulativeParameters files written on Linux carry Linux
+        # paths.  Reducing both to the stem makes the PathEncoder join work
+        # regardless of which machine produced the file.  The stem is already
+        # the natural unique key used as 'Filename' throughout the pipeline.
+        def _to_stem(path_series: pd.Series) -> pd.Series:
+            # Handle both forward-slash and backslash separators.
+            return (
+                path_series
+                .astype(str)
+                .str.replace('\\', '/', regex=False)   # normalise Windows seps
+                .apply(lambda p: Path(p).stem)
+            )
+
+        n_win = df_species['Path'].astype(str).str.contains('\\\\', regex=False).sum()
+        if n_win:
+            self.log.info(
+                f"Normalizing {n_win:,} Windows-style paths in species data to stems."
+            )
+
+        df_measures['Path'] = _to_stem(df_measures['Path'])
+        df_species['Path']  = _to_stem(df_species['Path'])
+
+        # chirp_idx: 0-based rank by TimeInFile within each recording (stem)
         df_measures['chirp_idx'] = (
             df_measures
             .groupby('Path', sort=False)['TimeInFile']
