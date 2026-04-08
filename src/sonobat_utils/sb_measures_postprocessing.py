@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-03 09:04:37
+# @Last Modified time: 2026-04-08 10:52:23
 #
 # **********************************************************
 
@@ -323,7 +323,7 @@ class SonoBatPostProcessor:
         # every batch gets the same category set regardless of which sites
         # are actually present in that batch.
         self.site_dtype = pd.CategoricalDtype(
-            categories=sorted(rec_sites), ordered=False
+            categories=sorted(set(rec_sites)), ordered=False
         )
 
         # Collect raw measures and species across all sites.
@@ -1395,4 +1395,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
