@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-20 08:53:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-08 18:53:03
+# @Last Modified time: 2026-04-08 18:57:10
 
 # =====================================================================
 # Class Utilities
@@ -53,14 +53,14 @@ class Utils:
             # that if it exists:
             if df.columns[0] == 'Unnamed: 0':
                 df.drop(columns=['Unnamed: 0'], inplace=True)
-            elif fpath.suffix in ['.parquet', '.pq']:
-                # If caller provided a thrift_string_size_limit or
-                # thrift_container_size_limit, it will be respected
-                # by the kwargs.setdefault(...) statements. If not
-                # provided in the call, allow a large amount.
-                kwargs.setdefault('thrift_string_size_limit', Utils.PARQUET_FILES_THRIFT_LIMIT)
-                kwargs.setdefault('thrift_container_size_limit', Utils.PARQUET_FILES_THRIFT_LIMIT)
-                df = pd.read_parquet(fpath, **kwargs)
+        elif fpath.suffix in ['.parquet', '.pq']:
+            # If caller provided a thrift_string_size_limit or
+            # thrift_container_size_limit, it will be respected
+            # by the kwargs.setdefault(...) statements. If not
+            # provided in the call, allow a large amount.
+            kwargs.setdefault('thrift_string_size_limit', Utils.PARQUET_FILES_THRIFT_LIMIT)
+            kwargs.setdefault('thrift_container_size_limit', Utils.PARQUET_FILES_THRIFT_LIMIT)
+            df = pd.read_parquet(fpath, **kwargs)
         else:
             raise ValueError(f"Unsupported file type: {fpath.suffix}. Use .csv or .feather.")
 
