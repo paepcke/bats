@@ -1,0 +1,14 @@
+# .dockerignore  (place at project root)
+**/__pycache__
+**/*.pyc
+**/*.egg-info
+.git
+.pytest_cache
+*.feather
+*.parquet
+*.csv
+*.png
+*.wav
+data/
+models/
+*.log

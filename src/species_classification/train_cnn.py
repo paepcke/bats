@@ -4,7 +4,7 @@
 # @Date:   2026-03-16 15:41:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/train_cnn.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-02 19:24:17
+# @Last Modified time: 2026-04-09 10:41:15
 # **********************************************************
 
 """
@@ -19,6 +19,7 @@ DistributedDataParallel (DDP).  Launch with ``torchrun`` for multi-GPU:
     torchrun --nproc_per_node=2 train_cnn.py \\
         --manifest  /qnap/bats/jr_pipeline/data/bat_crops/manifest.csv \\
         --out-dir   /qnap/bats/jr_pipeline/models/efficientnet_b0_v1 \\
+        --exclude-species Myvo Mylu \\
         --epochs    25 \\
         --batch     64 \\
         --workers   8
@@ -561,6 +562,7 @@ class CnnTrainer:
         manifest_csv:        str | Path,
         out_dir:             str | Path,
         species:             Sequence[str]  = (),
+        exclude_species:     Sequence[str]  = (),
         min_prob:            float          = _DEFAULT_MIN_PROB,
         min_crops_per_class: int            = _DEFAULT_MIN_CROPS,
         epochs:              int            = _DEFAULT_EPOCHS,
@@ -584,6 +586,7 @@ class CnnTrainer:
         self.manifest_csv        = Path(manifest_csv)
         self.out_dir             = Path(out_dir)
         self.species             = list(species)
+        self.exclude_species     = list(exclude_species)
         self.min_prob            = min_prob
         self.min_crops_per_class = min_crops_per_class
         self.epochs              = epochs
@@ -612,6 +615,15 @@ class CnnTrainer:
         """
         Load and filter the manifest CSV.
 
+        Filters applied in order:
+
+        1. Valid single-species code (4-char ``[A-Z][a-z]{3}``).
+           Composite labels (``Laci/Lano`` etc.) are dropped by this regex.
+        2. Confidence >= ``self.min_prob``.
+        3. Species whitelist (``self.species``) if non-empty.
+        4. Species blacklist (``self.exclude_species``) if non-empty.
+        5. Minimum crop count (``self.min_crops_per_class``).
+
         :return: Filtered DataFrame ready for splitting.
         """
         import re
@@ -625,15 +637,25 @@ class CnnTrainer:
         df = df[df['species'].apply(
             lambda s: bool(_sp_re.match(str(s))) or s in _SYNTHETIC_LABELS
         )]
-        log.info(f'  {len(df):,} rows with valid species code')
+        log.info(f'  {len(df):,} rows with valid species code '
+                 f'(composites like Laci/Lano dropped by regex)')
 
-        prob_col = pd.to_numeric(df['species_prob'], errors='coerce')
-        df = df[prob_col.isna() | (prob_col >= self.min_prob)]
-        log.info(f'  {len(df):,} rows after confidence filter (min_prob={self.min_prob})')
+        # Support both manifest column names: legacy 'species_prob' and
+        # current 'confidence' (written by updated chirps_to_spectros.py).
+        conf_col = 'confidence' if 'confidence' in df.columns else 'species_prob'
+        prob_ok  = pd.to_numeric(df[conf_col], errors='coerce')
+        df = df[prob_ok.isna() | (prob_ok >= self.min_prob)]
+        log.info(f'  {len(df):,} rows after confidence filter '
+                 f'(min={self.min_prob}, col={conf_col!r})')
 
         if self.species:
             df = df[df['species'].isin(self.species)]
-            log.info(f'  {len(df):,} rows after species filter {self.species}')
+            log.info(f'  {len(df):,} rows after species whitelist {self.species}')
+
+        if self.exclude_species:
+            df = df[~df['species'].isin(self.exclude_species)]
+            log.info(f'  {len(df):,} rows after species blacklist '
+                     f'{self.exclude_species}')
 
         counts = df['species'].value_counts()
         valid_species = counts[counts >= self.min_crops_per_class].index
@@ -1003,6 +1025,7 @@ class CnnTrainer:
                 {'parameter': 'out_dir',             'value': str(self.out_dir)},
                 {'parameter': 'n_classes',           'value': n_classes},
                 {'parameter': 'species',             'value': str(species_list)},
+                {'parameter': 'exclude_species',     'value': str(self.exclude_species)},
                 {'parameter': 'epochs',              'value': self.epochs},
                 {'parameter': 'freeze_epochs',       'value': self.freeze_epochs},
                 {'parameter': 'batch_size_per_gpu',  'value': self.batch_size},
@@ -1055,7 +1078,14 @@ def _parse_args():
     )
     parser.add_argument('--manifest', required=True, metavar='CSV')
     parser.add_argument('--out-dir',  required=True, metavar='DIR')
-    parser.add_argument('--species',  nargs='+', default=[], metavar='SP')
+    parser.add_argument('--species',  nargs='+', default=[], metavar='SP',
+                        help='Whitelist: train only on these species codes.')
+    parser.add_argument('--exclude-species', nargs='+', default=[],
+                        metavar='SP',
+                        help='Blacklist: drop these species before training. '
+                             'Applied after --species whitelist. '
+                             'Composite labels (containing /) are always '
+                             'dropped by the species-code regex filter.')
     parser.add_argument('--epochs',   type=int,   default=_DEFAULT_EPOCHS)
     parser.add_argument('--freeze-epochs', type=int, default=_DEFAULT_FREEZE_EPOCHS)
     parser.add_argument('--batch',    type=int,   default=_DEFAULT_BATCH)
@@ -1123,6 +1153,7 @@ def main() -> None:
         manifest_csv        = args.manifest,
         out_dir             = args.out_dir,
         species             = args.species,
+        exclude_species     = args.exclude_species,
         min_prob            = args.min_prob,
         min_crops_per_class = args.min_crops,
         epochs              = args.epochs,

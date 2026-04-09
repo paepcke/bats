@@ -39,6 +39,7 @@ dependencies = [
     "typing_extensions>=4.12.2",
     "umap-learn>=0.5.11",
     "guano>=1.0.16",
+    "boto3>=1.42.87",
     #"pantab>=5.2.2",
 ]
 
