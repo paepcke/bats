@@ -1,3 +1,12 @@
+ # **********************************************************
+ #
+ # @Author: Andreas Paepcke
+ # @Date:   2026-04-09 11:20:08
+ # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/cloud_training/vultr_trainer.py
+ # @Last Modified by:   Andreas Paepcke
+ # @Last Modified time: 2026-04-09 14:40:27
+ #
+ # **********************************************************
 """
 vultr_trainer.py
 ================
@@ -145,7 +154,7 @@ class VultrTrainer:
         self.os_id         = os_id
         self.dry_run       = dry_run
 
-        self.log = LoggingService('VultrTrainer')
+        self.log = LoggingService()
 
         self._s3 = boto3.client(
             's3',
