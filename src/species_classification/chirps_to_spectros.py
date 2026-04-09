@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-27 17:48:52
+# @Last Modified time: 2026-04-08 18:43:34
 # **********************************************************
 
 """
@@ -21,17 +21,18 @@ harmonic structure — at a resolution where acoustically similar species
 
 Inputs
 ------
-``sonobat3_2_species_ids.feather``
-    Chirp-level measures file produced by ``sono_batch_processing.py``.
-    Must contain: ``Filename``, ``TimeInFile``, ``TimeInOrigRecording``,
-    ``species``, ``species_prob``.  Run ``sono_batch_processing.py`` with
-    ``--match-csv`` to add ``TimeInOrigRecording`` before using this module.
+``bats_<timestamp>.parquet``
+    Clean chirp-level dataset produced by ``sb_measures_postprocessing.py``.
+    Must contain: ``file_id``, ``TimeInFile``, ``species``, ``confidence``.
+    The ``Filename`` column (fragment stem) is read directly from the parquet;
+    feather files from the older ``sono_batch_processing.py`` pipeline are
+    also accepted (column ``species_prob`` is mapped to ``confidence``).
 
 Fragment ``.wav`` directories
     Directories containing the 2-second fragment ``.wav`` files produced
     by SonoBat's Long File Parser (passed via ``--fragment-dirs``).
     These are at true 250 kHz (TE=1) and provide adequate sample density
-    for high-resolution spectrograms.  ``TimeInFile`` from the feather
+    for high-resolution spectrograms.  ``TimeInFile`` from the parquet
     gives the chirp onset within each fragment.
 
 Pipeline per chirp
@@ -72,7 +73,7 @@ files.
 
 ``manifest.csv`` columns
 ------------------------
-``crop_path``, ``species``, ``species_prob``, ``file_id``, ``Filename``,
+``crop_path``, ``species``, ``confidence``, ``file_id``, ``Filename``,
 ``time_in_file_ms``, ``match_quality``
 
 Typical usage
@@ -80,11 +81,9 @@ Typical usage
 ::
 
     python chirps_to_spectros.py \\
-        --feather  sonobat3_2_species_ids.feather \\
-        --matches  recording_file_locations/match_report.csv \\
-        --out-dir  /data2/bat_crops \\
-        --min-prob 0.80 \\
-        --window-ms 50 \\
+        --data    /qnap/bats/all_data/bats_<timestamp>.parquet \\
+        --out-dir /data2/bat_crops \\
+        --min-conf 0.80 \\
         --freq-lo 15 \\
         --freq-hi 80 \\
         --img-size 224 \\
@@ -121,6 +120,7 @@ except ImportError:
 
 from logging_service import LoggingService
 from sonobat_utils.wav_file_info import WavInfo, RecordingType
+from utils import Utils
 
 log = LoggingService()
 
@@ -133,7 +133,7 @@ _DEFAULT_POST_MS:       float = 17.0   # ms after chirp onset (captures FM sweep
 _DEFAULT_FREQ_LO_KHZ:  float = 15.0
 _DEFAULT_FREQ_HI_KHZ:  float = 80.0
 _DEFAULT_IMG_SIZE:      int   = 224
-_DEFAULT_MIN_PROB:      float = 0.80
+_DEFAULT_MIN_CONF:      float = 0.80
 _DEFAULT_DYNAMIC_RANGE: float = 40.0   # dB — tighter range suppresses noise floor
 _DEFAULT_WORKERS:       int   = max(1, (os.cpu_count() or 4) - 2)
 _STFT_WINDOW_MS:        float = 0.25   # same as chirp_measures_extraction.py
@@ -329,21 +329,19 @@ class ChirpSpectroExtractor:
     """
     Extract per-chirp spectrogram crops from full bat recordings.
 
-    Reads chirp metadata from a feather file, resolves each chirp's source
-    ``.wav`` via a match-report CSV, extracts a short audio window around
-    the chirp onset, computes a linear-scale spectrogram, and saves the
-    result as a PNG under ``<out_dir>/<YYYYMMDD>_<site>/``.
+    Reads chirp metadata from a ``.parquet`` file produced by
+    ``sb_measures_postprocessing.py`` (or a legacy ``.feather`` file),
+    resolves each chirp's source ``.wav`` fragment by stem, extracts a
+    short audio window around the chirp onset, computes a linear-scale
+    spectrogram, and saves the result as a PNG under
+    ``<out_dir>/<YYYYMMDD>_<site>/``.
 
     Output is incremental: a manifest CSV tracks which chirps have already
     been processed so re-runs skip completed work.
 
-    :param feather_path:    Path to the chirp-level feather file.
-    :param match_csv:       No longer required — ``matched_wav`` is now
-                            read directly from the feather file.  This
-                            parameter is accepted for backward compatibility
-                            but ignored.
+    :param data_path:       Path to the parquet (or feather) file.
     :param out_dir:         Root output directory for PNG crops.
-    :param min_prob:        Minimum ``species_prob`` to include a chirp.
+    :param min_conf:        Minimum ``confidence`` score to include a chirp.
     :param pre_ms:          Ms of audio before chirp onset (default 3ms).
     :param post_ms:         Ms of audio after chirp onset (default 17ms).
     :param freq_lo_khz:     Lower frequency bound for spectrogram (kHz).
@@ -351,9 +349,8 @@ class ChirpSpectroExtractor:
     :param img_size:        Output PNG size in pixels (square).
     :param dynamic_range:   Log-power normalisation range in dB.
     :param n_workers:       Parallel worker processes.
-    :param match_quality:   Accepted match quality values from match report.
-                            Defaults to ``['window', 'nearest']``; pass
-                            ``['window']`` to exclude fallback matches.
+    :param match_quality:   Accepted match quality values (legacy feather
+                            only; ignored when reading parquet).
     :param sample:          If > 0, stop after writing this many crops.
                             Useful for quick visual inspection before a
                             full run.  Combines with ``sample_species``
@@ -368,10 +365,10 @@ class ChirpSpectroExtractor:
 
     def __init__(
         self,
-        feather_path:   str | Path,
+        data_path:      str | Path,
         out_dir:        str | Path,
         fragment_dirs:  Sequence[str | Path] = (),
-        min_prob:       float          = _DEFAULT_MIN_PROB,
+        min_conf:       float          = _DEFAULT_MIN_CONF,
         pre_ms:         float          = _DEFAULT_PRE_MS,
         post_ms:        float          = _DEFAULT_POST_MS,
         freq_lo_khz:    float          = _DEFAULT_FREQ_LO_KHZ,
@@ -384,10 +381,10 @@ class ChirpSpectroExtractor:
         sample_species:     Sequence[str]  = (),
         sample_partition:   str            = '',
     ) -> None:
-        self.feather_path  = Path(feather_path)
+        self.data_path     = Path(data_path)
         self.out_dir       = Path(out_dir)
         self.fragment_dirs = [Path(d) for d in fragment_dirs]
-        self.min_prob      = min_prob
+        self.min_conf      = min_conf
         self.pre_ms        = pre_ms
         self.post_ms       = post_ms
         self.freq_lo_hz    = freq_lo_khz * 1000.0
@@ -433,24 +430,67 @@ class ChirpSpectroExtractor:
 
     def _load_work_items(self) -> pd.DataFrame:
         """
-        Load the feather file and match report, apply filters, and return
+        Load the parquet (or legacy feather) file, apply filters, and return
         a DataFrame of chirps ready for crop extraction.
 
+        Accepts both the new parquet format from ``sb_measures_postprocessing.py``
+        (confidence column) and the legacy feather format from
+        ``sono_batch_processing.py`` (species_prob column, mapped to confidence).
+
         Filters applied:
-        * ``species`` is not NaN and is a clean 4-char code
-        * ``species_prob`` >= ``self.min_prob`` (or prob is NaN but species
-          is present — some SonoBat rows have no prob)
-        * ``matched_wav`` is non-empty and the file exists
-        * ``match_quality`` is in ``self.match_quality``
+
+        * ``species`` is not NaN and is a clean 4-char or slash-composite code
+        * ``confidence`` >= ``self.min_conf``
+        * fragment wav resolved from ``Filename`` stem via ``--fragment-dirs``
+        * ``match_quality`` filter applied only when the column is present
+          (legacy feather only)
 
         :return: DataFrame with columns ``Filename``, ``TimeInFile``,
-                 ``species``, ``species_prob``, ``file_id``, ``matched_wav``,
-                 ``match_quality``.
+                 ``species``, ``confidence``, ``file_id``, ``fragment_wav``,
+                 and optional legacy columns ``matched_wav``, ``match_quality``,
+                 ``TimeInOrigRecording``.
         """
-        log.info(f'Loading feather: {self.feather_path} ...')
-        df = pd.read_feather(self.feather_path)
+        log.info(f'Loading data: {self.data_path} ...')
+        df = Utils.read_df_file(self.data_path)
+
+        # Legacy feather compatibility: map species_prob → confidence.
+        if 'species_prob' in df.columns and 'confidence' not in df.columns:
+            df = df.rename(columns={'species_prob': 'confidence'})
+            log.info('  Legacy feather: renamed species_prob → confidence')
+
+        # Parquet format: derive Filename from the file_map embedded in the
+        # parquet metadata.  The file_map values are fragment stems (set by
+        # sb_measures_postprocessing._collect_all_raw path normalization).
+        # Legacy feather already carries a Filename column directly.
+        if 'Filename' not in df.columns:
+            import pyarrow.parquet as _pq
+            import json as _json
+            _table    = _pq.read_table(self.data_path, columns=[])
+            _meta_raw = _table.schema.metadata or {}
+            _meta_key = b'bats_metadata'
+            if _meta_key not in _meta_raw:
+                raise KeyError(
+                    f'{self.data_path} has no bats_metadata — '
+                    f'was it written by BatsData.to_parquet()?'
+                )
+            _file_map = {
+                int(k): v
+                for k, v in _json.loads(
+                    _meta_raw[_meta_key].decode()
+                )['file_map'].items()
+            }
+            df['Filename'] = df['file_id'].map(_file_map)
+            n_unmapped = df['Filename'].isna().sum()
+            if n_unmapped:
+                log.warn(
+                    f'  {n_unmapped:,} rows have a file_id absent from '
+                    f'the parquet file_map and will be dropped.'
+                )
+                df = df[df['Filename'].notna()].copy()
+            log.info(f'  Filename derived from parquet file_map for {len(df):,} rows')
+
         # Strip Windows CRLF artefacts from string columns.
-        for _col in ('Filename', 'species', 'species_prob'):
+        for _col in ('Filename', 'species', 'confidence'):
             if _col in df.columns and df[_col].dtype == object:
                 df[_col] = df[_col].astype(str).str.strip()
         log.info(f'  {len(df):,} total chirp rows')
@@ -472,9 +512,9 @@ class ChirpSpectroExtractor:
             )
             sys.exit(1)
 
-        # Species filter: clean 4-char code only.
+        # Species filter: clean 4-char code or slash-composite (e.g. Laci/Lano).
         import re
-        _sp_re = re.compile(r'^[A-Z][a-z]{3}$')
+        _sp_re = re.compile(r'^[A-Z][a-z]{3}(/[A-Z][a-z]{3})*$')
         merged = merged[merged['species'].notna()]
         merged = merged[merged['species'].apply(
             lambda s: bool(_sp_re.match(str(s)))
@@ -482,18 +522,16 @@ class ChirpSpectroExtractor:
         log.info(f'  {len(merged):,} rows with valid species code')
 
         # Confidence filter.
-        prob_ok = merged['species_prob'].isna() | \
-                  (merged['species_prob'] >= self.min_prob)
-        merged = merged[prob_ok]
+        conf_ok = merged['confidence'].notna() & \
+                  (merged['confidence'] >= self.min_conf)
+        merged = merged[conf_ok]
         log.info(
             f'  {len(merged):,} rows after confidence filter '
-            f'(min_prob={self.min_prob})'
+            f'(min_conf={self.min_conf})'
         )
 
-        # match_quality filter: keep rows whose quality is in the accepted set,
-        # plus rows where match_quality is NaN (chirps from feathers produced
-        # before the wav-matcher was run — their fragment_wav path was resolved
-        # directly from the Filename stem and is valid).
+        # match_quality filter: present in legacy feather only; parquet rows
+        # have NaN here and pass through unchanged.
         if 'match_quality' in merged.columns and self.match_quality:
             mq = merged['match_quality']
             merged = merged[mq.isna() | mq.isin(self.match_quality)]
@@ -503,9 +541,10 @@ class ChirpSpectroExtractor:
             )
 
         needed_cols = ['Filename', 'TimeInFile', 'TimeInOrigRecording',
-                       'species', 'species_prob', 'file_id', 'fragment_wav',
+                       'species', 'confidence', 'file_id', 'fragment_wav',
                        'matched_wav', 'match_quality']
-        # Some columns may be absent on older feathers — fill with NA.
+        # Optional columns absent from parquet — fill with NA so downstream
+        # manifest writing works without branching.
         for opt in ('matched_wav', 'match_quality', 'TimeInOrigRecording'):
             if opt not in merged.columns:
                 merged[opt] = pd.NA
@@ -673,7 +712,7 @@ class ChirpSpectroExtractor:
         # stale or corrupt manifest from a prior run being appended to,
         # which would mix PNG references across two different runs.
         _MANIFEST_FIELDS = [
-            'crop_path', 'partition', 'species', 'species_prob',
+            'crop_path', 'partition', 'species', 'confidence',
             'file_id', 'Filename',
             'time_in_orig_rec_ms', 'time_in_file_ms', 'match_quality',
             'matched_wav',
@@ -748,7 +787,7 @@ class ChirpSpectroExtractor:
                                 'crop_path'          : str(out_path),
                                 'partition'          : part,
                                 'species'            : sp,
-                                'species_prob'       : row.get('species_prob', ''),
+                                'confidence'         : row.get('confidence', ''),
                                 'file_id'            : row.get('file_id', ''),
                                 'Filename'           : row['Filename'],
                                 'time_in_orig_rec_ms': row.get('TimeInOrigRecording', ''),
@@ -777,8 +816,8 @@ class ChirpSpectroExtractor:
         # ── Write config ──────────────────────────────────────────────
         elapsed = time.perf_counter() - _t0
         pd.DataFrame([
-            {'parameter': 'feather_path',   'value': str(self.feather_path)},
-            {'parameter': 'min_prob',       'value': self.min_prob},
+            {'parameter': 'data_path',      'value': str(self.data_path)},
+            {'parameter': 'min_conf',       'value': self.min_conf},
             {'parameter': 'pre_ms',         'value': self.pre_ms},
             {'parameter': 'post_ms',        'value': self.post_ms},
             {'parameter': 'freq_lo_khz',    'value': self.freq_lo_hz / 1000},
@@ -832,10 +871,21 @@ def _parse_args():
         description=(
             'Extract per-chirp spectrogram crops from full bat recordings\n'
             'for CNN species classification training.\n\n'
-            'Requires the feather file from sono_batch_processing.py and\n'
-            'the match_report.csv from wav_path_resolver.py.'
+            'Primary input is the bats_<timestamp>.parquet produced by\n'
+            'sb_measures_postprocessing.py.  Legacy .feather files from\n'
+            'sono_batch_processing.py are also accepted.'
         ),
         formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument(
+        '--data',
+        required=True,
+        metavar='PATH',
+        help=(
+            'Parquet or feather file of chirp-level data.\n'
+            'Parquet: bats_<timestamp>.parquet from sb_measures_postprocessing.py\n'
+            'Feather: legacy sonobat3_2_species_ids.feather'
+        ),
     )
     parser.add_argument(
         '--fragment-dirs',
@@ -850,23 +900,17 @@ def _parse_args():
         ),
     )
     parser.add_argument(
-        '--feather',
-        required=True,
-        metavar='PATH',
-        help='Chirp-level feather file (sonobat3_2_species_ids.feather).',
-    )
-    parser.add_argument(
         '-o', '--out-dir',
         required=True,
         metavar='DIR',
         help='Output directory for PNG crops and manifest.',
     )
     parser.add_argument(
-        '--min-prob',
+        '--min-conf',
         type=float,
-        default=_DEFAULT_MIN_PROB,
+        default=_DEFAULT_MIN_CONF,
         metavar='F',
-        help=f'Minimum species_prob to include (default: {_DEFAULT_MIN_PROB}).',
+        help=f'Minimum confidence score to include (default: {_DEFAULT_MIN_CONF}).',
     )
     parser.add_argument(
         '--pre-ms',
@@ -945,21 +989,19 @@ def _parse_args():
         '--include-nearest',
         action='store_true',
         help=(
-            'Also accept chirps with match_quality="nearest".\n'
-            'Default: window matches only.  Nearest matches are\n'
-            'unreliable for TE recordings (fragment may belong to\n'
-            'a different recording than the one it was matched to).'
+            'Also accept chirps with match_quality="nearest" (legacy feather only).\n'
+            'Default: window matches only.  Has no effect on parquet input.'
         ),
     )
 
     args = parser.parse_args()
 
-    feather_p = Path(args.feather)
-    if not feather_p.exists():
-        parser.error(f'Feather file not found: {feather_p}')
+    data_p = Path(args.data)
+    if not data_p.exists():
+        parser.error(f'Data file not found: {data_p}')
 
-    args.feather  = Path(args.feather)
-    args.out_dir  = Path(args.out_dir)
+    args.data      = data_p
+    args.out_dir   = Path(args.out_dir)
     args.match_quality = ['window', 'nearest'] if args.include_nearest else ['window']
     return args
 
@@ -971,10 +1013,10 @@ def main() -> None:
     args = _parse_args()
 
     extractor = ChirpSpectroExtractor(
-        feather_path  = args.feather,
+        data_path     = args.data,
         out_dir       = args.out_dir,
         fragment_dirs = args.fragment_dirs,
-        min_prob      = args.min_prob,
+        min_conf      = args.min_conf,
         pre_ms        = args.pre_ms,
         post_ms       = args.post_ms,
         freq_lo_khz   = args.freq_lo,
