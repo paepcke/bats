@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-08 19:04:29
+# @Last Modified time: 2026-04-08 19:09:29
 # **********************************************************
 
 """
@@ -460,14 +460,18 @@ class ChirpSpectroExtractor:
         _THRIFT_LIMIT = 1_000_000_000
 
         if self.data_path.suffix in ('.parquet', '.pq'):
+            # Open once with raised thrift limits; reuse the same handle for
+            # both data and metadata so we never hit the limit a second time.
             _pf  = _pq.ParquetFile(
                 self.data_path,
                 thrift_string_size_limit    = _THRIFT_LIMIT,
                 thrift_container_size_limit = _THRIFT_LIMIT,
             )
-            df = _pf.read().to_pandas()
+            df        = _pf.read().to_pandas()
+            _meta_raw = _pf.schema_arrow.metadata or {}
         else:
-            df = Utils.read_df_file(self.data_path)
+            df        = Utils.read_df_file(self.data_path)
+            _meta_raw = {}
 
         # Legacy feather compatibility: map species_prob → confidence.
         if 'species_prob' in df.columns and 'confidence' not in df.columns:
@@ -479,14 +483,8 @@ class ChirpSpectroExtractor:
         # sb_measures_postprocessing._collect_all_raw path normalization).
         # Legacy feather already carries a Filename column directly.
         if 'Filename' not in df.columns:
-            # Re-read schema only (no data) to extract metadata efficiently.
-            _schema   = _pq.read_schema(
-                self.data_path,
-                memory_map=True,
-            )
-            _meta_raw = _schema.metadata or {}
             _meta_key = b'bats_metadata'
-            if _meta_key not in _meta_raw:
+            if not _meta_raw or _meta_key not in _meta_raw:
                 raise KeyError(
                     f'{self.data_path} has no bats_metadata — '
                     f'was it written by BatsData.to_parquet()?'
