@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-08 18:47:19
+# @Last Modified time: 2026-04-08 19:02:13
 # **********************************************************
 
 """
@@ -120,7 +120,7 @@ except ImportError:
 
 from logging_service import LoggingService
 from sonobat_utils.wav_file_info import WavInfo, RecordingType
-from sonobat_utils.utils import Utils
+from utils import Utils
 
 log = LoggingService()
 
@@ -451,7 +451,23 @@ class ChirpSpectroExtractor:
                  ``TimeInOrigRecording``.
         """
         log.info(f'Loading data: {self.data_path} ...')
-        df = Utils.read_df_file(self.data_path)
+
+        # Parquet files from sb_measures_postprocessing.py can exceed PyArrow's
+        # default thrift size limits due to the large file_map in schema metadata.
+        # Read via ParquetFile directly with raised limits; feather uses Utils.
+        import pyarrow.parquet as _pq
+        import json as _json
+        _THRIFT_LIMIT = 1_000_000_000
+
+        if self.data_path.suffix in ('.parquet', '.pq'):
+            _pf  = _pq.ParquetFile(
+                self.data_path,
+                thrift_string_size_limit    = _THRIFT_LIMIT,
+                thrift_container_size_limit = _THRIFT_LIMIT,
+            )
+            df = _pf.read().to_pandas()
+        else:
+            df = Utils.read_df_file(self.data_path)
 
         # Legacy feather compatibility: map species_prob → confidence.
         if 'species_prob' in df.columns and 'confidence' not in df.columns:
@@ -463,10 +479,12 @@ class ChirpSpectroExtractor:
         # sb_measures_postprocessing._collect_all_raw path normalization).
         # Legacy feather already carries a Filename column directly.
         if 'Filename' not in df.columns:
-            import pyarrow.parquet as _pq
-            import json as _json
-            _table    = _pq.read_table(self.data_path, columns=[])
-            _meta_raw = _table.schema.metadata or {}
+            # Re-read schema only (no data) to extract metadata efficiently.
+            _schema   = _pq.read_schema(
+                self.data_path,
+                memory_map=True,
+            )
+            _meta_raw = _schema.metadata or {}
             _meta_key = b'bats_metadata'
             if _meta_key not in _meta_raw:
                 raise KeyError(
