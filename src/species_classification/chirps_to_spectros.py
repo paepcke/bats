@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-08 19:02:13
+# @Last Modified time: 2026-04-08 19:04:29
 # **********************************************************
 
 """
@@ -120,7 +120,7 @@ except ImportError:
 
 from logging_service import LoggingService
 from sonobat_utils.wav_file_info import WavInfo, RecordingType
-from utils import Utils
+from sonobat_utils.utils import Utils
 
 log = LoggingService()
 
