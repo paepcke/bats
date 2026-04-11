@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-11 10:45:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-11 10:56:30
+# @Last Modified time: 2026-04-11 14:56:56
 # #############################################
 
 
@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pandas as pd
 from logging_service import LoggingService
+
+from sonobat_utils.utils import Utils
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +144,7 @@ class BatDbBuilder:
             ``file_id``, ``chirp_idx``, ``TimeInFile``,
             ``rec_site``, ``species``, ``confidence``.
         """
-        df = pd.read_parquet(self.parquet_path)
+        df = Utils.read_df_file(self.parquet_path)
         required = {"file_id", "chirp_idx", "TimeInFile", "rec_site",
                     "species", "confidence"}
         missing = required - set(df.columns)
