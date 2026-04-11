@@ -5,7 +5,7 @@
 # @Date:   2026-03-13 15:10:24
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/species_pred_random_forest.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-14 10:40:44
+# @Last Modified time: 2026-04-11 07:34:04
 #
 # **********************************************************
 
@@ -15,15 +15,21 @@ from SonoBat acoustic measures.
 
 Input
 -----
-A chirp-level DataFrame (CSV or Feather) produced by ``sono_batch_processing.py``,
-containing one row per detected chirp with:
+A chirp-level Parquet file produced by ``sb_measures_postprocessing.py``
+(``bats_<timestamp>.parquet``), containing one row per detected chirp with:
 
-* All SonoBat acoustic measure columns (the feature set)
-* ``species``      : SonoBat species label (4-char code, or NaN)
-* ``species_prob`` : SonoBat confidence for that label (float, or NaN)
-* ``species_2nd``  : SonoBat second-ranked species (str, or NaN)
-* ``file_id``      : integer fragment key
-* ``Filename``     : fragment stem string
+* All SonoBat acoustic measure columns (the feature set, normalised floats)
+* ``species``    : SonoBat species label (4-char code, or composite
+                   ``Myca/Myyu``-style string, or NaN for unlabelled rows)
+* ``confidence`` : SonoBat confidence for that label (float)
+* ``file_id``    : integer fragment key (stable across pipeline runs)
+* ``chirp_idx``  : 0-based chirp position within the fragment
+* ``rec_site``   : recording-site Categorical (e.g. ``barn``, ``lake2``)
+* ``TimeInFile`` : chirp onset time within the 2-second fragment (seconds)
+
+CSV and Feather inputs from the legacy ``sono_batch_processing.py`` pipeline
+are still accepted for backward compatibility; the column differences are
+handled transparently.
 
 The non-feature columns are excluded from model training automatically.
 
@@ -64,9 +70,9 @@ All outputs are written under ``--out-dir``:
     Per-class precision, recall, F1, and support on the test set.
 
 ``test_predictions.csv``
-    Test-set chirp rows with columns ``file_id``, ``Filename``,
-    ``species_true``, ``species_pred``, ``confidence`` (max class
-    probability from the RF).
+    Test-set chirp rows with columns ``file_id``, ``chirp_idx``,
+    ``rec_site``, ``species_true``, ``species_pred``, ``confidence``
+    (max class probability from the RF).
 
 ``run_config.csv``
     All CLI parameters and derived statistics for reproducibility.
@@ -76,7 +82,7 @@ Typical Usage
 ::
 
     python species_pred_random_forest.py \\
-        --input  /qnap/bats/sonobat3_2_species_ids.feather \\
+        --input  /qnap/bats/all_data/bats_2026-04-08T23_40_36.627058.parquet \\
         --out-dir /qnap/bats/rf_results \\
         --min-species-count 500 \\
         --n-estimators 500 \\
@@ -116,11 +122,22 @@ log = LoggingService()
 # ---------------------------------------------------------------------------
 
 # Columns that are metadata / labels, never features.
+# The primary set reflects sb_measures_postprocessing.py parquet output.
+# Legacy names from sono_batch_processing.py are retained for backward
+# compatibility with old feather/csv inputs.
 _NON_FEATURE_COLS: frozenset[str] = frozenset([
-    'Filename', 'file_id',
-    'species', 'species_prob', 'species_2nd',
-    # Student-pipeline columns that may be present
-    'chirp_idx', 'cntxt_sz', 'split', 'index',
+    # Identifier columns (new pipeline)
+    'file_id', 'chirp_idx', 'rec_site',
+    # Label columns (new pipeline)
+    'species', 'confidence',
+    # TimeInFile is a per-fragment chirp offset (0-2 s); exclude it as a
+    # feature to avoid fitting on recording-internal timing rather than
+    # acoustics.  It is numeric so it must be listed explicitly here.
+    'TimeInFile',
+    # Legacy identifier/label columns (sono_batch_processing.py)
+    'Filename', 'species_prob', 'species_2nd',
+    # Other legacy pipeline columns
+    'cntxt_sz', 'split', 'index',
     # SonoBat path/config columns (may survive if drop was skipped)
     'Path', 'ParentDir', 'NextDirUp', 'Version', 'Filter',
     'Preemphasis', 'MaxSegLnght',
@@ -214,7 +231,9 @@ class RFTrainer:
     Train a Random Forest species classifier on SonoBat acoustic measures.
 
     :param input_path:        Path to the chirp-level measures file
-                              (``.csv`` or ``.feather``).
+                              (``.parquet`` from ``sb_measures_postprocessing.py``;
+                              ``.feather`` and ``.csv`` also accepted for legacy
+                              ``sono_batch_processing.py`` inputs).
     :param out_dir:           Directory for all output artifacts.
     :param min_species_count: Minimum number of labeled fragments for a
                               species to be included in training.
@@ -266,27 +285,61 @@ class RFTrainer:
         Load the chirp-level measures file, auto-detecting format from
         the file extension.
 
+        Parquet (``bats_*.parquet`` from ``sb_measures_postprocessing.py``)
+        is the primary format.  CSV and Feather are accepted for backward
+        compatibility with the legacy ``sono_batch_processing.py`` pipeline.
+
         :return: Raw DataFrame with all columns intact.
         :raises: ``SystemExit`` if the file cannot be read.
         """
         suffix = self.input_path.suffix.lower()
         log.info(f'Loading {self.input_path} ...')
         try:
-            if suffix == '.feather':
+            if suffix == '.parquet':
+                df = pd.read_parquet(self.input_path)
+            elif suffix == '.feather':
                 df = pd.read_feather(self.input_path)
             elif suffix == '.csv':
                 df = pd.read_csv(self.input_path, low_memory=False)
             else:
-                # Try feather first, fall back to CSV.
-                try:
-                    df = pd.read_feather(self.input_path)
-                except Exception:
-                    df = pd.read_csv(self.input_path, low_memory=False)
+                # Unknown extension: try parquet, feather, then csv.
+                for reader in (pd.read_parquet, pd.read_feather,
+                               lambda p: pd.read_csv(p, low_memory=False)):
+                    try:
+                        df = reader(self.input_path)
+                        break
+                    except Exception:
+                        continue
+                else:
+                    raise ValueError(
+                        f'Cannot parse {self.input_path} as parquet, feather, or csv'
+                    )
         except Exception as exc:
             log.warn(f'Cannot read input file {self.input_path}: {exc}')
             sys.exit(1)
         log.info(f'Loaded {len(df):,} chirp rows, {len(df.columns)} columns')
+        self._log_column_inventory(df)
         return df
+
+    def _log_column_inventory(self, df: pd.DataFrame) -> None:
+        """
+        Log which expected metadata columns are present or absent, so that
+        pipeline schema mismatches are immediately visible.
+
+        :param df: Freshly loaded DataFrame.
+        """
+        new_pipeline_cols = {'file_id', 'chirp_idx', 'rec_site',
+                             'species', 'confidence', 'TimeInFile'}
+        legacy_cols       = {'Filename', 'species_prob', 'species_2nd'}
+        present_new    = new_pipeline_cols & set(df.columns)
+        present_legacy = legacy_cols & set(df.columns)
+        if present_new:
+            log.info(f'New-pipeline columns present: {sorted(present_new)}')
+        if present_legacy:
+            log.info(
+                f'Legacy pipeline columns present (backward-compat): '
+                f'{sorted(present_legacy)}'
+            )
 
     # ------------------------------------------------------------------ #
     #  Feature / label preparation                                        #
@@ -727,7 +780,10 @@ class RFTrainer:
         confidence   = test_proba.max(axis=1)
         test_pred_df = pd.DataFrame({
             'file_id'      : labeled.loc[test_idx, 'file_id'].values,
-            'Filename'     : labeled.loc[test_idx, 'Filename'].values,
+            'chirp_idx'    : labeled.loc[test_idx, 'chirp_idx'].values
+                             if 'chirp_idx' in labeled.columns else np.nan,
+            'rec_site'     : labeled.loc[test_idx, 'rec_site'].values
+                             if 'rec_site' in labeled.columns else np.nan,
             'species_true' : y_test_raw,
             'species_pred' : le.inverse_transform(y_test_pred),
             'confidence'   : confidence.round(4),
@@ -859,7 +915,10 @@ class RFTrainer:
 
         pd.DataFrame({
             'file_id'      : labeled.loc[test_idx, 'file_id'].values,
-            'Filename'     : labeled.loc[test_idx, 'Filename'].values,
+            'chirp_idx'    : labeled.loc[test_idx, 'chirp_idx'].values
+                             if 'chirp_idx' in labeled.columns else np.nan,
+            'rec_site'     : labeled.loc[test_idx, 'rec_site'].values
+                             if 'rec_site' in labeled.columns else np.nan,
             'species_true' : y_test_raw,
             'species_pred' : le.inverse_transform(y_test_pred),
             'confidence'   : rf.predict_proba(X_test).max(axis=1).round(4),
@@ -920,7 +979,7 @@ def _parse_args():
         prog='species_pred_random_forest',
         description=(
             'Train a Random Forest bat species classifier on SonoBat\n'
-            'acoustic measures produced by sono_batch_processing.py.\n\n'
+            'acoustic measures produced by sb_measures_postprocessing.py.\n\n'
             'The train/val/test split is performed at the file_id level\n'
             '(stratified by modal species) to prevent data leakage.'
         ),
@@ -930,7 +989,10 @@ def _parse_args():
         '-i', '--input',
         required=True,
         metavar='PATH',
-        help='Chirp-level measures file (.csv or .feather).',
+        help=(
+            'Chirp-level measures file produced by sb_measures_postprocessing.py\n'
+            '(.parquet preferred; .feather and .csv also accepted for legacy inputs).'
+        ),
     )
     parser.add_argument(
         '-o', '--out-dir',
