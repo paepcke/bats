@@ -1,62 +1,74 @@
 # ============================================================
-# Bat chirp CNN training image
+# Bat species CNN training image
 # Base: CUDA 12.1 + cuDNN 8 on Ubuntu 22.04
-# PyTorch ships its own CUDA runtime, so we only need
-# a driver-compatible base — 12.1 is close enough to
-# the 12.0 on quintus that all wheels work.
+# Compatible with PyTorch 2.x cu121 wheels and NVIDIA A100/L4
+#
+# Data is supplied at runtime via volume mounts:
+#   /data/crops/        untarred PNG subdirectories (read-only)
+#   /data/manifest.csv  path-rewritten manifest CSV (read-only)
+#   /output/            training outputs (checkpoints, logs)
+#
+# rclone download/untar happens in startup.sh on the host VM,
+# not inside the container.
 # ============================================================
+
 FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
-# ── system packages ──────────────────────────────────────────
+# ── System packages ──────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.11 \
-        python3.11-venv \
+        python3.11-dev \
         python3-pip \
+        python3.11-venv \
         git \
-        libsndfile1 \
-        libgomp1 \
+        wget \
+        curl \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Make python3.11 the default python3 / pip3
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
- && update-alternatives --install /usr/bin/pip    pip    /usr/bin/pip3       1
+# Make python3.11 the default python/pip
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+ && update-alternatives --install /usr/bin/pip    pip    /usr/bin/pip3      1
 
-# ── working directory ────────────────────────────────────────
-WORKDIR /app
-
-# ── Python dependencies ──────────────────────────────────────
-# Copy only the requirements file first so Docker can cache this
-# layer and avoid a full reinstall on every code change.
-COPY src/cloud_training/requirements_train.txt .
-
-RUN pip install --no-cache-dir --upgrade pip
-
-# PyTorch must be installed from its own index, not PyPI.
-# cu121 wheels are compatible with CUDA 12.x drivers.
+# ── Python dependencies ───────────────────────────────────────
+# Install PyTorch first (large wheel, cached separately from the rest).
 RUN pip install --no-cache-dir \
-        torch torchvision \
-        --index-url https://download.pytorch.org/whl/cu121
+        torch==2.3.0+cu121 \
+        torchvision==0.18.0+cu121 \
+        torchaudio==2.3.0+cu121 \
+        --extra-index-url https://download.pytorch.org/whl/cu121
 
-# Remaining dependencies (no torch here — already installed above).
-RUN pip install --no-cache-dir -r requirements_train.txt
+# Install everything else the training script needs.
+# Versions are pinned to match the bats conda environment.
+RUN pip install --no-cache-dir \
+        numpy>=2.0.0 \
+        pandas>=2.2.2 \
+        scikit-learn>=1.5.0 \
+        Pillow \
+        matplotlib \
+        seaborn \
+        tqdm \
+        logging_singleton>=1.0.1 \
+        pyarrow>=22.0.0
 
-# ── source tree ──────────────────────────────────────────────
-# Copy the src tree and add it to PYTHONPATH so train_cnn.py can
-# import any sibling modules directly.  We skip the full package
-# install to avoid setup.cfg path gymnastics in the container;
-# logging-singleton is already handled via requirements_train.txt.
-COPY src/ src/
-ENV PYTHONPATH="/app/src"
+# ── Copy and install the bats package ────────────────────────
+# We do a regular install (not -e) since there is no live source
+# tree in the container.  Rebuild the image to pick up code changes.
+WORKDIR /workspace
+COPY . /workspace/bats
+RUN pip install --no-cache-dir /workspace/bats
 
-# ── training script ──────────────────────────────────────────
-COPY src/species_classification/train_cnn.py train_cnn.py
+# ── Runtime defaults ─────────────────────────────────────────
+# Overridden at docker run time via --env or direct args to entrypoint.
+ENV MANIFEST_CSV=/data/manifest.csv
+ENV OUT_DIR=/output
+ENV EPOCHS=40
+ENV BATCH=64
+ENV WORKERS=8
+ENV NPROC_PER_NODE=1
 
-# ── entrypoint ───────────────────────────────────────────────
-# The entrypoint script handles:
-#   1. Copying data from Vultr object storage to local NVMe
-#   2. Launching torchrun
-#   3. Uploading checkpoints / final model back to object storage
-COPY src/cloud_training/entrypoint.sh .
-RUN chmod +x entrypoint.sh
+# entrypoint.sh handles both single-GPU and multi-GPU launch.
+COPY src/cloud_training/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-ENTRYPOINT ["./entrypoint.sh"]
+ENTRYPOINT ["/entrypoint.sh"]
