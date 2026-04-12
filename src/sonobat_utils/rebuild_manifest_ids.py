@@ -5,7 +5,7 @@
  # @Date:   2026-04-11 19:04:34
  # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/rebuild_manifest_ids.py
  # @Last Modified by:   Andreas Paepcke
- # @Last Modified time: 2026-04-11 19:04:53
+ # @Last Modified time: 2026-04-11 19:09:44
  #
  # **********************************************************
 """
@@ -109,9 +109,9 @@ class ManifestRebuilder:
 
         # Build lookup: (file_id, TimeInFile_ms_int) → chirp_idx
         # TimeInFile is stored as raw ms (integer) — cast to int for safety.
-        df_pq['_tif_key'] = df_pq['TimeInFile'].round().astype(int)
+        df_pq['tif_key'] = df_pq['TimeInFile'].round().astype(int)
         chirp_lookup: dict[tuple[int, int], int] = {
-            (int(row.file_id), int(row._tif_key)): int(row.chirp_idx)
+            (int(row.file_id), int(row.tif_key)): int(row.chirp_idx)
             for row in df_pq.itertuples(index=False)
         }
         log.info(f'  {len(chirp_lookup):,} (file_id, TimeInFile) keys in lookup')
