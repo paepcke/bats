@@ -1,14 +1,14 @@
-#!/usr/bin/env python3
- # **********************************************************
- #
- # @Author: Andreas Paepcke
- # @Date:   2026-04-11 19:04:34
- # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/rebuild_manifest_ids.py
- # @Last Modified by:   Andreas Paepcke
- # @Last Modified time: 2026-04-11 19:24:49
- #
- # **********************************************************
 
+#!/usr/bin/env python3
+# **********************************************************
+#
+# @Author: Andreas Paepcke
+# @Date:   2026-04-11 19:04:34
+# @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/rebuild_manifest_ids.py
+# @Last Modified by:   Andreas Paepcke
+# @Last Modified time: 2026-04-11 19:44:13
+#
+# **********************************************************
 """
 rebuild_manifest_ids.py
 =======================
@@ -100,16 +100,35 @@ class ManifestRebuilder:
             for k, v in json.loads(meta_raw[meta_key].decode())['file_map'].items()
         }
         # Invert: stem → file_id.
-        # file_map values may be full paths (e.g. /qnap/.../barn-20200228_180314_2secs.wav)
-        # or bare stems, depending on which version of sb_measures_postprocessing.py
-        # produced the parquet.  Always reduce to stem for a consistent join key.
+        # file_map values may be:
+        #   - Linux full paths:   /qnap/.../barn-20200228_180314_2secs.wav
+        #   - Windows full paths: Y:\batch1\...\barn-20200228_180314_2secs.wav
+        #                         C:\Users\...\lake2-20220101_065643_2secs.wav
+        #   - Bare stems:         barn-20200228_180314_2secs
+        # Use PureWindowsPath which handles both \\ and / separators, then
+        # take .stem to strip directory and extension in all cases.
+        # Additionally normalise the lake2 naming convention: the manifest
+        # uses 'lake2_-' (underscore-hyphen) while the parquet file_map uses
+        # 'lake2-' (hyphen only).  Normalise both to 'lake2-' for the lookup,
+        # and apply the same normalisation to manifest Filename values below.
+        from pathlib import PurePosixPath, PureWindowsPath as _PWP
+
+        def _extract_stem(raw: str) -> str:
+            # Try Windows path first (handles both \\ and / separators).
+            # If the stem still contains a backslash the whole thing was
+            # treated as one component — fall back to the raw value as stem.
+            stem = _PWP(raw).stem
+            if '\\' in stem or '/' in stem:
+                stem = raw  # already a bare stem
+            # Normalise lake2 convention: 'lake2_-' -> 'lake2-'
+            return stem.replace('lake2_-', 'lake2-')
+
         stem_to_fid: dict[str, int] = {
-            Path(v).stem: k for k, v in file_map.items()
+            _extract_stem(v): k for k, v in file_map.items()
         }
         log.info(f'  {len(stem_to_fid):,} stems in parquet file_map')
-        # Log a sample so format can be verified
         sample = list(stem_to_fid.items())[:3]
-        log.info(f'  Sample file_map stems: {sample}')
+        log.info(f'  Sample file_map stems (normalised): {sample}')
 
         # ── Step 2: load parquet (file_id, TimeInFile, chirp_idx) ──────
         log.info('Reading parquet (file_id, TimeInFile, chirp_idx) ...')
@@ -136,7 +155,10 @@ class ManifestRebuilder:
         log.info(f'  Backup written: {bak_path}')
 
         # ── Step 5: rebuild file_id ─────────────────────────────────────
-        df_man['file_id'] = df_man['Filename'].map(stem_to_fid)
+        # Normalise manifest Filename values to match parquet stem convention.
+        # Manifest lake2 stems use 'lake2_-'; parquet uses 'lake2-'.
+        normalised_filenames = df_man['Filename'].str.replace('lake2_-', 'lake2-', regex=False)
+        df_man['file_id'] = normalised_filenames.map(stem_to_fid)
         n_unmapped_fid = df_man['file_id'].isna().sum()
         if n_unmapped_fid:
             log.warn(
