@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-11 10:45:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-11 20:00:49
+# @Last Modified time: 2026-04-12 09:32:13
 # #############################################
 
 """
@@ -12,21 +12,31 @@ Builder for the bat chirp metadata SQLite database.
 
 Schema
 ------
-png_dirs     : unique parent directories of spectrogram PNGs
-recordings   : one row per source 2-sec WAV segment (file_id)
-chirp_info   : one row per chirp; links PNG, parquet row, species
+png_dirs          : unique parent directories of spectrogram PNGs
+recordings        : one row per source 2-sec WAV segment (file_id)
+chirp_info        : one row per chirp; links to chirp measures parquet
+                    row and carries species/confidence
+chirp_spectrograms: one row per spectrogram PNG; child of chirp_info,
+                    keyed by (file_id, chirp_idx, harmonic_idx).
+                    Multiple harmonics of the same chirp each get their
+                    own PNG but share a single chirp_info row and
+                    measures_row.
+
+The chirp measures parquet file has one row per (file_id, chirp_idx);
+harmonic duplicates were removed upstream because their measure values
+are identical. The chirp spectrograms manifest has one row per PNG,
+with harmonic_idx distinguishing multiple harmonics of the same chirp.
 
 Usage
 -----
 python bat_db_builder.py \\
-    --measures-file /qnap/bats/all_data/bats_2026-04-08T23_40_36.627058.parquet \\
+    --measures-file /qnap/bats/all_data/bats_2026-04-12T01_13_10.661235.parquet \\
     --spectros-manifest /qnap/bats/jr_pipeline/data/bat_crops/manifest.csv \\
     --db-out-file /qnap/bats/chirp_meta.db \\
     [--on-inconsistency {warn|strict}]
 """
 
 import argparse
-import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -57,17 +67,26 @@ CREATE TABLE IF NOT EXISTS recordings (
 CREATE TABLE IF NOT EXISTS chirp_info (
     file_id      INTEGER NOT NULL REFERENCES recordings(file_id),
     chirp_idx    INTEGER NOT NULL,
-    dir_id       INTEGER NOT NULL REFERENCES png_dirs(dir_id),
-    png_filename TEXT NOT NULL,
     measures_row INTEGER NOT NULL,
     species      TEXT,
     confidence   REAL,
-    PRIMARY KEY (file_id, chirp_idx),
+    PRIMARY KEY (file_id, chirp_idx)
+);
+
+CREATE TABLE IF NOT EXISTS chirp_spectrograms (
+    file_id      INTEGER NOT NULL,
+    chirp_idx    INTEGER NOT NULL,
+    harmonic_idx INTEGER NOT NULL,
+    dir_id       INTEGER NOT NULL REFERENCES png_dirs(dir_id),
+    png_filename TEXT NOT NULL,
+    PRIMARY KEY (file_id, chirp_idx, harmonic_idx),
+    FOREIGN KEY (file_id, chirp_idx) REFERENCES chirp_info(file_id, chirp_idx),
     UNIQUE (dir_id, png_filename)
 );
 
 CREATE INDEX IF NOT EXISTS idx_chirp_species ON chirp_info(species);
-CREATE INDEX IF NOT EXISTS idx_chirp_dir     ON chirp_info(dir_id);
+CREATE INDEX IF NOT EXISTS idx_spec_dir      ON chirp_spectrograms(dir_id);
+CREATE INDEX IF NOT EXISTS idx_spec_harmonic ON chirp_spectrograms(harmonic_idx);
 """
 
 
@@ -77,17 +96,26 @@ CREATE INDEX IF NOT EXISTS idx_chirp_dir     ON chirp_info(dir_id);
 
 class BatDbBuilder:
     """
-    Builds the bat chirp metadata SQLite database from a parquet measures
-    file and a CSV manifest of spectrogram PNG crops.
+    Builds the bat chirp metadata SQLite database from a chirp measures
+    parquet file and a chirp spectrograms manifest CSV.
 
-    :param parquet_path: Path to the measures parquet file.
-    :param manifest_path: Path to the manifest CSV file.
+    The chirp measures parquet has one row per ``(file_id, chirp_idx)``;
+    harmonic duplicates are absent because their measure values are
+    identical and were removed upstream.
+
+    The chirp spectrograms manifest has one row per PNG file, with
+    ``harmonic_idx`` distinguishing multiple harmonics of the same chirp.
+    Multiple harmonics share the same ``(file_id, chirp_idx)`` and thus
+    the same ``measures_row`` in the chirp measures parquet.
+
+    :param parquet_path: Path to the chirp measures parquet file.
+    :param manifest_path: Path to the chirp spectrograms manifest CSV.
     :param db_path: Destination path for the SQLite database file.
     :param on_inconsistency: ``'warn'`` to log and continue on data
-        mismatches; ``'strict'`` to abort on the first mismatch.
+        mismatches between sources; ``'strict'`` to abort immediately.
     """
 
-    # Tolerance for time matching (ms); exact match expected but allow
+    # Tolerance for time validation (ms); exact match expected but allow
     # for float representation noise after the int cast.
     TIME_TOLERANCE_MS: int = 0
 
@@ -113,10 +141,10 @@ class BatDbBuilder:
         Load source data, validate cross-file consistency, and write
         the SQLite database.
         """
-        self.log.info("Loading parquet measures ...")
+        self.log.info("Loading chirp measures parquet ...")
         measures = self._load_parquet()
 
-        self.log.info("Loading manifest CSV ...")
+        self.log.info("Loading chirp spectrograms manifest ...")
         manifest = self._load_manifest()
 
         self.log.info("Merging and validating ...")
@@ -133,19 +161,23 @@ class BatDbBuilder:
 
     def _load_parquet(self) -> pd.DataFrame:
         """
-        Load the measures parquet file and normalise column names needed
-        for the build.
+        Load the chirp measures parquet file and normalise columns
+        needed for the build.
+
+        The parquet has one row per ``(file_id, chirp_idx)``; harmonic
+        duplicates have been removed upstream.
 
         :return: DataFrame with at minimum columns
             ``file_id``, ``chirp_idx``, ``TimeInFile``,
-            ``rec_site``, ``species``, ``confidence``.
+            ``rec_site``, ``species``, ``confidence``,
+            plus a derived ``measures_row`` (0-based iloc index).
         """
         df = Utils.read_df_file(self.parquet_path)
         required = {"file_id", "chirp_idx", "TimeInFile", "rec_site",
                     "species", "confidence"}
         missing = required - set(df.columns)
         if missing:
-            self.log.err(f"Parquet missing columns: {missing}")
+            self.log.err(f"Chirp measures parquet missing columns: {missing}")
             sys.exit(1)
         df["TimeInFile"] = df["TimeInFile"].astype(int)
         # Preserve original 0-based iloc row number before any sorting.
@@ -155,22 +187,28 @@ class BatDbBuilder:
 
     def _load_manifest(self) -> pd.DataFrame:
         """
-        Load the manifest CSV and normalise columns.
+        Load the chirp spectrograms manifest CSV and normalise columns.
+
+        The manifest has one row per PNG file. ``harmonic_idx``
+        distinguishes multiple harmonics of the same chirp; all harmonics
+        of a chirp share the same ``(file_id, chirp_idx)``.
 
         :return: DataFrame with at minimum columns
-            ``crop_path``, ``file_id``, ``chirp_idx``,
-            ``time_in_file_ms``, ``species``, ``confidence``,
-            ``partition``.
+            ``crop_path``, ``file_id``, ``chirp_idx``, ``harmonic_idx``,
+            ``time_in_file_ms``, ``species``, ``confidence``, ``partition``.
         """
         df = pd.read_csv(self.manifest_path, low_memory=False)
-        required = {"crop_path", "file_id", "chirp_idx", "time_in_file_ms",
-                    "species", "confidence", "partition"}
+        required = {"crop_path", "file_id", "chirp_idx", "harmonic_idx",
+                    "time_in_file_ms", "species", "confidence", "partition"}
         missing = required - set(df.columns)
         if missing:
-            self.log.err(f"Manifest missing columns: {missing}")
+            self.log.err(
+                f"Chirp spectrograms manifest missing columns: {missing}"
+            )
             sys.exit(1)
         df["time_in_file_ms"] = df["time_in_file_ms"].astype(int)
-        df["chirp_idx"] = df["chirp_idx"].astype(int)
+        df["chirp_idx"]       = df["chirp_idx"].astype(int)
+        df["harmonic_idx"]    = df["harmonic_idx"].astype(int)
         return df
 
     # ------------------------------------------------------------------
@@ -183,106 +221,119 @@ class BatDbBuilder:
         manifest: pd.DataFrame,
     ) -> pd.DataFrame:
         """
-        Inner-join measures and manifest on ``(file_id, chirp_idx)`` and
-        check that ``species``, ``confidence``, and ``TimeInFile`` /
-        ``time_in_file_ms`` agree between sources.
+        Inner-join the chirp measures parquet and the chirp spectrograms
+        manifest on ``(file_id, chirp_idx)``, then validate that
+        ``species``, ``confidence``, and timing agree between sources.
 
-        ``chirp_idx`` is taken directly from both files; no derivation
-        is performed here.
+        Because the manifest may have multiple rows per ``(file_id,
+        chirp_idx)`` (one per harmonic), the join fans out: each parquet
+        row may match N manifest rows. ``measures_row`` is the same for
+        all harmonics of a chirp.
 
-        :param measures: Loaded parquet DataFrame.
-        :param manifest: Manifest DataFrame with pre-assigned ``chirp_idx``.
-        :return: Merged DataFrame with columns needed for ``chirp_info``.
+        Validation is performed on ``harmonic_idx == 0`` rows only,
+        since all harmonics of a chirp share the same values for those
+        fields.
+
+        :param measures: Chirp measures parquet DataFrame.
+        :param manifest: Chirp spectrograms manifest DataFrame.
+        :return: Merged DataFrame with all columns needed for
+            ``chirp_info`` and ``chirp_spectrograms``.
         """
         left = measures[
             ["file_id", "chirp_idx", "TimeInFile",
              "species", "confidence", "measures_row"]
         ].rename(columns={
-            "TimeInFile": "time_parquet",
-            "species": "species_parquet",
-            "confidence": "confidence_parquet",
+            "TimeInFile":  "time_parquet",
+            "species":     "species_parquet",
+            "confidence":  "confidence_parquet",
         })
 
         right = manifest[
-            ["file_id", "chirp_idx", "time_in_file_ms",
+            ["file_id", "chirp_idx", "harmonic_idx", "time_in_file_ms",
              "species", "confidence", "crop_path", "partition"]
         ].rename(columns={
             "time_in_file_ms": "time_manifest",
-            "species": "species_manifest",
-            "confidence": "confidence_manifest",
+            "species":         "species_manifest",
+            "confidence":      "confidence_manifest",
         })
 
         merged = pd.merge(left, right, on=["file_id", "chirp_idx"],
                           how="inner")
 
-        n_left = len(left)
-        n_right = len(right)
+        n_left   = len(left)
+        n_right  = len(manifest)
         n_merged = len(merged)
-        if n_merged < n_left or n_merged < n_right:
-            self.log.warn(
-                f"Join coverage: parquet={n_left}, manifest={n_right}, "
-                f"merged={n_merged}. "
-                f"{n_left - n_merged} parquet rows and "
-                f"{n_right - n_merged} manifest rows unmatched."
+        if n_merged == 0:
+            self.log.err(
+                "Merge produced zero rows — check that chirp_idx values "
+                "align between the chirp measures parquet and the chirp "
+                "spectrograms manifest."
             )
+            sys.exit(1)
+        self.log.info(
+            f"Join coverage: measures={n_left:,}, "
+            f"manifest={n_right:,}, merged={n_merged:,}. "
+            f"{n_left - n_merged:,} measures rows unmatched; "
+            f"{n_right - n_merged:,} manifest rows unmatched."
+        )
 
         inconsistencies: list[str] = []
 
+        # Validate on harmonic_idx=0 rows only (one row per chirp).
+        primary = merged[merged["harmonic_idx"] == 0]
+
         # --- species ---
-        mismatch = merged["species_parquet"] != merged["species_manifest"]
+        mismatch = primary["species_parquet"] != primary["species_manifest"]
         if mismatch.any():
-            rows = merged[mismatch][
+            rows = primary[mismatch][
                 ["file_id", "chirp_idx",
                  "species_parquet", "species_manifest"]
             ]
-            msg = (
-                f"species mismatch in {mismatch.sum()} rows:\n"
-                f"{rows.to_string(index=False)}"
+            inconsistencies.append(
+                f"species mismatch in {mismatch.sum():,} chirps:\n"
+                f"{rows.head(20).to_string(index=False)}"
             )
-            inconsistencies.append(msg)
 
         # --- confidence ---
         conf_diff = (
-            merged["confidence_parquet"] - merged["confidence_manifest"]
+            primary["confidence_parquet"] - primary["confidence_manifest"]
         ).abs()
         bad_conf = conf_diff > 1e-6
         if bad_conf.any():
-            rows = merged[bad_conf][
+            rows = primary[bad_conf][
                 ["file_id", "chirp_idx",
                  "confidence_parquet", "confidence_manifest"]
             ]
-            msg = (
-                f"confidence mismatch in {bad_conf.sum()} rows:\n"
-                f"{rows.to_string(index=False)}"
+            inconsistencies.append(
+                f"confidence mismatch in {bad_conf.sum():,} chirps:\n"
+                f"{rows.head(20).to_string(index=False)}"
             )
-            inconsistencies.append(msg)
 
         # --- time ---
         time_diff = (
-            merged["time_parquet"] - merged["time_manifest"]
+            primary["time_parquet"] - primary["time_manifest"]
         ).abs()
         bad_time = time_diff > self.TIME_TOLERANCE_MS
         if bad_time.any():
-            rows = merged[bad_time][
+            rows = primary[bad_time][
                 ["file_id", "chirp_idx",
                  "time_parquet", "time_manifest"]
             ]
-            msg = (
-                f"time mismatch in {bad_time.sum()} rows:\n"
-                f"{rows.to_string(index=False)}"
+            inconsistencies.append(
+                f"time mismatch in {bad_time.sum():,} chirps:\n"
+                f"{rows.head(20).to_string(index=False)}"
             )
-            inconsistencies.append(msg)
 
         for msg in inconsistencies:
             if self.on_inconsistency == "strict":
-                self.log.err(f"Inconsistency (strict mode — aborting): {msg}")
+                self.log.err(f"Inconsistency (strict — aborting): {msg}")
                 sys.exit(1)
             else:
-                self.log.warn(f"Inconsistency (warn mode — continuing): {msg}")
+                self.log.warn(f"Inconsistency (warn — continuing): {msg}")
 
-        # Use parquet species/confidence as authoritative (they went
-        # through the ML pipeline); warn already emitted if they differ.
-        merged["species"] = merged["species_parquet"]
+        # Use chirp measures parquet species/confidence as authoritative;
+        # warn already emitted above if they differ.
+        merged["species"]    = merged["species_parquet"]
         merged["confidence"] = merged["confidence_parquet"]
 
         return merged
@@ -300,8 +351,8 @@ class BatDbBuilder:
         """
         Create (or replace) the SQLite database and populate all tables.
 
-        :param measures: Full measures DataFrame (for rec_site).
-        :param manifest: Full manifest DataFrame (for rec_period / partition).
+        :param measures: Chirp measures parquet DataFrame.
+        :param manifest: Chirp spectrograms manifest DataFrame.
         :param merged: Inner-joined and validated DataFrame.
         """
         if self.db_path.exists():
@@ -312,7 +363,8 @@ class BatDbBuilder:
         try:
             con.executescript(SCHEMA_SQL)
             self._insert_recordings(con, measures, manifest)
-            self._insert_png_dirs_and_chirps(con, merged)
+            self._insert_chirp_info(con, merged)
+            self._insert_spectrograms(con, merged)
             con.commit()
         except Exception:
             con.rollback()
@@ -329,12 +381,13 @@ class BatDbBuilder:
         """
         Populate the ``recordings`` table.
 
-        ``rec_site`` comes from the parquet; ``rec_period`` (partition)
-        comes from the manifest.
+        ``rec_site`` comes from the chirp measures parquet;
+        ``rec_period`` (partition) and ``filename`` come from the
+        chirp spectrograms manifest.
 
         :param con: Open SQLite connection.
-        :param measures: Parquet DataFrame.
-        :param manifest: Manifest DataFrame.
+        :param measures: Chirp measures parquet DataFrame.
+        :param manifest: Chirp spectrograms manifest DataFrame.
         """
         parquet_rec = (
             measures[["file_id", "rec_site"]]
@@ -368,62 +421,104 @@ class BatDbBuilder:
             "VALUES (?, ?, ?, ?)",
             rows,
         )
-        self.log.info(f"Inserted {len(rows)} recordings.")
+        self.log.info(f"Inserted {len(rows):,} recordings.")
 
-    def _insert_png_dirs_and_chirps(
+    def _insert_chirp_info(
         self,
         con: sqlite3.Connection,
         merged: pd.DataFrame,
     ) -> None:
         """
-        Populate ``png_dirs`` and ``chirp_info`` tables.
+        Populate the ``chirp_info`` table.
 
-        Directories are collected first so each gets a stable ``dir_id``
-        before chirp rows reference them.
+        One row per ``(file_id, chirp_idx)``. All harmonics of a chirp
+        share the same ``measures_row`` in the chirp measures parquet,
+        so we deduplicate on ``(file_id, chirp_idx)`` taking
+        ``harmonic_idx == 0`` (the primary harmonic).
 
         :param con: Open SQLite connection.
         :param merged: Merged and validated DataFrame.
         """
-        # --- png_dirs ---
-        merged["_png_dir"] = merged["crop_path"].apply(
+        chirp_rows = (
+            merged[merged["harmonic_idx"] == 0]
+            .drop_duplicates(subset=["file_id", "chirp_idx"])
+            [["file_id", "chirp_idx", "measures_row",
+              "species", "confidence"]]
+        )
+
+        rows = [
+            (
+                int(r.file_id),
+                int(r.chirp_idx),
+                int(r.measures_row),
+                r.species,
+                float(r.confidence) if pd.notna(r.confidence) else None,
+            )
+            for r in chirp_rows.itertuples(index=False)
+        ]
+
+        con.executemany(
+            "INSERT INTO chirp_info "
+            "(file_id, chirp_idx, measures_row, species, confidence) "
+            "VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        self.log.info(f"Inserted {len(rows):,} chirp_info rows.")
+
+    def _insert_spectrograms(
+        self,
+        con: sqlite3.Connection,
+        merged: pd.DataFrame,
+    ) -> None:
+        """
+        Populate the ``png_dirs`` and ``chirp_spectrograms`` tables.
+
+        Directories are collected first so each gets a stable ``dir_id``
+        before spectrogram rows reference them. One row is inserted per
+        PNG file, preserving all harmonics.
+
+        :param con: Open SQLite connection.
+        :param merged: Merged and validated DataFrame.
+        """
+        merged = merged.copy()
+        merged["_png_dir"]  = merged["crop_path"].apply(
             lambda p: str(Path(p).parent)
         )
         merged["_png_file"] = merged["crop_path"].apply(
             lambda p: Path(p).name
         )
 
+        # --- png_dirs ---
         unique_dirs = sorted(merged["_png_dir"].unique())
         con.executemany(
             "INSERT INTO png_dirs (dir_path) VALUES (?)",
             [(d,) for d in unique_dirs],
         )
-        self.log.info(f"Inserted {len(unique_dirs)} png_dirs.")
+        self.log.info(f"Inserted {len(unique_dirs):,} png_dirs.")
 
         # Build dir_path → dir_id lookup
         cur = con.execute("SELECT dir_id, dir_path FROM png_dirs")
         dir_id_map: dict[str, int] = {row[1]: row[0] for row in cur}
 
-        # --- chirp_info ---
-        chirp_rows = []
-        for _, row in merged.iterrows():
-            chirp_rows.append((
-                int(row["file_id"]),
-                int(row["chirp_idx"]),
-                dir_id_map[row["_png_dir"]],
-                row["_png_file"],
-                int(row["measures_row"]),
-                row["species"],
-                float(row["confidence"]) if pd.notna(row["confidence"]) else None,
-            ))
+        # --- chirp_spectrograms ---
+        rows = [
+            (
+                int(r.file_id),
+                int(r.chirp_idx),
+                int(r.harmonic_idx),
+                dir_id_map[r._png_dir],
+                r._png_file,
+            )
+            for r in merged.itertuples(index=False)
+        ]
 
         con.executemany(
-            "INSERT INTO chirp_info "
-            "(file_id, chirp_idx, dir_id, png_filename, measures_row, "
-            " species, confidence) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            chirp_rows,
+            "INSERT INTO chirp_spectrograms "
+            "(file_id, chirp_idx, harmonic_idx, dir_id, png_filename) "
+            "VALUES (?, ?, ?, ?, ?)",
+            rows,
         )
-        self.log.info(f"Inserted {len(chirp_rows)} chirp_info rows.")
+        self.log.info(f"Inserted {len(rows):,} chirp_spectrograms rows.")
 
 
 # ---------------------------------------------------------------------------
@@ -437,12 +532,12 @@ def main() -> None:
     parser.add_argument(
         "--measures-file", required=True,
         dest="measures_file",
-        help="Path to the measures parquet file.",
+        help="Path to the chirp measures parquet file.",
     )
     parser.add_argument(
         "--spectros-manifest", required=True,
         dest="spectros_manifest",
-        help="Path to the spectrogram manifest CSV file.",
+        help="Path to the chirp spectrograms manifest CSV.",
     )
     parser.add_argument(
         "--db-out-file", required=True,
@@ -455,7 +550,8 @@ def main() -> None:
         default="warn",
         dest="on_inconsistency",
         help=(
-            "How to handle data mismatches between measures and manifest. "
+            "How to handle data mismatches between the chirp measures "
+            "parquet and the chirp spectrograms manifest. "
             "'warn' logs and continues; 'strict' aborts immediately. "
             "Default: warn."
         ),

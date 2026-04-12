@@ -4,11 +4,18 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-11 10:46:17
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-11 20:01:21
+# @Last Modified time: 2026-04-12 09:32:36
 # #############################################
 
 """
 CLI query wrapper for the bat chirp metadata SQLite database.
+
+The database holds two kinds of data:
+  - chirp_info        : one row per chirp, linked to the chirp measures
+                        parquet via measures_row
+  - chirp_spectrograms: one row per spectrogram PNG; multiple harmonics
+                        of the same chirp each have their own row,
+                        distinguished by harmonic_idx
 
 Queries
 -------
@@ -22,7 +29,7 @@ Queries
     Species (or composite species) associated with a file_id.
 
 --chirp FILE_ID CHIRP_IDX
-    measures_row and PNG path for a single chirp.
+    measures_row and PNG path(s) for a single chirp.
 
 --random-spectrogram SPECIES
     A random PNG path + file_id for the given species string.
@@ -36,21 +43,26 @@ Flags
     Restrict results to unambiguously identified species
     (i.e. no '/' in the species string).
 
+--primary-harmonic
+    Restrict spectrogram results to harmonic_idx = 0 only,
+    giving one PNG per chirp. Without this flag, all harmonics
+    are returned.
+
 --db PATH
     Path to the SQLite database (required for all queries).
 
 Examples
 --------
-python bat_db_query.py --db chirp_meta.db \\
+bat_db_query.py --db chirp_meta.db \\
     --spectrograms-for-file 1212612
 
-python bat_db_query.py --db chirp_meta.db --pure-species \\
+bat_db_query.py --db chirp_meta.db --pure-species \\
     --random-spectrogram Myyu
 
-python bat_db_query.py --db chirp_meta.db \\
+bat_db_query.py --db chirp_meta.db --primary-harmonic \\
     --chirp 1212612 7
 
-python bat_db_query.py --db chirp_meta.db \\
+bat_db_query.py --db chirp_meta.db \\
     --relocate-pngs /old/path/20220706_lake2 /new/path/20220706_lake2
 """
 
@@ -75,11 +87,20 @@ class BatDbQuerier:
     :param db_path: Path to the SQLite database file.
     :param pure_species: If ``True``, restrict all results to rows
         whose species string contains no ``'/'`` (unambiguous IDs only).
+    :param primary_harmonic: If ``True``, restrict spectrogram results
+        to ``harmonic_idx = 0`` only, returning one PNG per chirp.
+        If ``False`` (default), all harmonics are returned.
     """
 
-    def __init__(self, db_path: str, pure_species: bool = False) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        pure_species: bool = False,
+        primary_harmonic: bool = False,
+    ) -> None:
         self.db_path = Path(db_path)
         self.pure_species = pure_species
+        self.primary_harmonic = primary_harmonic
         self.log = LoggingService()
 
         if not self.db_path.exists():
@@ -100,11 +121,22 @@ class BatDbQuerier:
     @property
     def _pure_species_clause(self) -> str:
         """
-        SQL fragment appended (with AND) when ``--pure-species`` is set.
+        SQL fragment (AND-prefixed) filtering to unambiguous species
+        when ``--pure-species`` is set.
 
-        :return: SQL snippet, empty string if pure_species is False.
+        :return: SQL snippet string, or empty string.
         """
         return "AND ci.species NOT LIKE '%/%'" if self.pure_species else ""
+
+    @property
+    def _primary_harmonic_clause(self) -> str:
+        """
+        SQL fragment (AND-prefixed) filtering to ``harmonic_idx = 0``
+        when ``--primary-harmonic`` is set.
+
+        :return: SQL snippet string, or empty string.
+        """
+        return "AND cs.harmonic_idx = 0" if self.primary_harmonic else ""
 
     def _full_png_path(self, row: sqlite3.Row) -> str:
         """
@@ -125,15 +157,20 @@ class BatDbQuerier:
         Return full paths to all spectrogram PNGs for a given file_id.
 
         :param file_id: Recording identifier.
-        :return: Sorted list of PNG path strings.
+        :return: List of PNG path strings, ordered by chirp_idx then
+            harmonic_idx.
         """
         sql = f"""
-            SELECT pd.dir_path, ci.png_filename
+            SELECT pd.dir_path, cs.png_filename
             FROM   chirp_info ci
-            JOIN   png_dirs pd ON pd.dir_id = ci.dir_id
+            JOIN   chirp_spectrograms cs
+                     ON cs.file_id  = ci.file_id
+                    AND cs.chirp_idx = ci.chirp_idx
+            JOIN   png_dirs pd ON pd.dir_id = cs.dir_id
             WHERE  ci.file_id = ?
             {self._pure_species_clause}
-            ORDER  BY ci.chirp_idx
+            {self._primary_harmonic_clause}
+            ORDER  BY ci.chirp_idx, cs.harmonic_idx
         """
         rows = self._con.execute(sql, (file_id,)).fetchall()
         return [self._full_png_path(r) for r in rows]
@@ -141,6 +178,10 @@ class BatDbQuerier:
     def measures_for_file(self, file_id: int) -> list[dict]:
         """
         Return chirp metadata rows for a given file_id.
+
+        Each row corresponds to one unique chirp (one row in the chirp
+        measures parquet). Use ``measures_row`` as the iloc index into
+        the parquet to retrieve the full acoustic measures.
 
         :param file_id: Recording identifier.
         :return: List of dicts with keys
@@ -179,54 +220,75 @@ class BatDbQuerier:
         self, file_id: int, chirp_idx: int
     ) -> Optional[dict]:
         """
-        Return the measures row number and PNG path for a single chirp.
+        Return the measures_row and PNG path(s) for a single chirp.
+
+        ``measures_row`` is the 0-based iloc index into the chirp
+        measures parquet. If ``--primary-harmonic`` is set, one PNG
+        path is returned; otherwise all harmonics are listed.
 
         :param file_id: Recording identifier.
         :param chirp_idx: Chirp sequence index within the recording.
         :return: Dict with keys ``file_id``, ``chirp_idx``,
-            ``measures_row``, ``png_path``, ``species``, ``confidence``,
+            ``measures_row``, ``species``, ``confidence``,
+            ``png_paths`` (list of path strings),
             or ``None`` if not found.
         """
         sql = f"""
             SELECT ci.file_id, ci.chirp_idx, ci.measures_row,
                    ci.species, ci.confidence,
-                   pd.dir_path, ci.png_filename
+                   pd.dir_path, cs.png_filename, cs.harmonic_idx
             FROM   chirp_info ci
-            JOIN   png_dirs pd ON pd.dir_id = ci.dir_id
-            WHERE  ci.file_id = ?
+            JOIN   chirp_spectrograms cs
+                     ON cs.file_id   = ci.file_id
+                    AND cs.chirp_idx = ci.chirp_idx
+            JOIN   png_dirs pd ON pd.dir_id = cs.dir_id
+            WHERE  ci.file_id  = ?
               AND  ci.chirp_idx = ?
             {self._pure_species_clause}
+            {self._primary_harmonic_clause}
+            ORDER  BY cs.harmonic_idx
         """
-        row = self._con.execute(sql, (file_id, chirp_idx)).fetchone()
-        if row is None:
+        rows = self._con.execute(sql, (file_id, chirp_idx)).fetchall()
+        if not rows:
             return None
-        result = dict(row)
-        result["png_path"] = self._full_png_path(row)
-        del result["dir_path"]
-        del result["png_filename"]
+        first = dict(rows[0])
+        result = {
+            "file_id":      first["file_id"],
+            "chirp_idx":    first["chirp_idx"],
+            "measures_row": first["measures_row"],
+            "species":      first["species"],
+            "confidence":   first["confidence"],
+            "png_paths":    [self._full_png_path(r) for r in rows],
+        }
         return result
 
     def random_spectrogram(self, species: str) -> Optional[dict]:
         """
-        Return a random PNG path and file_id for the given species string.
+        Return a random spectrogram PNG path and its file_id for the
+        given species string.
 
-        The match is exact against the ``species`` column; if you want
-        all Myyu including composite calls, pass ``'Myyu'`` and omit
-        ``--pure-species``.
+        The match is exact against the ``species`` column in
+        ``chirp_info``. If ``--primary-harmonic`` is set, only
+        ``harmonic_idx = 0`` PNGs are candidates.
 
         :param species: Species string to match exactly.
         :return: Dict with keys ``file_id``, ``chirp_idx``,
-            ``measures_row``, ``png_path``, ``species``, ``confidence``,
+            ``measures_row``, ``png_path``, ``harmonic_idx``,
+            ``species``, ``confidence``,
             or ``None`` if no matching chirps exist.
         """
         sql = f"""
             SELECT ci.file_id, ci.chirp_idx, ci.measures_row,
                    ci.species, ci.confidence,
-                   pd.dir_path, ci.png_filename
+                   pd.dir_path, cs.png_filename, cs.harmonic_idx
             FROM   chirp_info ci
-            JOIN   png_dirs pd ON pd.dir_id = ci.dir_id
+            JOIN   chirp_spectrograms cs
+                     ON cs.file_id   = ci.file_id
+                    AND cs.chirp_idx = ci.chirp_idx
+            JOIN   png_dirs pd ON pd.dir_id = cs.dir_id
             WHERE  ci.species = ?
             {self._pure_species_clause}
+            {self._primary_harmonic_clause}
         """
         rows = self._con.execute(sql, (species,)).fetchall()
         if not rows:
@@ -265,15 +327,17 @@ def _print_result(result) -> None:
     elif isinstance(result, list):
         if not result:
             print("(empty)")
-        elif isinstance(result[0], str):
-            for item in result:
-                print(item)
         else:
             for item in result:
                 print(item)
     elif isinstance(result, dict):
         for k, v in result.items():
-            print(f"  {k}: {v}")
+            if isinstance(v, list):
+                print(f"  {k}:")
+                for item in v:
+                    print(f"    {item}")
+            else:
+                print(f"  {k}: {v}")
     else:
         print(result)
 
@@ -294,6 +358,12 @@ def main() -> None:
         help="Restrict results to unambiguously identified species "
              "(no '/' in species string).",
     )
+    parser.add_argument(
+        "--primary-harmonic", action="store_true", default=False,
+        dest="primary_harmonic",
+        help="Restrict spectrogram results to harmonic_idx = 0 only, "
+             "returning one PNG per chirp. Default: return all harmonics.",
+    )
 
     # Mutually exclusive query group
     group = parser.add_mutually_exclusive_group(required=True)
@@ -311,7 +381,7 @@ def main() -> None:
     )
     group.add_argument(
         "--chirp", nargs=2, metavar=("FILE_ID", "CHIRP_IDX"), type=int,
-        help="Show measures_row and PNG path for a single chirp.",
+        help="Show measures_row and PNG path(s) for a single chirp.",
     )
     group.add_argument(
         "--random-spectrogram", metavar="SPECIES",
@@ -324,7 +394,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    querier = BatDbQuerier(db_path=args.db, pure_species=args.pure_species)
+    querier = BatDbQuerier(
+        db_path=args.db,
+        pure_species=args.pure_species,
+        primary_harmonic=args.primary_harmonic,
+    )
 
     try:
         if args.spectrograms_for_file is not None:
@@ -360,7 +434,9 @@ def main() -> None:
             if n == 0:
                 log.warn(f"No png_dirs row matched '{old_dir}'.")
             else:
-                log.info(f"Updated {n} png_dirs row: '{old_dir}' → '{new_dir}'.")
+                log.info(
+                    f"Updated {n} png_dirs row: '{old_dir}' → '{new_dir}'."
+                )
 
     finally:
         querier.close()
