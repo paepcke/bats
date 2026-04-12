@@ -51,12 +51,13 @@ RUN pip install --no-cache-dir \
         logging_singleton>=1.0.1 \
         pyarrow>=22.0.0
 
-# ── Copy and install the bats package ────────────────────────
-# We do a regular install (not -e) since there is no live source
-# tree in the container.  Rebuild the image to pick up code changes.
+# ── Copy source tree ─────────────────────────────────────────
+# Skip `pip install` to avoid setup.cfg src/ layout issues.
+# Put src/ on PYTHONPATH so all modules are importable directly.
+# Rebuild the image to pick up code changes.
 WORKDIR /workspace
 COPY . /workspace/bats
-RUN pip install --no-cache-dir /workspace/bats
+ENV PYTHONPATH="/workspace/bats/src"
 
 # ── Runtime defaults ─────────────────────────────────────────
 # Overridden at docker run time via --env or direct args to entrypoint.
