@@ -4,8 +4,9 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-11 10:45:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-11 10:47:20
+# @Last Modified time: 2026-04-11 14:56:56
 # #############################################
+
 
 """
 Builder for the bat chirp metadata SQLite database.
@@ -19,9 +20,9 @@ chirp_info   : one row per chirp; links PNG, parquet row, species
 Usage
 -----
 python bat_db_builder.py \\
-    --parquet /qnap/bats/all_data/bats_2026-04-08T23_40_36.627058.parquet \\
-    --manifest /qnap/bats/jr_pipeline/data/bat_crops/manifest.csv \\
-    --db /qnap/bats/chirp_meta.db \\
+    --measures-file /qnap/bats/all_data/bats_2026-04-08T23_40_36.627058.parquet \\
+    --spectros-manifest /qnap/bats/jr_pipeline/data/bat_crops/manifest.csv \\
+    --db-out-file /qnap/bats/chirp_meta.db \\
     [--on-inconsistency {warn|strict}]
 """
 
@@ -33,6 +34,8 @@ from pathlib import Path
 
 import pandas as pd
 from logging_service import LoggingService
+
+from sonobat_utils.utils import Utils
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +144,7 @@ class BatDbBuilder:
             ``file_id``, ``chirp_idx``, ``TimeInFile``,
             ``rec_site``, ``species``, ``confidence``.
         """
-        df = pd.read_parquet(self.parquet_path)
+        df = Utils.read_df_file(self.parquet_path)
         required = {"file_id", "chirp_idx", "TimeInFile", "rec_site",
                     "species", "confidence"}
         missing = required - set(df.columns)
@@ -451,15 +454,18 @@ def main() -> None:
         description="Build the bat chirp metadata SQLite database."
     )
     parser.add_argument(
-        "--parquet", required=True,
+        "--measures-file", required=True,
+        dest="measures_file",
         help="Path to the measures parquet file.",
     )
     parser.add_argument(
-        "--manifest", required=True,
-        help="Path to the manifest CSV file.",
+        "--spectros-manifest", required=True,
+        dest="spectros_manifest",
+        help="Path to the spectrogram manifest CSV file.",
     )
     parser.add_argument(
-        "--db", required=True,
+        "--db-out-file", required=True,
+        dest="db_out_file",
         help="Destination path for the SQLite database.",
     )
     parser.add_argument(
@@ -468,7 +474,7 @@ def main() -> None:
         default="warn",
         dest="on_inconsistency",
         help=(
-            "How to handle data mismatches between parquet and manifest. "
+            "How to handle data mismatches between measures and manifest. "
             "'warn' logs and continues; 'strict' aborts immediately. "
             "Default: warn."
         ),
@@ -476,9 +482,9 @@ def main() -> None:
     args = parser.parse_args()
 
     builder = BatDbBuilder(
-        parquet_path=args.parquet,
-        manifest_path=args.manifest,
-        db_path=args.db,
+        parquet_path=args.measures_file,
+        manifest_path=args.spectros_manifest,
+        db_path=args.db_out_file,
         on_inconsistency=args.on_inconsistency,
     )
     builder.build()
