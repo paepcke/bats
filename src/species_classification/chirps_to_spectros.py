@@ -4,8 +4,13 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-08 19:09:29
+# @Last Modified time: 2026-04-12 08:55:16
 # **********************************************************
+
+# NOTE: we made some changes to this code after running it
+#       to produce 12M .png files, which took a long time. 
+#       So, when running again down the line, there *might*
+#       be issues.
 
 """
 Extract per-chirp spectrogram crops from original full-length bat recordings
@@ -460,18 +465,14 @@ class ChirpSpectroExtractor:
         _THRIFT_LIMIT = 1_000_000_000
 
         if self.data_path.suffix in ('.parquet', '.pq'):
-            # Open once with raised thrift limits; reuse the same handle for
-            # both data and metadata so we never hit the limit a second time.
             _pf  = _pq.ParquetFile(
                 self.data_path,
                 thrift_string_size_limit    = _THRIFT_LIMIT,
                 thrift_container_size_limit = _THRIFT_LIMIT,
             )
-            df        = _pf.read().to_pandas()
-            _meta_raw = _pf.schema_arrow.metadata or {}
+            df = _pf.read().to_pandas()
         else:
-            df        = Utils.read_df_file(self.data_path)
-            _meta_raw = {}
+            df = Utils.read_df_file(self.data_path)
 
         # Legacy feather compatibility: map species_prob → confidence.
         if 'species_prob' in df.columns and 'confidence' not in df.columns:
@@ -483,8 +484,14 @@ class ChirpSpectroExtractor:
         # sb_measures_postprocessing._collect_all_raw path normalization).
         # Legacy feather already carries a Filename column directly.
         if 'Filename' not in df.columns:
+            # Re-read schema only (no data) to extract metadata efficiently.
+            _schema   = _pq.read_schema(
+                self.data_path,
+                memory_map=True,
+            )
+            _meta_raw = _schema.metadata or {}
             _meta_key = b'bats_metadata'
-            if not _meta_raw or _meta_key not in _meta_raw:
+            if _meta_key not in _meta_raw:
                 raise KeyError(
                     f'{self.data_path} has no bats_metadata — '
                     f'was it written by BatsData.to_parquet()?'
@@ -557,11 +564,11 @@ class ChirpSpectroExtractor:
             )
 
         needed_cols = ['Filename', 'TimeInFile', 'TimeInOrigRecording',
-                       'species', 'confidence', 'file_id', 'fragment_wav',
-                       'matched_wav', 'match_quality']
+                       'species', 'confidence', 'file_id', 'chirp_idx',
+                       'fragment_wav', 'matched_wav', 'match_quality']
         # Optional columns absent from parquet — fill with NA so downstream
         # manifest writing works without branching.
-        for opt in ('matched_wav', 'match_quality', 'TimeInOrigRecording'):
+        for opt in ('matched_wav', 'match_quality', 'TimeInOrigRecording', 'chirp_idx'):
             if opt not in merged.columns:
                 merged[opt] = pd.NA
         available = [c for c in needed_cols if c in merged.columns]
@@ -729,7 +736,7 @@ class ChirpSpectroExtractor:
         # which would mix PNG references across two different runs.
         _MANIFEST_FIELDS = [
             'crop_path', 'partition', 'species', 'confidence',
-            'file_id', 'Filename',
+            'file_id', 'chirp_idx', 'harmonic_idx', 'Filename',
             'time_in_orig_rec_ms', 'time_in_file_ms', 'match_quality',
             'matched_wav',
         ]
@@ -750,6 +757,30 @@ class ChirpSpectroExtractor:
         n_written = 0
         n_failed  = 0
         partition_counts: dict[str, int] = dict(partition_counters)
+        # harmonic_idx: counts how many crops have already been written for
+        # each (file_id, chirp_idx) pair.  First write → 0, second → 1, etc.
+        # Populated from the existing manifest on incremental runs so that
+        # new harmonics continue the correct index rather than restarting at 0.
+        harmonic_counts: dict[tuple, int] = {}
+        if done_set and manifest_path.exists():
+            try:
+                _hdf = pd.read_csv(
+                    manifest_path,
+                    usecols=['file_id', 'chirp_idx', 'harmonic_idx'],
+                    low_memory=False,
+                )
+                for _, r in _hdf[
+                    (_hdf['file_id'] >= 0) & (_hdf['chirp_idx'] >= 0)
+                ].iterrows():
+                    key = (int(r['file_id']), int(r['chirp_idx']))
+                    harmonic_counts[key] = max(
+                        harmonic_counts.get(key, -1),
+                        int(r.get('harmonic_idx', 0))
+                    )
+                # Convert max-seen to next-to-assign (max + 1)
+                harmonic_counts = {k: v + 1 for k, v in harmonic_counts.items()}
+            except Exception:
+                pass
 
         rows = work_df.to_dict('records')
         total = len(rows)
@@ -799,12 +830,20 @@ class ChirpSpectroExtractor:
                         out_path = self.out_dir / part / fname
                         try:
                             Image.fromarray(img_array, mode='L').save(out_path)
+                            fid      = row.get('file_id', -1)
+                            cidx     = row.get('chirp_idx', -1)
+                            hkey     = (int(fid), int(cidx)) if fid != -1 and cidx != -1 else None
+                            hidx     = harmonic_counts.get(hkey, 0) if hkey else -1
+                            if hkey:
+                                harmonic_counts[hkey] = hidx + 1
                             manifest_writer.writerow({
                                 'crop_path'          : str(out_path),
                                 'partition'          : part,
                                 'species'            : sp,
                                 'confidence'         : row.get('confidence', ''),
-                                'file_id'            : row.get('file_id', ''),
+                                'file_id'            : fid,
+                                'chirp_idx'          : cidx,
+                                'harmonic_idx'       : hidx,
                                 'Filename'           : row['Filename'],
                                 'time_in_orig_rec_ms': row.get('TimeInOrigRecording', ''),
                                 'time_in_file_ms'    : row['TimeInFile'],
