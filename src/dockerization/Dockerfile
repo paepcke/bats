@@ -68,7 +68,7 @@ ENV WORKERS=8
 ENV NPROC_PER_NODE=1
 
 # entrypoint.sh handles both single-GPU and multi-GPU launch.
-COPY docker/entrypoint.sh /entrypoint.sh
+COPY src/dockerization/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
