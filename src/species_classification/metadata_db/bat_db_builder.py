@@ -4,9 +4,8 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-11 10:45:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-11 14:56:56
+# @Last Modified time: 2026-04-11 20:00:49
 # #############################################
-
 
 """
 Builder for the bat chirp metadata SQLite database.
@@ -50,7 +49,7 @@ CREATE TABLE IF NOT EXISTS png_dirs (
 
 CREATE TABLE IF NOT EXISTS recordings (
     file_id    INTEGER PRIMARY KEY,
-    filename   TEXT NOT NULL,
+    filename   TEXT,
     rec_site   TEXT,
     rec_period TEXT
 );
@@ -120,9 +119,6 @@ class BatDbBuilder:
         self.log.info("Loading manifest CSV ...")
         manifest = self._load_manifest()
 
-        self.log.info("Assigning chirp_idx to manifest rows ...")
-        manifest = self._assign_chirp_idx(manifest)
-
         self.log.info("Merging and validating ...")
         merged = self._merge_and_validate(measures, manifest)
 
@@ -162,38 +158,20 @@ class BatDbBuilder:
         Load the manifest CSV and normalise columns.
 
         :return: DataFrame with at minimum columns
-            ``crop_path``, ``file_id``, ``time_in_file_ms``,
-            ``species``, ``confidence``, ``partition``.
+            ``crop_path``, ``file_id``, ``chirp_idx``,
+            ``time_in_file_ms``, ``species``, ``confidence``,
+            ``partition``.
         """
-        df = pd.read_csv(self.manifest_path)
-        required = {"crop_path", "file_id", "time_in_file_ms",
+        df = pd.read_csv(self.manifest_path, low_memory=False)
+        required = {"crop_path", "file_id", "chirp_idx", "time_in_file_ms",
                     "species", "confidence", "partition"}
         missing = required - set(df.columns)
         if missing:
             self.log.err(f"Manifest missing columns: {missing}")
             sys.exit(1)
         df["time_in_file_ms"] = df["time_in_file_ms"].astype(int)
+        df["chirp_idx"] = df["chirp_idx"].astype(int)
         return df
-
-    # ------------------------------------------------------------------
-    # chirp_idx assignment for manifest
-    # ------------------------------------------------------------------
-
-    def _assign_chirp_idx(self, manifest: pd.DataFrame) -> pd.DataFrame:
-        """
-        Derive ``chirp_idx`` for each manifest row by sorting on
-        ``time_in_file_ms`` within each ``file_id`` group (0-based rank).
-
-        :param manifest: Raw manifest DataFrame.
-        :return: Manifest with new ``chirp_idx`` integer column.
-        """
-        manifest = manifest.sort_values(
-            ["file_id", "time_in_file_ms"]
-        ).copy()
-        manifest["chirp_idx"] = (
-            manifest.groupby("file_id").cumcount()
-        )
-        return manifest
 
     # ------------------------------------------------------------------
     # Merge and validate
@@ -209,8 +187,11 @@ class BatDbBuilder:
         check that ``species``, ``confidence``, and ``TimeInFile`` /
         ``time_in_file_ms`` agree between sources.
 
+        ``chirp_idx`` is taken directly from both files; no derivation
+        is performed here.
+
         :param measures: Loaded parquet DataFrame.
-        :param manifest: Manifest DataFrame with ``chirp_idx`` assigned.
+        :param manifest: Manifest DataFrame with pre-assigned ``chirp_idx``.
         :return: Merged DataFrame with columns needed for ``chirp_info``.
         """
         left = measures[
