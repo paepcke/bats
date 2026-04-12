@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-08 16:39:21
+# @Last Modified time: 2026-04-11 18:02:58
 #
 # **********************************************************
 
@@ -391,15 +391,9 @@ class SonoBatPostProcessor:
         species DataFrames from each.  Both DataFrames retain their 'Path'
         column (not yet encoded) and gain a 'rec_site' Categorical column.
 
-        The 'Path' column in both DataFrames is normalized to the bare
-        filename stem (no directory, no extension) so that Windows-style
-        paths from the SonoBat VM (e.g. ``Y:\\batch4\\...\\lake2_-..._2secs.wav``)
-        match the Linux paths in the CumulativeParameters files.  The stem
-        is the natural unique key used as 'Filename' throughout the pipeline.
-
         'chirp_idx' is added to the measures DataFrame: a 0-based integer
         giving the position of each chirp within its recording, derived by
-        sorting on TimeInFile within each unique Path stem.
+        sorting on TimeInFile within each unique Path value.
 
         :param root_dirs: Directories to search, one per site.
         :param rec_sites: Site label for each directory.
@@ -447,33 +441,25 @@ class SonoBatPostProcessor:
         df_measures = pd.concat(measures_batches, ignore_index=True)
         df_species  = pd.concat(species_batches,  ignore_index=True)
 
-        # Normalize the 'Path' column in both DataFrames to the bare filename
-        # stem (no directory, no extension).  The CumulativeSonoBatch files
-        # written by SonoBat on the Windows VMs carry Windows-style paths
-        # (e.g. "Y:\batch4\chopped\...\lake2_-20221226_204358_2secs.wav"),
-        # while the CumulativeParameters files written on Linux carry Linux
-        # paths.  Reducing both to the stem makes the PathEncoder join work
-        # regardless of which machine produced the file.  The stem is already
-        # the natural unique key used as 'Filename' throughout the pipeline.
-        def _to_stem(path_series: pd.Series) -> pd.Series:
-            # Handle both forward-slash and backslash separators.
-            return (
-                path_series
-                .astype(str)
-                .str.replace('\\', '/', regex=False)   # normalise Windows seps
-                .apply(lambda p: Path(p).stem)
-            )
-
-        n_win = df_species['Path'].astype(str).str.contains('\\\\', regex=False).sum()
-        if n_win:
+        # Deduplicate measures rows: the CumulativeParameters files accumulate
+        # across multiple SonoBat runs, so the same (Path, TimeInFile, measures)
+        # row appears more than once when overlapping root_dirs are passed.
+        # Drop exact duplicates before assigning chirp_idx so that
+        # (file_id, chirp_idx) is a true unique key in the final parquet.
+        n_before = len(df_measures)
+        df_measures = df_measures.drop_duplicates(
+            subset=['Path'] + SonoBatPostProcessor.RELEVANT_MEASURES_COLS
+        )
+        n_dropped = n_before - len(df_measures)
+        if n_dropped:
             self.log.info(
-                f"Normalizing {n_win:,} Windows-style paths in species data to stems."
+                f"Dropped {n_dropped:,} duplicate measures rows "
+                f"(same Path+measures from overlapping Cumulative files); "
+                f"{len(df_measures):,} rows remain."
             )
 
-        df_measures['Path'] = _to_stem(df_measures['Path'])
-        df_species['Path']  = _to_stem(df_species['Path'])
-
-        # chirp_idx: 0-based rank by TimeInFile within each recording (stem)
+        # chirp_idx: 0-based rank by TimeInFile within each recording (Path).
+        # After deduplication (file_id, chirp_idx) is a unique key in the parquet.
         df_measures['chirp_idx'] = (
             df_measures
             .groupby('Path', sort=False)['TimeInFile']
@@ -556,25 +542,6 @@ class SonoBatPostProcessor:
             for fid in sorted(unmatched):
                 path = self.path_encoder.id_to_path.get(fid, '<unknown>')
                 self.log.warn(f"  file_id={fid}  path={path}")
-
-        # Deduplicate species rows: the Cumulative files accumulate across
-        # multiple SonoBat runs, so the same Path (file_id) can appear more
-        # than once when multiple batches are passed as root_dirs.  Keep the
-        # row with the highest confidence so the left-join below is 1:1 on
-        # file_id and produces no duplicate chirp rows.
-        n_species_before = len(df_species)
-        df_species = (
-            df_species
-            .sort_values('confidence', ascending=False)
-            .drop_duplicates(subset='file_id', keep='first')
-        )
-        n_dropped = n_species_before - len(df_species)
-        if n_dropped:
-            self.log.info(
-                f"Dropped {n_dropped:,} duplicate species rows "
-                f"(same file_id from overlapping Cumulative files); "
-                f"{len(df_species):,} unique file_ids remain."
-            )
 
         # Left-join: every chirp row gets species/confidence if available
         df_merged = df_measures.merge(
@@ -739,9 +706,6 @@ class SonoBatPostProcessor:
         prob[slash_mask] = slash_probs
 
         # --- Vectorized confidence formula ---
-        # consensus = scaled_Maj# / scaled_Accp# (both independently
-        # percentile-scaled, so the ratio can exceed 1.0 in either
-        # direction; clip below handles that).
         consensus = df['Maj_scaled'] / df['Accp_scaled']
         df['confidence'] = prob * (
             cls.WEIGHT_ON_CONSENSUS * consensus
@@ -750,11 +714,6 @@ class SonoBatPostProcessor:
 
         # NaN rows get 0.0 (already 0.0 from prob init, but be explicit)
         df.loc[nan_mask, 'confidence'] = 0.0
-
-        # Clamp to [0, 1]: values above 1 arise when independent
-        # QuantileTransformer scaling pushes Maj_scaled > Accp_scaled,
-        # or when slash-separated Prob components sum above 1.0.
-        df['confidence'] = df['confidence'].clip(0.0, 1.0)
 
         return df
 
