@@ -5,9 +5,10 @@
  # @Date:   2026-04-11 19:04:34
  # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/rebuild_manifest_ids.py
  # @Last Modified by:   Andreas Paepcke
- # @Last Modified time: 2026-04-11 19:09:44
+ # @Last Modified time: 2026-04-11 19:24:49
  #
  # **********************************************************
+
 """
 rebuild_manifest_ids.py
 =======================
@@ -98,9 +99,17 @@ class ManifestRebuilder:
             int(k): v
             for k, v in json.loads(meta_raw[meta_key].decode())['file_map'].items()
         }
-        # Invert: stem → file_id
-        stem_to_fid: dict[str, int] = {v: k for k, v in file_map.items()}
+        # Invert: stem → file_id.
+        # file_map values may be full paths (e.g. /qnap/.../barn-20200228_180314_2secs.wav)
+        # or bare stems, depending on which version of sb_measures_postprocessing.py
+        # produced the parquet.  Always reduce to stem for a consistent join key.
+        stem_to_fid: dict[str, int] = {
+            Path(v).stem: k for k, v in file_map.items()
+        }
         log.info(f'  {len(stem_to_fid):,} stems in parquet file_map')
+        # Log a sample so format can be verified
+        sample = list(stem_to_fid.items())[:3]
+        log.info(f'  Sample file_map stems: {sample}')
 
         # ── Step 2: load parquet (file_id, TimeInFile, chirp_idx) ──────
         log.info('Reading parquet (file_id, TimeInFile, chirp_idx) ...')
