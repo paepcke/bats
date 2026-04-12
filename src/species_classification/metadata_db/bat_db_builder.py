@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-11 10:45:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-12 09:32:13
+# @Last Modified time: 2026-04-12 09:46:23
 # #############################################
 
 """
@@ -481,15 +481,15 @@ class BatDbBuilder:
         :param merged: Merged and validated DataFrame.
         """
         merged = merged.copy()
-        merged["_png_dir"]  = merged["crop_path"].apply(
+        merged["png_dir"]  = merged["crop_path"].apply(
             lambda p: str(Path(p).parent)
         )
-        merged["_png_file"] = merged["crop_path"].apply(
+        merged["png_file"] = merged["crop_path"].apply(
             lambda p: Path(p).name
         )
 
         # --- png_dirs ---
-        unique_dirs = sorted(merged["_png_dir"].unique())
+        unique_dirs = sorted(merged["png_dir"].unique())
         con.executemany(
             "INSERT INTO png_dirs (dir_path) VALUES (?)",
             [(d,) for d in unique_dirs],
@@ -506,8 +506,8 @@ class BatDbBuilder:
                 int(r.file_id),
                 int(r.chirp_idx),
                 int(r.harmonic_idx),
-                dir_id_map[r._png_dir],
-                r._png_file,
+                dir_id_map[r.png_dir],
+                r.png_file,
             )
             for r in merged.itertuples(index=False)
         ]
