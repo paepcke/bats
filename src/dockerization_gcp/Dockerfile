@@ -1,7 +1,9 @@
 # ============================================================
 # Bat species CNN training image
-# Base: CUDA 12.1 + cuDNN 8 on Ubuntu 22.04
+# Base: CUDA 12.1 + cuDNN 8 on Ubuntu 24.04
 # Compatible with PyTorch 2.x cu121 wheels and NVIDIA A100/L4
+#
+# Ubuntu 24.04 ships Python 3.12 natively — no PPA needed.
 #
 # Data is supplied at runtime via volume mounts:
 #   /data/crops/        untarred PNG subdirectories (read-only)
@@ -12,35 +14,35 @@
 # not inside the container.
 # ============================================================
 
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu24.04
 
 # ── System packages ──────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.11 \
-        python3.11-dev \
+        python3.12 \
+        python3.12-dev \
+        python3.12-venv \
         python3-pip \
-        python3.11-venv \
+        curl \
         git \
         wget \
-        curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Make python3.11 the default python/pip
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
- && update-alternatives --install /usr/bin/pip    pip    /usr/bin/pip3      1
+# Make python3.12 the default python/pip
+RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.12 1 \
+ && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
+ && update-alternatives --install /usr/bin/pip     pip     /usr/bin/pip3       1
 
 # ── Python dependencies ───────────────────────────────────────
 # Install PyTorch first (large wheel, cached separately from the rest).
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --break-system-packages \
         torch==2.3.0+cu121 \
         torchvision==0.18.0+cu121 \
         torchaudio==2.3.0+cu121 \
         --extra-index-url https://download.pytorch.org/whl/cu121
 
 # Install everything else the training script needs.
-# Versions are pinned to match the bats conda environment.
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --break-system-packages \
         numpy>=2.0.0 \
         pandas>=2.2.2 \
         scikit-learn>=1.5.0 \
@@ -52,14 +54,12 @@ RUN pip install --no-cache-dir \
         pyarrow>=22.0.0
 
 # ── Copy and install the bats package ────────────────────────
-# We do a regular install (not -e) since there is no live source
-# tree in the container.  Rebuild the image to pick up code changes.
+# Build context is the repo root; pyproject.toml uses src layout.
 WORKDIR /workspace
 COPY . /workspace/bats
-RUN pip install --no-cache-dir /workspace/bats
+RUN pip install --no-cache-dir --break-system-packages /workspace/bats
 
 # ── Runtime defaults ─────────────────────────────────────────
-# Overridden at docker run time via --env or direct args to entrypoint.
 ENV MANIFEST_CSV=/data/manifest.csv
 ENV OUT_DIR=/output
 ENV EPOCHS=40
