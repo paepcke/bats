@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-11 10:45:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-12 09:46:23
+# @Last Modified time: 2026-04-13 16:32:41
 # #############################################
 
 """
@@ -487,6 +487,23 @@ class BatDbBuilder:
         merged["png_file"] = merged["crop_path"].apply(
             lambda p: Path(p).name
         )
+
+        # Defensive check: catch any (png_dir, png_file) duplicates
+        # introduced by the merge fanout before they hit the UNIQUE constraint.
+        dup_mask = merged.duplicated(subset=["png_dir", "png_file"], keep=False)
+        if dup_mask.any():
+            n_dups = dup_mask.sum()
+            self.log.warn(
+                f"{n_dups:,} duplicate (png_dir, png_file) pairs in merged "
+                f"DataFrame — dropping all but first occurrence before insert."
+            )
+            sample = merged[dup_mask][
+                ["file_id", "chirp_idx", "harmonic_idx", "png_dir", "png_file"]
+            ].head(10)
+            self.log.warn(f"Sample duplicates:\n{sample.to_string(index=False)}")
+            merged = merged.drop_duplicates(
+                subset=["png_dir", "png_file"], keep="first"
+            )
 
         # --- png_dirs ---
         unique_dirs = sorted(merged["png_dir"].unique())
