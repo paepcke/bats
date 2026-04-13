@@ -1,0 +1,63 @@
+# .dockerignore
+# Exclude everything that should not be baked into the training image.
+
+# Data — never bake training data into the image
+*.png
+*.wav
+*.feather
+*.parquet
+*.csv
+*.txt
+data/
+qnap/
+
+# Model outputs and checkpoints
+*.pt
+*.pth
+*.pkl
+*.joblib
+models/
+output/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Conda / virtual environments
+.conda/
+envs/
+venv/
+.venv/
+
+# IDE and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Tests (not needed at runtime)
+*/test/
+tests/
+*_test.py
+test_*.py
+
+# Notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
