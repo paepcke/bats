@@ -2,7 +2,9 @@
 # @Author: Andreas Paepcke
 # @Date:    2026-02-25 09:04:05
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-25 12:33:49
+# @Last Modified time: 2026-03-13 10:06:38
+
+# Determine within/outside idiom chirp frequencies
 
 # Initialize force variable
 FORCE=""

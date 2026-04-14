@@ -59,7 +59,7 @@ Typical usage
 
     retained = WavScrubber(wav_paths).run().retained
 
-    chopper = WavChopper(retained, out_dir='/data/chunks')
+    chopper = WavChopper(retained, out_dir='/data2/chunks')
     result  = chopper.run()
 
     print(result.summary())

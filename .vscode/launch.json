@@ -289,6 +289,20 @@
             "justMyCode": false
         },
         {
+            "name": "Python: Performer tests",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/chirp_gen/performer.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${workspaceFolder}/src/chirp_gen/test/data/lake2_-20220408_213738_2secs.wav",
+                "--print-header"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        },
+        {
             "name": "Python: Chirp generation",
             "type": "debugpy",
             "request": "launch",
@@ -347,6 +361,99 @@
             ],
             "cwd": "${workspaceFolder}/src",
             "justMyCode": false
+        },
+        {
+            "name": "Python: Combine SonoBat SonoBatch files",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/sono_batch_processing.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${env:HOME}/tmp/20220907_2secs_SonoBatch_v30.2.20250912.txt",
+                "--out-csv", "${env:HOME}/tmp/sono_batch_combination.csv"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false
+        },
+        {
+            "name": "Python: filtered pager for dataframe",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/fmore_measures.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${env:HOME}/tmp/sonobat3_2_species_ids.feather",
+                "--filter", "species == 'Tabr'",
+                "--columns", "Filename", "species"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false,
+        },
+        {
+            "name": "Python: report species distribution and confusion explanations",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/species_distribution_reporting.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "${env:HOME}/tmp/sonobat3_2_species_ids.feather",
+                "--confusion-matrix-csv", "${env:HOME}/VSCodeWorkspaces/bats/tmp/random_forest_results/confusion_matrix.csv",
+                "--species-pairs", "Myca", "Myyu", "Myth", "Myev",
+                "--out-dir", "${env:HOME}/VSCodeWorkspaces/bats/tmp/measures_distrib_exploration",
+                "--action", "univariate-overlap", "multivariate-overlap", "umap"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false,
+            "env": {
+                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "1.5" 
+            }            
+        },
+        {
+            "name": "Python: gather SonoBat outputs into clean df",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/sb_measures_postprocessing.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "--dest-dir", "${workspaceFolder}/src/sonobat_utils/test/tst_results",
+                "--root-dirs", 
+                   "${workspaceFolder}/src/sonobat_utils/test/data/barn",
+                   "${workspaceFolder}/src/sonobat_utils/test/data/lake2",
+                "--rec-sites", "barn", "lake2"
+            ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false,
+            "env": {
+                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "1.5" 
+            }            
+        },
+        {
+            "name": "Python: normalize SonoBat paths prior to pipline",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/sonobat_utils/normalize_chop_stems.py",
+            "subProcess": false,
+            "console": "integratedTerminal",
+            "args": [
+                "--sextus-stems", "/data/win_share/sextus_chops_file_stems.json",
+                "--quintus-stems", "/data/win_share/quintus_chops_file_stems.json",
+                "--win-share", "/data/win_share",
+                "--staging-root", "/data/BatsTmp",
+                "--dest-parent", "/qnap/bats/",
+                "--site", "barn",
+                "--sb-version", "3_2",
+                "--transfer-list", "/data/win_share/confirmed_safe_to_transfer.txt",
+                "--dry-run"
+                ],
+            "cwd": "${workspaceFolder}/src",
+            "justMyCode": false,
+            "env": {
+                "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "1.5" 
+            }            
         }
 
     ],

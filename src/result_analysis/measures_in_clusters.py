@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-19 18:33:23
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-25 12:44:41
+# @Last Modified time: 2026-03-13 16:07:50
 """
 Given each measure's normality in each cluster in file bats_measures_normality_all.csv,
 and the all-measures cluster assignments, examine whether any values are particularly important
@@ -125,7 +125,7 @@ class DunnCorrectionMethods(StrEnum):
     FDR_TSBH =       'fdr_tsbh'
     FDR_TSBKY =      'fdr_tsbky'
 
-RELEVANT_COLS = [
+    RELEVANT_COLS = [
     'TimeInFile', 'PrecedingIntrvl', 'HiFreq', 'Bndwdth', 'FreqMaxPwr',
     'PrcntMaxAmpDur', 'FreqKnee', 'PrcntKneeDur', 'StartF', 'UpprKnFreq',
     'HiFtoUpprKnAmp', 'HiFtoKnAmp', 'HiFtoFcAmp', 'UpprKnToKnAmp',

@@ -2,7 +2,9 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-02-23 12:22:14
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-02-23 12:47:38
+# @Last Modified time: 2026-03-13 10:08:22
+
+# Detect outliers in measurements.
 
 import sys
 

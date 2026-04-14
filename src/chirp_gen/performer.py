@@ -5,7 +5,7 @@
 # @Date:   2026-03-07 16:06:48
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/chirp_gen/performer.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-08 11:46:35
+# @Last Modified time: 2026-03-16 08:53:41
 #
 # **********************************************************
 
@@ -20,7 +20,8 @@ Usage
     # Play a .wav file (real-time or time-expanded):
     python perform.py chirp.wav
 
-    # Play a .wav file and show its spectrogram (blocks until window is closed):
+    # Play a .wav file and show its spectrogram (blocks until window is closed),
+    # and print the .wav header info to the console:
     python perform.py -s chirp.wav
 
     # Display a spectrogram PNG:
@@ -43,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import pprint
 import shutil
 import subprocess
 import sys
@@ -54,6 +56,9 @@ import numpy as np
 import scipy.io.wavfile as wavfile
 import scipy.signal as signal
 import matplotlib.pyplot as plt
+
+import soundfile as sf
+from guano import GuanoFile
 
 from chirp_gen.chirp_generation import ChirpGenerator, ChirpMeasureError
 
@@ -120,16 +125,19 @@ class Performer:
         infile: Path,
         outdir: Optional[Path] = None,
         show_spectrogram: bool = False,
+        print_header: bool = False,
     ) -> None:
         """
         :param infile:           Path to a ``.wav``, ``.png``, ``.csv``, ``.tsv``,
                                  or ``.feather`` file.
         :param outdir:           Optional directory for permanent output files.
         :param show_spectrogram: Show a spectrogram when playing a ``.wav`` file.
+        :param print_header: Pretty-print .wav file header(s)
         """
         self.infile           = infile
         self.outdir           = outdir
         self.show_spectrogram = show_spectrogram
+        self.print_header     = print_header
 
     # ------------------------------------------------------------------ #
     #  Entry point                                                         #
@@ -143,6 +151,8 @@ class Performer:
         if suffix == '.wav':
             if self.show_spectrogram:
                 self._show_wav_spectrogram(self.infile)
+            elif self.print_header:
+                self.pretty_print_header(self.infile)
             self.play_wav(self.infile)
         elif suffix == '.png':
             self.show_png(self.infile)
@@ -152,7 +162,7 @@ class Performer:
             self._perform_df()
 
     # ------------------------------------------------------------------ #
-    #  Audio                                                               #
+    #  Audio                                                             #
     # ------------------------------------------------------------------ #
 
     def play_wav(self, path: Path) -> None:
@@ -302,6 +312,49 @@ class Performer:
         print(f"Spectrogram for {path.name} — close window to continue.")
         plt.show(block=True)
 
+    def pretty_print_header(self, infile: str | Path):
+
+        print(f"\n{'='*60}")
+        print(f"ANALYZING: {infile}")
+        print(f"{'='*60}")
+
+        # --- 1. Regular .WAV Header (via soundfile) ---
+        print("\n[--- Standard WAV Header ---]")
+        try:
+            info = sf.info(infile)
+            wav_data = {
+                "Sample Rate": f"{info.samplerate} Hz",
+                "Channels": info.channels,
+                "Duration": f"{info.duration:.3f} seconds",
+                "Format": info.format,
+                "Subtype": info.subtype,
+                "Frames": info.frames
+            }
+            pprint.pprint(wav_data, indent=4, width=80)
+        except Exception as e:
+            print(f"Error reading WAV header: {e}")
+
+        # --- 2. GUANO Metadata (via guano-py) ---
+        print("\n[--- GUANO Metadata ---]")
+        try:
+            g_file = GuanoFile(str(infile))
+            
+            if not g_file:
+                print("No GUANO metadata found in this file.")
+            else:
+                # g_file behaves like a dictionary of all found tags
+                # We convert to a dict for pretty printing
+                guano_data = g_file.__dict__
+                
+                if not guano_data:
+                    print("GUANO chunk present but contains no tags.")
+                else:
+                    pprint.pprint(guano_data, indent=4, width=80)
+                    
+        except Exception as e:
+            print(f"Error reading GUANO metadata: {e}")        
+        
+
     # ------------------------------------------------------------------ #
     #  Measures-file pager                                                 #
     # ------------------------------------------------------------------ #
@@ -438,7 +491,15 @@ def parse_args():
         help=(
             "show an interactive spectrogram before playing the audio\n"
             "(only valid with a .wav input file)"
-        ),
+        )
+    )
+    parser.add_argument(
+        '-p', '--print-header',
+        action='store_true',
+        default=False,
+        help=(
+            "print the header(s) of a .wav file"
+        )
     )
 
     args   = parser.parse_args()
@@ -454,9 +515,9 @@ def parse_args():
             f"Expected one of: {', '.join(sorted(allowed))}"
         )
 
-    if args.spectrogram and infile.suffix.lower() != '.wav':
+    if (args.spectrogram or args.print_header) and infile.suffix.lower() != '.wav':
         parser.error(
-            f"-s/--spectrogram is only valid with a .wav input file, "
+            f"-s/--spectrogram and -p/--print-header are only valid with a .wav input file, "
             f"not '{infile.suffix}'"
         )
 
@@ -468,16 +529,20 @@ def parse_args():
         except Exception as exc:
             parser.error(f"Could not create output directory '{args.outdir}': {exc}")
 
-    return infile, outdir, args.spectrogram
+    return infile, outdir, args.spectrogram, args.print_header
 
 
 def main() -> None:
     """
     Instantiate :class:`Performer` and call :meth:`~Performer.run`.
     """
-    infile, outdir, show_spectrogram = parse_args()
+    infile, outdir, show_spectrogram, print_header = parse_args()
     try:
-        Performer(infile, outdir=outdir, show_spectrogram=show_spectrogram).run()
+        Performer(infile, 
+                  outdir=outdir, 
+                  show_spectrogram=show_spectrogram,
+                  print_header=print_header
+                  ).run()
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(0)
