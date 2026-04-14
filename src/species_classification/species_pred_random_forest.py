@@ -5,7 +5,7 @@
 # @Date:   2026-03-13 15:10:24
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/species_pred_random_forest.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-14 13:29:36
+# @Last Modified time: 2026-04-14 13:36:24
 #
 # **********************************************************
 
@@ -27,7 +27,7 @@ A chirp-level Parquet file produced by ``sb_measures_postprocessing.py``
 * ``rec_site``   : recording-site Categorical (e.g. ``barn``, ``lake2``)
 * ``TimeInFile`` : chirp onset time within the 2-second fragment (seconds)
 
-The file is read via ``Utils.df_read_file()``, which handles ``.parquet``
+The file is read via ``Utils.read_df_file()``, which handles ``.parquet``
 / ``.pq``, ``.feather``, and ``.csv`` and works around the PyArrow
 thrift-buffer limits that arise with large BatsData parquet files.
 CSV and Feather inputs from the legacy ``sono_batch_processing.py`` pipeline
@@ -235,7 +235,7 @@ class RFTrainer:
     Train a Random Forest species classifier on SonoBat acoustic measures.
 
     :param input_path:        Path to the chirp-level measures file.
-                              Read via ``Utils.df_read_file()``, which accepts
+                              Read via ``Utils.read_df_file()``, which accepts
                               ``.parquet`` / ``.pq`` (primary), ``.feather``,
                               and ``.csv``.
     :param out_dir:           Directory for all output artifacts.
@@ -287,7 +287,7 @@ class RFTrainer:
     def _load_data(self) -> pd.DataFrame:
         """
         Load the chirp-level measures file using
-        :meth:`~sonobat_utils.utils.Utils.df_read_file`, which handles
+        :meth:`~sonobat_utils.utils.Utils.read_df_file`, which handles
         ``.parquet`` / ``.pq``, ``.feather``, and ``.csv`` and works around
         the PyArrow thrift-buffer limits that arise with large BatsData
         parquet files.
@@ -297,7 +297,7 @@ class RFTrainer:
         """
         log.info(f'Loading {self.input_path} ...')
         try:
-            df = Utils.df_read_file(self.input_path)
+            df = Utils.read_df_file(self.input_path)
         except Exception as exc:
             log.warn(f'Cannot read input file {self.input_path}: {exc}')
             sys.exit(1)
@@ -975,7 +975,7 @@ def _parse_args():
         metavar='PATH',
         help=(
             'Chirp-level measures file produced by sb_measures_postprocessing.py.\n'
-            'Read via Utils.df_read_file(); accepts .parquet/.pq (primary),\n'
+            'Read via Utils.read_df_file(); accepts .parquet/.pq (primary),\n'
             '.feather, and .csv (legacy sono_batch_processing.py inputs).'
         ),
     )
