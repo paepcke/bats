@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-14 15:36:51
+# @Last Modified time: 2026-04-14 16:43:12
 #
 # **********************************************************
 
@@ -669,25 +669,34 @@ class SonoBatPostProcessor:
     @classmethod
     def _normalize_composite_species(cls, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Replaces slash-separated species strings in 'SppAccp' with their
-        canonical CompositeSpecies form (alphabetically sorted members),
-        so that 'Lano/Laci' and 'Laci/Lano' both become 'Laci/Lano'.
+        Normalize species strings in the 'SppAccp' column:
 
-        Only the ~14% of rows containing slashes are processed. Since there
-        are only O(10) distinct slash-combinations, CompositeSpecies is
-        constructed exactly once per unique value, and pandas .map() handles
-        the remaining 12K+ row updates in bulk.
+        1. Strip leading and trailing slashes.  SonoBat's Windows VM
+           occasionally emits values like '/Lano' or '/Myca' — a formatting
+           artifact where a leading slash is prepended to an otherwise valid
+           single-species code.  Stripping produces the correct bare code
+           ('Lano', 'Myca') before any further processing.
 
-        :param df: DataFrame with a 'SppAccp' column
-        :return: DataFrame with 'SppAccp' normalized in-place
-        :rtype: pd.DataFrame
+        2. Canonicalize remaining slash-separated composite strings so that
+           member order is always alphabetical: 'Lano/Laci' and 'Laci/Lano'
+           both become 'Laci/Lano'.  Only the subset of rows that still
+           contain a slash after stripping is processed.  Since there are
+           only O(10) distinct combinations, :class:`CompositeSpecies` is
+           constructed once per unique value and pandas ``.map()`` handles
+           the bulk updates.
+
+        :param df: DataFrame with a 'SppAccp' column.
+        :return: DataFrame with 'SppAccp' normalized in-place.
         """
+        # Step 1: strip leading/trailing slashes (Windows VM artifact)
+        df['SppAccp'] = df['SppAccp'].str.strip('/')
+
+        # Step 2: canonicalize true composite strings (internal slashes remain)
         slash_mask = df['SppAccp'].str.contains('/', regex=False, na=False)
-
-        unique_slash = df.loc[slash_mask, 'SppAccp'].unique()  # ~36 values
-        canon_map = {s: str(CompositeSpecies(s)) for s in unique_slash}
-
-        df.loc[slash_mask, 'SppAccp'] = df.loc[slash_mask, 'SppAccp'].map(canon_map)
+        if slash_mask.any():
+            unique_slash = df.loc[slash_mask, 'SppAccp'].unique()
+            canon_map = {s: str(CompositeSpecies(s)) for s in unique_slash}
+            df.loc[slash_mask, 'SppAccp'] = df.loc[slash_mask, 'SppAccp'].map(canon_map)
 
         return df
 
