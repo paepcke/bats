@@ -4,8 +4,9 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-11 10:46:17
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-12 09:32:36
+# @Last Modified time: 2026-04-13 16:55:17
 # #############################################
+
 
 """
 CLI query wrapper for the bat chirp metadata SQLite database.
@@ -50,6 +51,40 @@ Flags
 
 --db PATH
     Path to the SQLite database (required for all queries).
+
+Schema
+------
+png_dirs (
+    dir_id    INTEGER PRIMARY KEY,
+    dir_path  TEXT NOT NULL UNIQUE
+)
+
+recordings (
+    file_id    INTEGER PRIMARY KEY,
+    filename   TEXT,
+    rec_site   TEXT,
+    rec_period TEXT
+)
+
+chirp_info (
+    file_id      INTEGER NOT NULL REFERENCES recordings(file_id),
+    chirp_idx    INTEGER NOT NULL,
+    measures_row INTEGER NOT NULL,     -- 0-based iloc index into chirp measures parquet
+    species      TEXT,
+    confidence   REAL,
+    PRIMARY KEY (file_id, chirp_idx)
+)
+
+chirp_spectrograms (
+    file_id      INTEGER NOT NULL,
+    chirp_idx    INTEGER NOT NULL,
+    harmonic_idx INTEGER NOT NULL,     -- 0 = primary harmonic
+    dir_id       INTEGER NOT NULL REFERENCES png_dirs(dir_id),
+    png_filename TEXT NOT NULL,
+    PRIMARY KEY (file_id, chirp_idx, harmonic_idx),
+    FOREIGN KEY (file_id, chirp_idx) REFERENCES chirp_info(file_id, chirp_idx),
+    UNIQUE (dir_id, png_filename)
+)
 
 Examples
 --------
