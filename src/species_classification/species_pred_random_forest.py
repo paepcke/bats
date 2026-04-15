@@ -5,7 +5,7 @@
 # @Date:   2026-03-13 15:10:24
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/species_pred_random_forest.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-11 07:34:04
+# @Last Modified time: 2026-04-15 12:49:42
 #
 # **********************************************************
 
@@ -42,7 +42,7 @@ partition receives a proportional share of every species.
 
 Class Imbalance
 ---------------
-``class_weight='balanced'`` is passed to the Random Forest, causing each
+``class_weight='balanced_subsample'`` is passed to the Random Forest, causing each
 tree to weight each sample inversely proportional to its class frequency.
 This handles the extreme imbalance (Myca ~66%, Myyu ~22%) without
 discarding data.
@@ -651,7 +651,7 @@ class RFTrainer:
         1. Load data.
         2. Filter labels and apply species count threshold.
         3. Split by file_id (stratified by modal species).
-        4. Train Random Forest with ``class_weight='balanced'``.
+        4. Train Random Forest with ``class_weight='balanced_subsample'``.
         5. Evaluate on val and test sets.
         6. Write all output artifacts.
 
@@ -688,6 +688,18 @@ class RFTrainer:
             f'{len(labeled):,} labeled rows '
             f'({n_chirps_total - len(labeled):,} unlabeled dropped)'
         )
+
+        # Exclude composite species (slash-separated uncertain IDs such as
+        # 'Myca/Myyu').  These are ambiguous identifications and must not
+        # be used as training labels, regardless of --min-species-count.
+        n_before = len(labeled)
+        labeled = labeled[~labeled['species'].str.contains('/', na=False)].copy()
+        n_composite = n_before - len(labeled)
+        if n_composite:
+            log.info(
+                f'Excluded {n_composite:,} chirp rows with composite species '
+                f'labels (slash-separated uncertain IDs)'
+            )
 
         # Species count threshold (at fragment level).
         frag_counts = (
@@ -739,7 +751,7 @@ class RFTrainer:
             n_estimators      = self.n_estimators,
             max_features      = self.max_features,
             min_samples_leaf  = self.min_samples_leaf,
-            class_weight      = 'balanced',
+            class_weight      = 'balanced_subsample',
             n_jobs            = self.n_jobs,
             random_state      = self.random_state,
             verbose           = 1,
@@ -857,6 +869,17 @@ class RFTrainer:
         labeled = labeled.dropna(subset=feature_cols).reset_index(drop=True)
         log.info(f'After filtering to {sp_a}/{sp_b}: {len(labeled):,} chirp rows')
 
+        # Composite species cannot appear here since isin([sp_a, sp_b])
+        # only matches bare species codes — but guard explicitly so the
+        # assumption is visible and any future schema change is caught early.
+        composite_in_binary = labeled['species'].str.contains('/', na=False).sum()
+        if composite_in_binary:
+            log.warn(
+                f'{composite_in_binary:,} composite-species rows reached binary '
+                f'mode unexpectedly — dropping them.'
+            )
+            labeled = labeled[~labeled['species'].str.contains('/', na=False)].copy()
+
         missing = [s for s in (sp_a, sp_b) if s not in labeled['species'].unique()]
         if missing:
             log.warn(f'Species not found in data: {", ".join(missing)}')
@@ -882,7 +905,7 @@ class RFTrainer:
             n_estimators     = self.n_estimators,
             max_features     = self.max_features,
             min_samples_leaf = self.min_samples_leaf,
-            class_weight     = 'balanced',
+            class_weight     = 'balanced_subsample',
             n_jobs           = self.n_jobs,
             random_state     = self.random_state,
             verbose          = 1,
