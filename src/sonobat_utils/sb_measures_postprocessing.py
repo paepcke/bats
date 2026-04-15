@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-11 18:02:58
+# @Last Modified time: 2026-04-14 16:43:12
 #
 # **********************************************************
 
@@ -43,6 +43,13 @@ Phase II — Normalization:
 3. All remaining features are normalized with RobustScaler (median/IQR).
 4. Identifier columns (file_id, chirp_idx, rec_site, cluster, TimeInFile)
    are excluded from normalization.
+5. Confidence is computed as:
+
+       confidence = Prob × (0.7 × (#Maj/#Accp) + 0.3 × log1p(#Accp)/log1p(30))
+
+   ``#Maj/#Accp`` is the consensus fraction (naturally in (0,1]).
+   ``log1p(#Accp)/log1p(30)`` is the log-normalized evidence weight ([0,1]).
+   No fitted scaler is needed; all values are bounded by construction.
 
 Phase III — Optional incremental update:
 
@@ -90,7 +97,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from logging_service import LoggingService
-from sklearn.preprocessing import QuantileTransformer, RobustScaler
+from sklearn.preprocessing import RobustScaler
 
 # ---------------------------- Class BatsData -------------
 
@@ -269,6 +276,10 @@ class SonoBatPostProcessor:
     MIN_ACCEPT_PROB       = 0.9
     WEIGHT_ON_CONSENSUS   = 0.7
     WEIGHT_ON_EVIDENCE    = 0.3
+    # Fixed ceiling for log-normalizing #Accp.  Values above this are clipped
+    # to 1.0 by the evidence formula.  30 comfortably covers the observed
+    # maximum (~28) while leaving a small margin.
+    ACCP_LOG_CEIL         = 30
 
     RELEVANT_MEASURES_COLS = [
         'TimeInFile', 'PrecedingIntrvl', 'HiFreq', 'Bndwdth', 'FreqMaxPwr',
@@ -391,9 +402,15 @@ class SonoBatPostProcessor:
         species DataFrames from each.  Both DataFrames retain their 'Path'
         column (not yet encoded) and gain a 'rec_site' Categorical column.
 
+        The 'Path' column in both DataFrames is normalized to the bare
+        filename stem (no directory, no extension) so that Windows-style
+        paths from the SonoBat VM (e.g. ``Y:\\batch4\\...\\lake2_-..._2secs.wav``)
+        match the Linux paths in the CumulativeParameters files.  The stem
+        is the natural unique key used as 'Filename' throughout the pipeline.
+
         'chirp_idx' is added to the measures DataFrame: a 0-based integer
         giving the position of each chirp within its recording, derived by
-        sorting on TimeInFile within each unique Path value.
+        sorting on TimeInFile within each unique Path stem.
 
         :param root_dirs: Directories to search, one per site.
         :param rec_sites: Site label for each directory.
@@ -441,25 +458,33 @@ class SonoBatPostProcessor:
         df_measures = pd.concat(measures_batches, ignore_index=True)
         df_species  = pd.concat(species_batches,  ignore_index=True)
 
-        # Deduplicate measures rows: the CumulativeParameters files accumulate
-        # across multiple SonoBat runs, so the same (Path, TimeInFile, measures)
-        # row appears more than once when overlapping root_dirs are passed.
-        # Drop exact duplicates before assigning chirp_idx so that
-        # (file_id, chirp_idx) is a true unique key in the final parquet.
-        n_before = len(df_measures)
-        df_measures = df_measures.drop_duplicates(
-            subset=['Path'] + SonoBatPostProcessor.RELEVANT_MEASURES_COLS
-        )
-        n_dropped = n_before - len(df_measures)
-        if n_dropped:
-            self.log.info(
-                f"Dropped {n_dropped:,} duplicate measures rows "
-                f"(same Path+measures from overlapping Cumulative files); "
-                f"{len(df_measures):,} rows remain."
+        # Normalize the 'Path' column in both DataFrames to the bare filename
+        # stem (no directory, no extension).  The CumulativeSonoBatch files
+        # written by SonoBat on the Windows VMs carry Windows-style paths
+        # (e.g. "Y:\batch4\chopped\...\lake2_-20221226_204358_2secs.wav"),
+        # while the CumulativeParameters files written on Linux carry Linux
+        # paths.  Reducing both to the stem makes the PathEncoder join work
+        # regardless of which machine produced the file.  The stem is already
+        # the natural unique key used as 'Filename' throughout the pipeline.
+        def _to_stem(path_series: pd.Series) -> pd.Series:
+            # Handle both forward-slash and backslash separators.
+            return (
+                path_series
+                .astype(str)
+                .str.replace('\\', '/', regex=False)   # normalise Windows seps
+                .apply(lambda p: Path(p).stem)
             )
 
-        # chirp_idx: 0-based rank by TimeInFile within each recording (Path).
-        # After deduplication (file_id, chirp_idx) is a unique key in the parquet.
+        n_win = df_species['Path'].astype(str).str.contains('\\\\', regex=False).sum()
+        if n_win:
+            self.log.info(
+                f"Normalizing {n_win:,} Windows-style paths in species data to stems."
+            )
+
+        df_measures['Path'] = _to_stem(df_measures['Path'])
+        df_species['Path']  = _to_stem(df_species['Path'])
+
+        # chirp_idx: 0-based rank by TimeInFile within each recording (stem)
         df_measures['chirp_idx'] = (
             df_measures
             .groupby('Path', sort=False)['TimeInFile']
@@ -477,17 +502,31 @@ class SonoBatPostProcessor:
     def _finalize_species(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Apply species-specific post-processing to the raw, path-encoded
-        species DataFrame: scale #Accp and #Maj to percentiles, add a
-        confidence column, and normalize composite species names.
+        species DataFrame: compute consensus and evidence columns from raw
+        SonoBat counts, add a confidence column, and normalize composite
+        species names.
+
+        Consensus is the natural fraction ``#Maj / #Accp``, which is always
+        in ``(0, 1]`` because ``#Maj <= #Accp`` by SonoBat's definition.
+        No scaling is needed or appropriate here.
+
+        Evidence is ``log1p(#Accp)`` normalized by the log of a fixed ceiling
+        (``ACCP_LOG_CEIL``).  This captures the real but saturating gain in
+        confidence from having more accepted pulses, compresses the long right
+        tail, and maps the result to ``[0, 1]`` without a fitted transformer.
 
         :param df: Species DataFrame with 'file_id' already assigned and
                    'Path' column already dropped.
         :return: Processed species DataFrame.
         """
-        qt = QuantileTransformer(output_distribution='uniform', n_quantiles=100)
-        cols_to_xform  = ['#Maj', '#Accp']
-        dest_col_names = ['Maj_scaled', 'Accp_scaled']
-        df[dest_col_names] = qt.fit_transform(df[cols_to_xform])
+        # consensus: proper fraction in (0, 1] — no scaling required
+        # Guard against zero #Accp (should not occur, but be safe)
+        df['Maj_scaled']  = (df['#Maj'] / df['#Accp'].replace(0, np.nan)).fillna(0.0)
+
+        # evidence: log-compressed #Accp, normalized to [0, 1]
+        df['Accp_scaled'] = (
+            np.log1p(df['#Accp']) / np.log1p(SonoBatPostProcessor.ACCP_LOG_CEIL)
+        ).clip(0.0, 1.0)
 
         df = SonoBatPostProcessor._add_confidence_column(df)
         df = SonoBatPostProcessor._normalize_composite_species(df)
@@ -542,6 +581,25 @@ class SonoBatPostProcessor:
             for fid in sorted(unmatched):
                 path = self.path_encoder.id_to_path.get(fid, '<unknown>')
                 self.log.warn(f"  file_id={fid}  path={path}")
+
+        # Deduplicate species rows: the Cumulative files accumulate across
+        # multiple SonoBat runs, so the same Path (file_id) can appear more
+        # than once when multiple batches are passed as root_dirs.  Keep the
+        # row with the highest confidence so the left-join below is 1:1 on
+        # file_id and produces no duplicate chirp rows.
+        n_species_before = len(df_species)
+        df_species = (
+            df_species
+            .sort_values('confidence', ascending=False)
+            .drop_duplicates(subset='file_id', keep='first')
+        )
+        n_dropped = n_species_before - len(df_species)
+        if n_dropped:
+            self.log.info(
+                f"Dropped {n_dropped:,} duplicate species rows "
+                f"(same file_id from overlapping Cumulative files); "
+                f"{len(df_species):,} unique file_ids remain."
+            )
 
         # Left-join: every chirp row gets species/confidence if available
         df_merged = df_measures.merge(
@@ -611,25 +669,34 @@ class SonoBatPostProcessor:
     @classmethod
     def _normalize_composite_species(cls, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Replaces slash-separated species strings in 'SppAccp' with their
-        canonical CompositeSpecies form (alphabetically sorted members),
-        so that 'Lano/Laci' and 'Laci/Lano' both become 'Laci/Lano'.
+        Normalize species strings in the 'SppAccp' column:
 
-        Only the ~14% of rows containing slashes are processed. Since there
-        are only O(10) distinct slash-combinations, CompositeSpecies is
-        constructed exactly once per unique value, and pandas .map() handles
-        the remaining 12K+ row updates in bulk.
+        1. Strip leading and trailing slashes.  SonoBat's Windows VM
+           occasionally emits values like '/Lano' or '/Myca' — a formatting
+           artifact where a leading slash is prepended to an otherwise valid
+           single-species code.  Stripping produces the correct bare code
+           ('Lano', 'Myca') before any further processing.
 
-        :param df: DataFrame with a 'SppAccp' column
-        :return: DataFrame with 'SppAccp' normalized in-place
-        :rtype: pd.DataFrame
+        2. Canonicalize remaining slash-separated composite strings so that
+           member order is always alphabetical: 'Lano/Laci' and 'Laci/Lano'
+           both become 'Laci/Lano'.  Only the subset of rows that still
+           contain a slash after stripping is processed.  Since there are
+           only O(10) distinct combinations, :class:`CompositeSpecies` is
+           constructed once per unique value and pandas ``.map()`` handles
+           the bulk updates.
+
+        :param df: DataFrame with a 'SppAccp' column.
+        :return: DataFrame with 'SppAccp' normalized in-place.
         """
+        # Step 1: strip leading/trailing slashes (Windows VM artifact)
+        df['SppAccp'] = df['SppAccp'].str.strip('/')
+
+        # Step 2: canonicalize true composite strings (internal slashes remain)
         slash_mask = df['SppAccp'].str.contains('/', regex=False, na=False)
-
-        unique_slash = df.loc[slash_mask, 'SppAccp'].unique()  # ~36 values
-        canon_map = {s: str(CompositeSpecies(s)) for s in unique_slash}
-
-        df.loc[slash_mask, 'SppAccp'] = df.loc[slash_mask, 'SppAccp'].map(canon_map)
+        if slash_mask.any():
+            unique_slash = df.loc[slash_mask, 'SppAccp'].unique()
+            canon_map = {s: str(CompositeSpecies(s)) for s in unique_slash}
+            df.loc[slash_mask, 'SppAccp'] = df.loc[slash_mask, 'SppAccp'].map(canon_map)
 
         return df
 
@@ -640,44 +707,46 @@ class SonoBatPostProcessor:
     @classmethod
     def _add_confidence_column(cls, df: pd.DataFrame) -> pd.DataFrame:
         """
-        This is a nearly-vectorized method for computing a 'confidence'
-        float derived from SonoBat's Prob, #Accp, and #Maj values. A
-        Row-by-row alternative is method _species_confidence(). See that
-        method for an explanation of the semantics.
+        Vectorized computation of a ``confidence`` score in ``[0, 1]`` from
+        SonoBat's ``Prob``, ``#Maj``, and ``#Accp`` columns.
 
-        Use this method for its (presumed) speed.
+        Formula
+        -------
+        ::
 
-        Vectorized computation of confidence scores, adding a 'confidence'
-        column to a DataFrame containing 'Prob', 'Maj_scaled', and 'Accp_scaled'.
+            confidence = Prob × (α × consensus + β × evidence)
 
-        Handles three forms of 'Prob' values:
-        - NaN         → confidence = 0.0
-        - plain float → used directly
-        - 'x/y[/z]'  → component probabilities are summed
+            consensus = #Maj / #Accp          — fraction of pulses that voted
+                                                for the accepted species;
+                                                always in (0, 1] by definition
+            evidence  = log1p(#Accp)          — log-compressed pulse count,
+                        ─────────────────       normalized to [0, 1] via a
+                        log1p(ACCP_LOG_CEIL)    fixed ceiling (no fitted scaler)
 
-        The three-mask pattern is the key to vectorizing the mixed Prob
-        column. NaN rows are zeroed out, slash-strings are split and summed
-        via .apply() (unavoidable for the variable-length split, but applied
-        only to the small slash-string subset), and plain floats are cast
-        directly — avoiding any Python-level loop over all rows.
+            α = WEIGHT_ON_CONSENSUS = 0.7
+            β = WEIGHT_ON_EVIDENCE  = 0.3
 
-        nan_mask computed first ensures the str.contains('/') call on mask 2
-        never sees actual NaN values, which would raise or produce unexpected
-        results after the .astype(str) converts them to the literal string
-        "nan".
+        Both ``consensus`` and ``evidence`` are naturally bounded in ``[0, 1]``,
+        so the bracketed term is also in ``[0, 1]``, and multiplying by
+        ``Prob ∈ [0, 1]`` keeps ``confidence`` in ``[0, 1]`` without clipping —
+        except for composite-species rows where slash-summed ``Prob`` can
+        marginally exceed 1.0, which a final ``clip(0, 1)`` handles.
 
-        In-place column addition (df['confidence'] = ...) matches the
-        typical pandas pattern for enriching a DataFrame without copying
-        it. If you prefer not to mutate the caller's DataFrame, add df =
-        df.copy() at the top.
+        The intermediate columns ``Maj_scaled`` and ``Accp_scaled`` are
+        computed by :meth:`_finalize_species` before this method is called:
 
-        slash_mask subset for .apply() keeps the only non-fully-vectorized
-        step confined to however many rows actually have slash-strings, rather
-        than running over the full DataFrame.
+        * ``Maj_scaled``  = ``#Maj / #Accp``
+        * ``Accp_scaled`` = ``log1p(#Accp) / log1p(ACCP_LOG_CEIL)``
 
-        :param df: DataFrame with columns 'Prob', 'Maj_scaled', 'Accp_scaled'
-        :return: DataFrame with new 'confidence' column added in-place
-        :rtype: pd.DataFrame
+        Handles three forms of ``Prob``:
+
+        * ``NaN``       → ``confidence = 0.0``
+        * plain float   → used directly
+        * ``'x/y[/z]'`` → component probabilities are summed (composite IDs)
+
+        :param df: DataFrame with columns ``Prob``, ``Maj_scaled``,
+                   ``Accp_scaled``.
+        :return: DataFrame with new ``confidence`` column added in-place.
         """
         prob_raw = df['Prob']
 
@@ -689,7 +758,7 @@ class SonoBatPostProcessor:
         # Mask 2: slash-separated strings like '0.46/0.52'
         slash_mask = (~nan_mask) & prob_raw.astype(str).str.contains('/', regex=False)
 
-        # Sum slash-separated probabilities per row
+        # Sum slash-separated probabilities per row (apply only to small subset)
         slash_probs = (
             prob_raw[slash_mask]
             .astype(str)
@@ -705,15 +774,20 @@ class SonoBatPostProcessor:
         prob[plain_mask] = prob_raw[plain_mask].astype(float)
         prob[slash_mask] = slash_probs
 
-        # --- Vectorized confidence formula ---
-        consensus = df['Maj_scaled'] / df['Accp_scaled']
+        # --- Confidence formula ---
+        # Maj_scaled  = #Maj / #Accp         (consensus, naturally in (0,1])
+        # Accp_scaled = log1p(#Accp) / log1p(ACCP_LOG_CEIL)  (evidence, [0,1])
         df['confidence'] = prob * (
-            cls.WEIGHT_ON_CONSENSUS * consensus
+            cls.WEIGHT_ON_CONSENSUS * df['Maj_scaled']
             + cls.WEIGHT_ON_EVIDENCE * df['Accp_scaled']
         )
 
         # NaN rows get 0.0 (already 0.0 from prob init, but be explicit)
         df.loc[nan_mask, 'confidence'] = 0.0
+
+        # Clip: only necessary for composite-species rows where summed Prob
+        # marginally exceeds 1.0; all other values are bounded by construction.
+        df['confidence'] = df['confidence'].clip(0.0, 1.0)
 
         return df
 
@@ -722,79 +796,58 @@ class SonoBatPostProcessor:
     #-------------------
     
     @staticmethod
-    def _species_confidence(prob_info: str | float, # Floats are NaN values
-                           scaled_accp_n: float | int,
-                           scaled_maj_n: float | int
+    def _species_confidence(prob_info: str | float,
+                           accp_n: float | int,
+                           maj_n:  float | int,
                            ) -> float:
         '''
-        NOTE: Use the vectorized version of this method instead: _add_confidence_column.
-              But the following comments are relevant.
+        NOTE: Use the vectorized version of this method instead:
+              :meth:`_add_confidence_column`.  This row-by-row version is kept
+              as a readable reference and for unit-testing individual rows.
 
-        Takes the several pieces information that SonoBat produces
-        to convey its species prediction confidence. Returns a single
-        confidence number in [0,1]. Strategy:
+        Combine the several pieces of confidence evidence that SonoBat
+        produces into a single score in ``[0, 1]``.
 
-        SB produces:
-           Prob :  a probability that SonoBat's species ID is correct
-           #Accp:  a count of pulses in SB accepted as being a chirp from any species of bat
-           #Maj :  the number of those accepted chirps that agreed with the ID
+        Formula::
 
-        Most of the #Accp values are in the range of 4-6 accepted chirps
-        in a 2-sec recording.But there are outliers of as high as 28. 
-        
-        So in an earlier step we scaled the raw #Accp values to be a uniform distribution of 
-        percentiles, yielding values [0,1]. This way the outliers do not
-        compress the many smaller number of chirps per chop into a tiny range.
+            confidence = Prob × (α × consensus + β × evidence)
 
-        Then we think of confidence as a mix of the probability,
-        the degree of species ID consensus across the chirps in a recording,
-        and the amount of available evidence in the chop (i.e. the number
-        of accepted chirps).
+            consensus = maj_n / accp_n          — always in (0, 1] because
+                                                  maj_n <= accp_n by definition
+            evidence  = log1p(accp_n)           — saturating compression of
+                        ─────────────────         pulse-count evidence,
+                        log1p(ACCP_LOG_CEIL)      normalized to [0, 1]
 
-        The 'consensus' is
+            α = WEIGHT_ON_CONSENSUS = 0.7
+            β = WEIGHT_ON_EVIDENCE  = 0.3
 
-           consensus = scaled_maj_n / scaled_accp_n
-        
-        I.e. the number of chirps being the declared species divided
-        by the number of chirps in the recording chop.
+        ``prob_info`` is either a plain probability like ``0.9834``, or a
+        slash-string like ``'0.46/0.52'`` for composite species IDs.  The
+        latter are summed, which can produce values marginally above 1.0;
+        the final ``clip`` handles that.
 
-        The 'evidence' is the scaled number of chirps:
-
-           confidence = Prob * (α * consensus + β * evidence)
-
-        We set α=0.7, and β=0.3, i.e. we put some emphasis on consensus,
-        and a bit less on the amount of evidence.
-
-        prob_info is either an actual probability, like 0.9834, or
-        a string with multiple probabilities, like '0.46/0.52'. These
-        are the probabilities for each of multiple possible IDs, such
-        as Lano/Laci. Since we create 'compound' species from such 
-        split decisions, we add the split probabilities.
-
-        :param prob_info: either a probability, or slash-separated probs
-        :param scaled_accp_n: the percentile-scaled number of accepted chirps in this recording
-        :param scaled_maj_n: the percentile-scaled number of chirps SB deemed to be of the ID
-        :return: a single, combined confidence
-        :rtype: float
+        :param prob_info: SonoBat ``Prob`` value — a float or slash-string.
+        :param accp_n: Raw ``#Accp`` count (accepted pulses in the chop).
+        :param maj_n:  Raw ``#Maj`` count (pulses voting for the accepted ID).
+        :return: Confidence in ``[0, 1]``.
         '''
-        # Turn the probability from one of
-        # 0.9924, NaN, '44/54' to a float:
         if pd.isna(prob_info):
             return 0.0
         try:
             prob = float(prob_info)
         except ValueError:
-            # It's a string like '46/59'
-            prob_parts = [float(p) for p in prob_info.split('/')]
-            # Add the probabilities of identification being 
-            # one of the species listed in the entry:
-            prob = sum(prob_parts)
-        # Weight the probability by the number of algorithmic
-        # experts that accepted the SB judgement:
-        consensus = scaled_maj_n / scaled_accp_n
-        weighted_confidence = prob * (SonoBatPostProcessor.WEIGHT_ON_CONSENSUS * consensus \
-                                      + SonoBatPostProcessor.WEIGHT_ON_EVIDENCE * scaled_accp_n)
-        return weighted_confidence
+            prob = sum(float(p) for p in prob_info.split('/'))
+
+        if accp_n == 0:
+            return 0.0
+
+        consensus = maj_n / accp_n
+        evidence  = (np.log1p(accp_n) /
+                     np.log1p(SonoBatPostProcessor.ACCP_LOG_CEIL))
+
+        raw = prob * (SonoBatPostProcessor.WEIGHT_ON_CONSENSUS * consensus
+                      + SonoBatPostProcessor.WEIGHT_ON_EVIDENCE * evidence)
+        return float(np.clip(raw, 0.0, 1.0))
     
     #------------------------------------
     # _find_sonobatch_species_id_files

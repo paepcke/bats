@@ -5,7 +5,7 @@
 # @Date:   2026-03-13 15:10:24
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/species_pred_random_forest.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-15 12:49:42
+# @Last Modified time: 2026-04-15 12:58:27
 #
 # **********************************************************
 
@@ -27,6 +27,9 @@ A chirp-level Parquet file produced by ``sb_measures_postprocessing.py``
 * ``rec_site``   : recording-site Categorical (e.g. ``barn``, ``lake2``)
 * ``TimeInFile`` : chirp onset time within the 2-second fragment (seconds)
 
+The file is read via ``Utils.read_df_file()``, which handles ``.parquet``
+/ ``.pq``, ``.feather``, and ``.csv`` and works around the PyArrow
+thrift-buffer limits that arise with large BatsData parquet files.
 CSV and Feather inputs from the legacy ``sono_batch_processing.py`` pipeline
 are still accepted for backward compatibility; the column differences are
 handled transparently.
@@ -114,6 +117,7 @@ from sklearn.metrics import (
 )
 
 from logging_service import LoggingService
+from sonobat_utils.utils import Utils
 
 log = LoggingService()
 
@@ -230,10 +234,10 @@ class RFTrainer:
     """
     Train a Random Forest species classifier on SonoBat acoustic measures.
 
-    :param input_path:        Path to the chirp-level measures file
-                              (``.parquet`` from ``sb_measures_postprocessing.py``;
-                              ``.feather`` and ``.csv`` also accepted for legacy
-                              ``sono_batch_processing.py`` inputs).
+    :param input_path:        Path to the chirp-level measures file.
+                              Read via ``Utils.read_df_file()``, which accepts
+                              ``.parquet`` / ``.pq`` (primary), ``.feather``,
+                              and ``.csv``.
     :param out_dir:           Directory for all output artifacts.
     :param min_species_count: Minimum number of labeled fragments for a
                               species to be included in training.
@@ -282,38 +286,18 @@ class RFTrainer:
 
     def _load_data(self) -> pd.DataFrame:
         """
-        Load the chirp-level measures file, auto-detecting format from
-        the file extension.
-
-        Parquet (``bats_*.parquet`` from ``sb_measures_postprocessing.py``)
-        is the primary format.  CSV and Feather are accepted for backward
-        compatibility with the legacy ``sono_batch_processing.py`` pipeline.
+        Load the chirp-level measures file using
+        :meth:`~sonobat_utils.utils.Utils.read_df_file`, which handles
+        ``.parquet`` / ``.pq``, ``.feather``, and ``.csv`` and works around
+        the PyArrow thrift-buffer limits that arise with large BatsData
+        parquet files.
 
         :return: Raw DataFrame with all columns intact.
         :raises: ``SystemExit`` if the file cannot be read.
         """
-        suffix = self.input_path.suffix.lower()
         log.info(f'Loading {self.input_path} ...')
         try:
-            if suffix == '.parquet':
-                df = pd.read_parquet(self.input_path)
-            elif suffix == '.feather':
-                df = pd.read_feather(self.input_path)
-            elif suffix == '.csv':
-                df = pd.read_csv(self.input_path, low_memory=False)
-            else:
-                # Unknown extension: try parquet, feather, then csv.
-                for reader in (pd.read_parquet, pd.read_feather,
-                               lambda p: pd.read_csv(p, low_memory=False)):
-                    try:
-                        df = reader(self.input_path)
-                        break
-                    except Exception:
-                        continue
-                else:
-                    raise ValueError(
-                        f'Cannot parse {self.input_path} as parquet, feather, or csv'
-                    )
+            df = Utils.read_df_file(self.input_path)
         except Exception as exc:
             log.warn(f'Cannot read input file {self.input_path}: {exc}')
             sys.exit(1)
@@ -1013,8 +997,9 @@ def _parse_args():
         required=True,
         metavar='PATH',
         help=(
-            'Chirp-level measures file produced by sb_measures_postprocessing.py\n'
-            '(.parquet preferred; .feather and .csv also accepted for legacy inputs).'
+            'Chirp-level measures file produced by sb_measures_postprocessing.py.\n'
+            'Read via Utils.read_df_file(); accepts .parquet/.pq (primary),\n'
+            '.feather, and .csv (legacy sono_batch_processing.py inputs).'
         ),
     )
     parser.add_argument(
