@@ -5,7 +5,7 @@
 # @Date:   2026-03-13 15:10:24
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/species_pred_random_forest.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-15 12:58:27
+# @Last Modified time: 2026-04-15 19:32:03
 #
 # **********************************************************
 
@@ -27,9 +27,6 @@ A chirp-level Parquet file produced by ``sb_measures_postprocessing.py``
 * ``rec_site``   : recording-site Categorical (e.g. ``barn``, ``lake2``)
 * ``TimeInFile`` : chirp onset time within the 2-second fragment (seconds)
 
-The file is read via ``Utils.read_df_file()``, which handles ``.parquet``
-/ ``.pq``, ``.feather``, and ``.csv`` and works around the PyArrow
-thrift-buffer limits that arise with large BatsData parquet files.
 CSV and Feather inputs from the legacy ``sono_batch_processing.py`` pipeline
 are still accepted for backward compatibility; the column differences are
 handled transparently.
@@ -116,8 +113,9 @@ from sklearn.metrics import (
     RocCurveDisplay,
 )
 
-from logging_service import LoggingService
 from sonobat_utils.utils import Utils
+
+from logging_service import LoggingService
 
 log = LoggingService()
 
@@ -234,10 +232,10 @@ class RFTrainer:
     """
     Train a Random Forest species classifier on SonoBat acoustic measures.
 
-    :param input_path:        Path to the chirp-level measures file.
-                              Read via ``Utils.read_df_file()``, which accepts
-                              ``.parquet`` / ``.pq`` (primary), ``.feather``,
-                              and ``.csv``.
+    :param input_path:        Path to the chirp-level measures file
+                              (``.parquet`` from ``sb_measures_postprocessing.py``;
+                              ``.feather`` and ``.csv`` also accepted for legacy
+                              ``sono_batch_processing.py`` inputs).
     :param out_dir:           Directory for all output artifacts.
     :param min_species_count: Minimum number of labeled fragments for a
                               species to be included in training.
@@ -250,6 +248,11 @@ class RFTrainer:
     :param n_jobs:            Number of parallel jobs for RF training
                               (``-1`` = all available cores).
     :param random_state:      Random seed for reproducibility.
+    :param exclude_species:   Species codes to exclude from training
+                              unconditionally, regardless of
+                              ``min_species_count``.  Useful for catch-all
+                              categories (e.g. ``HiF``) or species with
+                              insufficient data to be learnable.
     """
 
     def __init__(
@@ -266,6 +269,7 @@ class RFTrainer:
         random_state:      int   = 42,
         mode:              str   = 'multiclass',
         species_pair:      Optional[tuple[str, str]] = None,
+        exclude_species:   Optional[list[str]] = None,
     ) -> None:
         self.input_path        = Path(input_path)
         self.out_dir           = Path(out_dir)
@@ -279,6 +283,7 @@ class RFTrainer:
         self.random_state      = random_state
         self.mode              = mode
         self.species_pair      = species_pair
+        self.exclude_species   = set(exclude_species) if exclude_species else set()
 
     # ------------------------------------------------------------------ #
     #  Data loading                                                       #
@@ -286,15 +291,17 @@ class RFTrainer:
 
     def _load_data(self) -> pd.DataFrame:
         """
-        Load the chirp-level measures file using
-        :meth:`~sonobat_utils.utils.Utils.read_df_file`, which handles
-        ``.parquet`` / ``.pq``, ``.feather``, and ``.csv`` and works around
-        the PyArrow thrift-buffer limits that arise with large BatsData
-        parquet files.
+        Load the chirp-level measures file, auto-detecting format from
+        the file extension.
+
+        Parquet (``bats_*.parquet`` from ``sb_measures_postprocessing.py``)
+        is the primary format.  CSV and Feather are accepted for backward
+        compatibility with the legacy ``sono_batch_processing.py`` pipeline.
 
         :return: Raw DataFrame with all columns intact.
         :raises: ``SystemExit`` if the file cannot be read.
         """
+        suffix = self.input_path.suffix.lower()
         log.info(f'Loading {self.input_path} ...')
         try:
             df = Utils.read_df_file(self.input_path)
@@ -685,6 +692,16 @@ class RFTrainer:
                 f'labels (slash-separated uncertain IDs)'
             )
 
+        # Explicitly excluded species (--exclude-species).
+        if self.exclude_species:
+            n_before = len(labeled)
+            labeled = labeled[~labeled['species'].isin(self.exclude_species)].copy()
+            n_excluded = n_before - len(labeled)
+            log.info(
+                f'Excluded {n_excluded:,} chirp rows for species: '
+                f'{", ".join(sorted(self.exclude_species))}'
+            )
+
         # Species count threshold (at fragment level).
         frag_counts = (
             labeled.groupby('species')['file_id']
@@ -997,9 +1014,8 @@ def _parse_args():
         required=True,
         metavar='PATH',
         help=(
-            'Chirp-level measures file produced by sb_measures_postprocessing.py.\n'
-            'Read via Utils.read_df_file(); accepts .parquet/.pq (primary),\n'
-            '.feather, and .csv (legacy sono_batch_processing.py inputs).'
+            'Chirp-level measures file produced by sb_measures_postprocessing.py\n'
+            '(.parquet preferred; .feather and .csv also accepted for legacy inputs).'
         ),
     )
     parser.add_argument(
@@ -1088,6 +1104,18 @@ def _parse_args():
         default=None,
         help='Two species codes for binary mode, e.g. --species-pair Lano Tabr',
     )
+    parser.add_argument(
+        '--exclude-species',
+        nargs='+',
+        metavar='SPECIES',
+        default=None,
+        help=(
+            'One or more species codes to exclude from training entirely,\n'
+            'regardless of --min-species-count.  Useful for removing catch-all\n'
+            'categories (e.g. HiF) or species with too few samples to be\n'
+            'learnable.  Example: --exclude-species HiF Anpa Lafr Myvo'
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -1124,6 +1152,7 @@ def main() -> None:
         random_state      = args.random_state,
         mode              = args.mode,
         species_pair      = tuple(args.species_pair) if args.species_pair else None,
+        exclude_species   = args.exclude_species,
     )
 
     result = trainer.run()
