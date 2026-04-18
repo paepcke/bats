@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-16 13:02:21
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-16 13:03:32
+# @Last Modified time: 2026-04-17 16:59:51
 # ********************************************
 
 """
@@ -358,21 +358,59 @@ class HierarchicalPredictor:
 
         Called only when the input contains a ``species`` column.
 
-        :param true_species: Array of ground-truth species code strings.
-        :param out:          Predictions DataFrame containing ``final_pred``.
+        Evaluation is restricted to rows whose true label is one of the
+        species the main RF was trained on (``self.main_rf.le.classes_``).
+        Rows with out-of-vocabulary true labels — species excluded via
+        ``--exclude-species`` or ``--min-species-count`` during training —
+        are tallied and logged separately so the omission is visible, but
+        they are not included in the confusion matrix or classification
+        report.  Including them would be misleading: the system was never
+        designed to predict those species, so their forced misclassification
+        into the nearest trained class would artificially depress all metrics.
+
+        :param true_species: Array of ground-truth species code strings,
+                             aligned to ``out``.
+        :param out:          Predictions DataFrame containing ``final_pred``
+                             and ``stage1_pred``.
         """
         log.info('Ground-truth labels found — computing evaluation metrics ...')
 
-        # Drop rows where true label is NaN or composite
-        valid = ~(
-            pd.Series(true_species).isna() |
-            pd.Series(true_species).astype(str).str.contains('/', na=False)
-        )
-        y_true = true_species[valid]
-        y_pred = out['final_pred'].values[valid]
-        log.info(f'Evaluating on {valid.sum():,} labeled, non-composite rows')
+        known_species = set(self.main_rf.le.classes_)
 
-        classes = sorted(set(y_true))
+        true_ser = pd.Series(true_species)
+
+        # Mask 1: NaN or composite labels — always excluded
+        nan_or_composite = (
+            true_ser.isna() |
+            true_ser.astype(str).str.contains('/', na=False)
+        )
+
+        # Mask 2: out-of-vocabulary species (not in main RF training set)
+        oov_mask = (
+            ~nan_or_composite &
+            ~true_ser.isin(known_species)
+        )
+
+        # Log OOV summary before dropping them
+        if oov_mask.any():
+            oov_counts = true_ser[oov_mask].value_counts()
+            log.info(
+                f'{oov_mask.sum():,} chirp rows have out-of-vocabulary true '
+                f'labels (species not in main RF training set) — excluded '
+                f'from evaluation:'
+            )
+            for spp, cnt in oov_counts.items():
+                log.info(f'  {spp}: {cnt:,}')
+
+        valid = ~nan_or_composite & ~oov_mask
+        y_true = true_ser[valid].values
+        y_pred = out['final_pred'].values[valid]
+        log.info(
+            f'Evaluating on {valid.sum():,} labeled, non-composite, '
+            f'in-vocabulary rows'
+        )
+
+        classes = sorted(known_species & set(y_true))
 
         report = classification_report(y_true, y_pred,
                                        labels=classes,
@@ -398,7 +436,7 @@ class HierarchicalPredictor:
         plt.close(fig)
         log.info('Saved classification_report.txt, confusion_matrix.csv/png')
 
-        # Per-stage accuracy summary to CLI
+        # Per-stage accuracy summary
         s1_acc = (out['stage1_pred'].values[valid] == y_true).mean()
         fi_acc = (y_pred == y_true).mean()
         log.info(f'Stage 1 accuracy : {s1_acc:.4f}')
@@ -499,3 +537,4 @@ def main() -> None:
 # ------------------- Main Section --------------
 if __name__ == '__main__':
     main()
+ 
