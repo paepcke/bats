@@ -3,9 +3,8 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-13 15:14:22
+# @Last Modified time: 2026-04-19 10:39:30
 # ***********************************************
-#!/bin/bash
 # startup.sh
 # GCP Compute Engine startup script for bat CNN training.
 # VM: a2-ultragpu-2g (2x A100 80GB), us-central1
@@ -27,6 +26,7 @@
 # Required instance metadata keys (set via --metadata at VM creation):
 #   GCS_DATA_BUCKET     e.g. bat_png_tar_files
 #   GCS_OUTPUT_BUCKET   e.g. bat-training-output  (created here if absent)
+#   GCS_CROPS_PREFIX    e.g. crops-tar             (prefix inside data bucket)
 #   IMAGE_URI           e.g. us-central1-docker.pkg.dev/dresl-bats-2026/bats/bat-cnn:latest
 #   NPROC_PER_NODE      number of GPUs (2 for a2-ultragpu-2g)
 #   EPOCHS              training epochs (default: 40)
@@ -45,6 +45,7 @@ H="Metadata-Flavor: Google"
 
 GCS_DATA_BUCKET=$(curl -sf -H "${H}" "${META}/GCS_DATA_BUCKET")
 GCS_OUTPUT_BUCKET=$(curl -sf -H "${H}" "${META}/GCS_OUTPUT_BUCKET" || echo "bat-training-output")
+GCS_CROPS_PREFIX=$(curl -sf -H "${H}" "${META}/GCS_CROPS_PREFIX" || echo "crops-tar")
 IMAGE_URI=$(curl -sf -H "${H}" "${META}/IMAGE_URI")
 NPROC_PER_NODE=$(curl -sf -H "${H}" "${META}/NPROC_PER_NODE" || echo "2")
 EPOCHS=$(curl -sf -H "${H}" "${META}/EPOCHS" || echo "40")
@@ -52,6 +53,7 @@ EXTRA_ARGS=$(curl -sf -H "${H}" "${META}/EXTRA_ARGS" || echo "")
 
 echo "GCS_DATA_BUCKET   : gs://${GCS_DATA_BUCKET}"
 echo "GCS_OUTPUT_BUCKET : gs://${GCS_OUTPUT_BUCKET}"
+echo "GCS_CROPS_PREFIX  : ${GCS_CROPS_PREFIX}"
 echo "IMAGE_URI         : ${IMAGE_URI}"
 echo "NPROC_PER_NODE    : ${NPROC_PER_NODE}"
 echo "EPOCHS            : ${EPOCHS}"
@@ -107,10 +109,11 @@ CROPS_DIR=${DATA_DIR}/crops
 mkdir -p "${TAR_DIR}" "${CROPS_DIR}" "${OUTPUT_DIR}"
 
 # ── Copy tar files from GCS ───────────────────────────────────
-echo "Copying tar files from gs://${GCS_DATA_BUCKET}/*.tar ..."
+# Tars live under gs://<bucket>/<prefix>/*.tar — must include prefix.
+echo "Copying tar files from gs://${GCS_DATA_BUCKET}/${GCS_CROPS_PREFIX}/ ..."
 START=$(date +%s)
 gcloud storage cp \
-    "gs://${GCS_DATA_BUCKET}/*.tar" \
+    "gs://${GCS_DATA_BUCKET}/${GCS_CROPS_PREFIX}/*.tar" \
     "${TAR_DIR}/"
 END=$(date +%s)
 TAR_COUNT=$(ls "${TAR_DIR}"/*.tar 2>/dev/null | wc -l)
