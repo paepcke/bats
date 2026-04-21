@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-11 10:45:31
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-13 16:32:41
+# @Last Modified time: 2026-04-21 14:15:24
 # #############################################
 
 """
@@ -363,7 +363,7 @@ class BatDbBuilder:
         try:
             con.executescript(SCHEMA_SQL)
             self._insert_recordings(con, measures, manifest)
-            self._insert_chirp_info(con, merged)
+            self._insert_chirp_info(con, measures)
             self._insert_spectrograms(con, merged)
             con.commit()
         except Exception:
@@ -381,9 +381,21 @@ class BatDbBuilder:
         """
         Populate the ``recordings`` table.
 
-        ``rec_site`` comes from the chirp measures parquet;
-        ``rec_period`` (partition) and ``filename`` come from the
-        chirp spectrograms manifest.
+        ``rec_site`` comes from the chirp measures parquet.
+        ``rec_period`` (train/val/test partition) comes from the chirp
+        spectrograms manifest.  ``filename`` is expected to have been
+        seeded already by ``sb_measures_postprocessing.py --build-db``;
+        rows already present are skipped (``INSERT OR IGNORE``) so
+        re-running the builder against an already-seeded database is safe.
+
+        For any file_id that was *not* pre-seeded (e.g. the builder is run
+        standalone without a prior postprocessing ``--build-db`` pass),
+        a row is inserted with ``filename = NULL``; this matches the
+        previous behaviour.
+
+        ``rec_period`` is always written via a follow-up UPDATE so that it
+        is filled in regardless of whether the row was just inserted or was
+        already present from the seeding step.
 
         :param con: Open SQLite connection.
         :param measures: Chirp measures parquet DataFrame.
@@ -395,57 +407,70 @@ class BatDbBuilder:
             .set_index("file_id")
         )
         manifest_rec = (
-            manifest[["file_id", "Filename", "partition"]]
+            manifest[["file_id", "partition"]]
             .drop_duplicates("file_id")
             .set_index("file_id")
         )
         all_file_ids = parquet_rec.index.union(manifest_rec.index)
-        rows = []
+
+        # Insert rows that are not yet in the table.  For pre-seeded rows
+        # (inserted by postprocessing with --build-db) this is a no-op,
+        # which preserves the already-correct filename.  For un-seeded rows
+        # filename will be NULL — same as the previous behaviour.
+        insert_rows = []
         for fid in all_file_ids:
-            filename = (
-                manifest_rec.loc[fid, "Filename"]
-                if fid in manifest_rec.index else None
-            )
             rec_site = (
                 parquet_rec.loc[fid, "rec_site"]
                 if fid in parquet_rec.index else None
             )
-            rec_period = (
-                manifest_rec.loc[fid, "partition"]
-                if fid in manifest_rec.index else None
-            )
-            rows.append((int(fid), filename, rec_site, rec_period))
+            insert_rows.append((int(fid), rec_site))
 
         con.executemany(
-            "INSERT INTO recordings (file_id, filename, rec_site, rec_period) "
-            "VALUES (?, ?, ?, ?)",
-            rows,
+            "INSERT OR IGNORE INTO recordings (file_id, rec_site) "
+            "VALUES (?, ?)",
+            insert_rows,
         )
-        self.log.info(f"Inserted {len(rows):,} recordings.")
+
+        # Write rec_period for every file_id that has a partition in the
+        # manifest, whether the row was just inserted or pre-existed.
+        period_rows = [
+            (str(manifest_rec.loc[fid, "partition"]), int(fid))
+            for fid in manifest_rec.index
+        ]
+        con.executemany(
+            "UPDATE recordings SET rec_period = ? WHERE file_id = ?",
+            period_rows,
+        )
+
+        self.log.info(
+            f"Inserted/updated {len(all_file_ids):,} recordings "
+            f"({len(period_rows):,} with rec_period from manifest)."
+        )
 
     def _insert_chirp_info(
         self,
         con: sqlite3.Connection,
-        merged: pd.DataFrame,
+        measures: pd.DataFrame,
     ) -> None:
         """
-        Populate the ``chirp_info`` table.
+        Populate the ``chirp_info`` table from the full chirp measures
+        parquet, not just from the inner-joined ``merged`` DataFrame.
 
-        One row per ``(file_id, chirp_idx)``. All harmonics of a chirp
-        share the same ``measures_row`` in the chirp measures parquet,
-        so we deduplicate on ``(file_id, chirp_idx)`` taking
-        ``harmonic_idx == 0`` (the primary harmonic).
+        Using the full parquet means that chirps whose recordings never
+        reached spectrogram generation (filtered out before PNG cropping)
+        still get ``chirp_info`` rows.  Those rows will have no
+        ``chirp_spectrograms`` children, which is valid and honest.
+
+        The measures parquet already carries one row per ``(file_id,
+        chirp_idx)`` — harmonic duplicates were removed upstream — so no
+        further deduplication is needed here.
+
+        ``INSERT OR IGNORE`` makes repeated builder runs safe.
 
         :param con: Open SQLite connection.
-        :param merged: Merged and validated DataFrame.
+        :param measures: Full chirp measures parquet DataFrame, with
+            ``measures_row`` already set by :meth:`_load_parquet`.
         """
-        chirp_rows = (
-            merged[merged["harmonic_idx"] == 0]
-            .drop_duplicates(subset=["file_id", "chirp_idx"])
-            [["file_id", "chirp_idx", "measures_row",
-              "species", "confidence"]]
-        )
-
         rows = [
             (
                 int(r.file_id),
@@ -454,11 +479,13 @@ class BatDbBuilder:
                 r.species,
                 float(r.confidence) if pd.notna(r.confidence) else None,
             )
-            for r in chirp_rows.itertuples(index=False)
+            for r in measures[
+                ["file_id", "chirp_idx", "measures_row", "species", "confidence"]
+            ].itertuples(index=False)
         ]
 
         con.executemany(
-            "INSERT INTO chirp_info "
+            "INSERT OR IGNORE INTO chirp_info "
             "(file_id, chirp_idx, measures_row, species, confidence) "
             "VALUES (?, ?, ?, ?, ?)",
             rows,

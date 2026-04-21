@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-14 16:43:12
+# @Last Modified time: 2026-04-21 14:14:52
 #
 # **********************************************************
 
@@ -95,6 +95,8 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+import sqlite3
 
 from logging_service import LoggingService
 from sklearn.preprocessing import RobustScaler
@@ -298,10 +300,12 @@ class SonoBatPostProcessor:
     CONF_ACCEPT_THRESH_DEFAULT = 0.50
 
     def __init__(self,
-                 root_dirs:   list[str | Path],
-                 rec_sites:   list[str],
-                 dest_dir:    str | Path,
-                 conf_thresh: float = CONF_ACCEPT_THRESH_DEFAULT,
+                 root_dirs:        list[str | Path],
+                 rec_sites:        list[str],
+                 dest_dir:         str | Path,
+                 conf_thresh:      float = CONF_ACCEPT_THRESH_DEFAULT,
+                 db_path:          str | Path | None = None,
+                 add_daytime_cols: bool = False,
                  ):
         """
         :param root_dirs:   One root directory per recording site, searched
@@ -311,6 +315,16 @@ class SonoBatPostProcessor:
         :param conf_thresh: Minimum confidence score for a chirp row to be
                             retained in the final dataset.  Rows with NaN
                             confidence are also dropped.  Default 0.50.
+        :param db_path: If given, create (or open) a SQLite database at this
+                        path and seed the ``recordings`` table with the full
+                        file_id → filename mapping minted during this run.
+                        This is the right moment to capture that mapping because
+                        both the integer file_id and the original filename stem
+                        are simultaneously in hand here and only here.
+        :param add_daytime_cols: If True (requires *db_path*), invoke
+                        :class:`~sonobat_utils.sb_measures_add_daytime_columns.DaytimeColumnAdder`
+                        after writing the measures parquet to append
+                        ``was_daytime`` and ``time_of_day_pactime`` columns.
         :raises ValueError: If ``root_dirs`` and ``rec_sites`` differ in length.
         """
         if len(root_dirs) != len(rec_sites):
@@ -322,10 +336,12 @@ class SonoBatPostProcessor:
         self.log = LoggingService()
         self.timestamp = datetime.now().isoformat().replace(':', '_')
 
-        self.root_dirs   = [Path(r) for r in root_dirs]
-        self.rec_sites   = rec_sites
-        self.dest_dir    = Path(dest_dir)
-        self.conf_thresh = conf_thresh
+        self.root_dirs        = [Path(r) for r in root_dirs]
+        self.rec_sites        = rec_sites
+        self.dest_dir         = Path(dest_dir)
+        self.conf_thresh      = conf_thresh
+        self.db_path          = Path(db_path) if db_path is not None else None
+        self.add_daytime_cols = add_daytime_cols
 
         self.rejected_entries = []
         self.composite_species: set[CompositeSpecies] = set()
@@ -352,6 +368,18 @@ class SonoBatPostProcessor:
 
         df_measures_encoded = self.path_encoder.encode_df(df_measures_raw)
         df_species_encoded  = self.path_encoder.encode_df(df_species_raw)
+
+        # Capture file_id → rec_site for every known recording BEFORE any
+        # row-dropping normalization.  This is the only moment where both the
+        # integer file_id and the site label are simultaneously available for
+        # the full population.  Measures take priority over species when a
+        # file_id appears in both (species listed first so measures overwrite).
+        fid_to_site: dict[int, str | None] = {}
+        for _src in [df_species_encoded, df_measures_encoded]:
+            for _fid, _site in (_src[['file_id', 'rec_site']]
+                                .drop_duplicates('file_id')
+                                .itertuples(index=False)):
+                fid_to_site[int(_fid)] = str(_site) if _site is not None else None
 
         # Normalize measures
         meas_normalizer = MeasureNormalizer()
@@ -387,7 +415,109 @@ class SonoBatPostProcessor:
         noise_path = self.dest_dir / f"bats_noise_{self.timestamp}.parquet"
         self.bats_noise.to_parquet(noise_path)
         self.log.info(f"Wrote {noise_path}")
+
+        # ---- Optional downstream steps ----------------------------------
+
+        if self.db_path is not None:
+            self._seed_recordings_db(fid_to_site)
+
+        if self.add_daytime_cols:
+            if self.db_path is None:
+                self.log.warn(
+                    "--add-daytime-columns requires --build-db; skipping daytime step."
+                )
+            else:
+                from sonobat_utils.sb_measures_add_daytime_columns import DaytimeColumnAdder
+                self.log.info("Adding daytime columns to measures parquet ...")
+                DaytimeColumnAdder(
+                    measures_path=str(out_path),
+                    db_path=str(self.db_path),
+                ).run()
             
+    #------------------------------------
+    # _seed_recordings_db
+    #-------------------
+
+    def _seed_recordings_db(self, fid_to_site: dict[int, 'str | None']) -> None:
+        """
+        Create (or open) the SQLite database at ``self.db_path``, apply the
+        full schema DDL, and insert one row per file_id into the
+        ``recordings`` table.
+
+        ``filename`` is the bare stem of the original recording path (no
+        directory, no extension) — the same key used throughout the pipeline.
+        ``rec_site`` comes from the in-memory mapping built right after path
+        encoding.  ``rec_period`` (train/val/test partition) is left NULL here;
+        it is populated later by :mod:`bat_db_builder` when the spectrogram
+        manifest is available.
+
+        Rows already present in the table are left unchanged
+        (``INSERT OR IGNORE``), so re-running postprocessing with the same DB
+        is safe.
+
+        :param fid_to_site: Mapping of file_id → rec_site string (or None).
+        :type fid_to_site: dict[int, str | None]
+        """
+        # Schema DDL is duplicated here intentionally to avoid a circular
+        # import with bat_db_builder (which imports BatsData from this module).
+        schema_sql = """
+CREATE TABLE IF NOT EXISTS png_dirs (
+    dir_id    INTEGER PRIMARY KEY,
+    dir_path  TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS recordings (
+    file_id    INTEGER PRIMARY KEY,
+    filename   TEXT,
+    rec_site   TEXT,
+    rec_period TEXT
+);
+
+CREATE TABLE IF NOT EXISTS chirp_info (
+    file_id      INTEGER NOT NULL REFERENCES recordings(file_id),
+    chirp_idx    INTEGER NOT NULL,
+    measures_row INTEGER NOT NULL,
+    species      TEXT,
+    confidence   REAL,
+    PRIMARY KEY (file_id, chirp_idx)
+);
+
+CREATE TABLE IF NOT EXISTS chirp_spectrograms (
+    file_id      INTEGER NOT NULL,
+    chirp_idx    INTEGER NOT NULL,
+    harmonic_idx INTEGER NOT NULL,
+    dir_id       INTEGER NOT NULL REFERENCES png_dirs(dir_id),
+    png_filename TEXT NOT NULL,
+    PRIMARY KEY (file_id, chirp_idx, harmonic_idx),
+    FOREIGN KEY (file_id, chirp_idx) REFERENCES chirp_info(file_id, chirp_idx),
+    UNIQUE (dir_id, png_filename)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chirp_species ON chirp_info(species);
+CREATE INDEX IF NOT EXISTS idx_spec_dir      ON chirp_spectrograms(dir_id);
+CREATE INDEX IF NOT EXISTS idx_spec_harmonic ON chirp_spectrograms(harmonic_idx);
+"""
+        rows = [
+            (fid,
+             self.path_encoder.id_to_path[fid],
+             fid_to_site.get(fid),
+             None)                    # rec_period filled later by bat_db_builder
+            for fid in fid_to_site
+        ]
+
+        self.log.info(
+            f"Seeding recordings table in {self.db_path} "
+            f"({len(rows):,} file_ids) ...")
+        with sqlite3.connect(str(self.db_path)) as con:
+            con.executescript(schema_sql)
+            con.executemany(
+                "INSERT OR IGNORE INTO recordings "
+                "(file_id, filename, rec_site, rec_period) VALUES (?, ?, ?, ?)",
+                rows,
+            )
+            con.commit()
+        self.log.info("  recordings table seeded.")
+
     #------------------------------------
     # _collect_all_raw
     #-------------------
@@ -1446,6 +1576,30 @@ def main():
             f'Default: {SonoBatPostProcessor.CONF_ACCEPT_THRESH_DEFAULT}.'
         ),
     )
+    parser.add_argument(
+        '--build-db',
+        default=None,
+        dest='db_path',
+        metavar='DB_PATH',
+        help=(
+            'Create (or open) a SQLite database at DB_PATH and seed its '
+            'recordings table with the full file_id → filename mapping '
+            'produced during this run.  This is the right time to capture '
+            'that mapping; bat_db_builder.py can later add chirp_info and '
+            'chirp_spectrograms rows without needing to re-derive filenames.'
+        ),
+    )
+    parser.add_argument(
+        '--add-daytime-columns',
+        action='store_true',
+        default=False,
+        dest='add_daytime_cols',
+        help=(
+            'After writing the measures parquet, invoke '
+            'sb_measures_add_daytime_columns.py to append was_daytime and '
+            'time_of_day_pactime columns.  Requires --build-db.'
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -1456,10 +1610,12 @@ def main():
         )
 
     SonoBatPostProcessor(
-        root_dirs   = args.root_dirs,
-        rec_sites   = args.rec_sites,
-        dest_dir    = args.dest_dir,
-        conf_thresh = args.conf_thresh,
+        root_dirs        = args.root_dirs,
+        rec_sites        = args.rec_sites,
+        dest_dir         = args.dest_dir,
+        conf_thresh      = args.conf_thresh,
+        db_path          = args.db_path,
+        add_daytime_cols = args.add_daytime_cols,
     )
 
 # ----------------------- Main -----------------------
