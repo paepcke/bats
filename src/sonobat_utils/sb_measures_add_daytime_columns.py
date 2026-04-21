@@ -4,9 +4,9 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-21 11:15:48
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-21 13:20:45
+# @Last Modified time: 2026-04-21 13:28:31
 # ******************************************
-#!/usr/bin/env python3
+
 '''
 sb_measures_add_daytime_columns.py
 
@@ -286,21 +286,38 @@ class DaytimeColumnAdder:
                 n_unmatched += 1
 
         self.log.info(
-            f"Filename pattern survey ({len(sample)} sampled recordings):")
+            f"Filename pattern survey (sample of {len(sample)} out of "
+            f"{self._recordings_total()} total recordings -- percentages are of sample):")
         for pat in _FNAME_PATTERNS:
             n   = counts.get(pat.name, 0)
             pct = 100.0 * n / len(sample)
-            self.log.info(f"  {pat.name:45s}  {n:5d}  ({pct:.1f}%)")
+            self.log.info(f"  {pat.name:45s}  {n:5d} / {len(sample)}  ({pct:.1f}% of sample)")
         if n_null:
             self.log.warn(
-                f"  {'NULL filename':45s}  {n_null:5d}  "
-                f"({100.0 * n_null / len(sample):.1f}%) "
+                f"  {'NULL filename':45s}  {n_null:5d} / {len(sample)}  "
+                f"({100.0 * n_null / len(sample):.1f}% of sample) "
                 f"-- recordings rows with no filename; columns will be None.")
         if n_unmatched:
             self.log.warn(
-                f"  {'NO PATTERN MATCHED':45s}  {n_unmatched:5d}  "
-                f"({100.0 * n_unmatched / len(sample):.1f}%) "
+                f"  {'NO PATTERN MATCHED':45s}  {n_unmatched:5d} / {len(sample)}  "
+                f"({100.0 * n_unmatched / len(sample):.1f}% of sample) "
                 f"-- consider adding a new entry to _FNAME_PATTERNS")
+
+    # ------------------------------------------------------------------
+    # _recordings_total
+    # ------------------------------------------------------------------
+
+    def _recordings_total(self) -> int:
+        '''
+        Return the total number of rows in the recordings table.
+        Used to make the survey header informative about sample size
+        vs. total population.
+
+        :return: row count of the recordings table
+        :rtype: int
+        '''
+        with sqlite3.connect(str(self.db_path)) as conn:
+            return conn.execute('SELECT COUNT(*) FROM recordings').fetchone()[0]
 
     # ------------------------------------------------------------------
     # _build_fid_map
@@ -322,12 +339,17 @@ class DaytimeColumnAdder:
         :return: mapping from file_id to (bool | None, str | None)
         :rtype: dict
         '''
-        placeholders = ','.join('?' * len(file_ids))
-        sql = (f"SELECT file_id, filename FROM recordings "
-               f"WHERE file_id IN ({placeholders})")
-
+        # SQLite allows at most 999 bound variables per statement.
+        # Chunk the id list and merge the results.
+        _CHUNK = 900
+        rows: list[tuple] = []
         with sqlite3.connect(str(self.db_path)) as conn:
-            rows = conn.execute(sql, file_ids).fetchall()
+            for start in range(0, len(file_ids), _CHUNK):
+                chunk = file_ids[start:start + _CHUNK]
+                placeholders = ','.join('?' * len(chunk))
+                sql = (f"SELECT file_id, filename FROM recordings "
+                       f"WHERE file_id IN ({placeholders})")
+                rows.extend(conn.execute(sql, chunk).fetchall())
 
         self.log.info(f"  recordings table returned {len(rows):,} rows "
                       f"for {len(file_ids):,} requested ids.")
