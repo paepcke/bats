@@ -4,11 +4,11 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-21 11:15:48
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-21 11:16:24
+# @Last Modified time: 2026-04-21 13:20:45
 # ******************************************
-
+#!/usr/bin/env python3
 '''
-add_daytime_columns.py
+sb_measures_add_daytime_columns.py
 
 Adds was_daytime (bool) and time_of_day_pactime (ISO datetime string)
 columns to a bat measures parquet file and its sibling noise parquet file.
@@ -270,7 +270,11 @@ class DaytimeColumnAdder:
         counts: dict[str, int] = defaultdict(int)
         n_unmatched = 0
 
+        n_null = 0
         for raw in sample:
+            if raw is None:
+                n_null += 1
+                continue
             fname   = raw.split('|')[0]
             matched = False
             for pat in _FNAME_PATTERNS:
@@ -287,11 +291,16 @@ class DaytimeColumnAdder:
             n   = counts.get(pat.name, 0)
             pct = 100.0 * n / len(sample)
             self.log.info(f"  {pat.name:45s}  {n:5d}  ({pct:.1f}%)")
+        if n_null:
+            self.log.warn(
+                f"  {'NULL filename':45s}  {n_null:5d}  "
+                f"({100.0 * n_null / len(sample):.1f}%) "
+                f"-- recordings rows with no filename; columns will be None.")
         if n_unmatched:
             self.log.warn(
                 f"  {'NO PATTERN MATCHED':45s}  {n_unmatched:5d}  "
                 f"({100.0 * n_unmatched / len(sample):.1f}%) "
-                f"— consider adding a new entry to _FNAME_PATTERNS")
+                f"-- consider adding a new entry to _FNAME_PATTERNS")
 
     # ------------------------------------------------------------------
     # _build_fid_map
@@ -328,6 +337,11 @@ class DaytimeColumnAdder:
         result: dict[int, tuple[bool | None, str | None]] = {}
 
         for fid, raw_filename in rows:
+            if raw_filename is None:
+                self.log.warn(f"file_id {fid}: NULL filename in recordings table -- columns set to None.")
+                n_failed += 1
+                result[fid] = (None, None)
+                continue
             fname = raw_filename.split('|')[0]
             try:
                 rec_time, pat_name = self._time_from_filename(fname)
