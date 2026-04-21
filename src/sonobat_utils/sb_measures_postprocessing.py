@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-21 14:14:52
+# @Last Modified time: 2026-04-21 14:58:50
 #
 # **********************************************************
 
@@ -577,7 +577,7 @@ CREATE INDEX IF NOT EXISTS idx_spec_harmonic ON chirp_spectrograms(harmonic_idx)
                     f"No '*_CumulativeSonoBatch_*.txt' files found under {root_dir}"
                 )
             for sf in s_files:
-                df = pd.read_csv(sf, sep='\t')
+                df = pd.read_csv(sf, sep='\t', low_memory=False)
                 cols_to_keep = ['Path', 'SppAccp', 'Prob', '#Maj', '#Accp']
                 df = df[cols_to_keep]
                 df['rec_site'] = pd.Categorical(
