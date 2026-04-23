@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-22 20:17:55
+# @Last Modified time: 2026-04-23 10:42:46
 #
 # **********************************************************
 
@@ -84,7 +84,7 @@ CLI usage:
 """
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -100,7 +100,17 @@ import sqlite3
 
 from logging_service import LoggingService
 from sklearn.preprocessing import RobustScaler
-from sonobat_utils.utils import Utils
+
+# ---------------------------------------------------------------------------
+# Fixed timezone constant
+# ---------------------------------------------------------------------------
+
+# The Jasper Ridge audio recorders use Pacific Standard Time (UTC−8) year-round.
+# Use this constant for any wall-clock stamping that should be anchored to PST
+# (e.g. output filename timestamps) so that filenames remain consistent whether
+# the script runs on quintus, sextus, or a UTC-set cloud VM.
+_PST = timezone(timedelta(hours=-8))
+
 
 # ---------------------------- Class BatsData -------------
 
@@ -213,17 +223,7 @@ class BatsData:
                  ``timestamp`` populated.
         :raises KeyError: If the file is missing the expected metadata key.
         """
-        # Both pq.read_schema() and the default pq.read_table() go through
-        # ParquetFile with default thrift limits and fail on large BatsData
-        # files ("Exceeded size limit").  Read the file once with raised limits
-        # — the same 1 GB ceiling that Utils.read_df_file() uses — to obtain
-        # both the schema metadata and the row data in a single pass.
-        _LIMIT = Utils.PARQUET_FILES_THRIFT_LIMIT
-        table = pq.read_table(
-            path,
-            thrift_string_size_limit=_LIMIT,
-            thrift_container_size_limit=_LIMIT,
-        )
+        table    = pq.read_table(path)
         raw_meta = table.schema.metadata or {}
 
         if cls._META_KEY not in raw_meta:
@@ -345,27 +345,14 @@ class SonoBatPostProcessor:
             )
 
         self.log = LoggingService()
-        self.timestamp = datetime.now().isoformat().replace(':', '_')
+        self.timestamp = datetime.now(_PST).isoformat().replace(':', '_')
 
         self.root_dirs        = [Path(r) for r in root_dirs]
         self.rec_sites        = rec_sites
         self.dest_dir         = Path(dest_dir)
         self.conf_thresh      = conf_thresh
+        self.db_path          = Path(db_path) if db_path is not None else None
         self.add_daytime_cols = add_daytime_cols
-
-        # Stamp the DB filename with the same timestamp as the parquet files
-        # so every run produces a fresh, self-consistent trio of outputs
-        # (measures parquet, noise parquet, chirp_meta DB).  The caller passes
-        # a base path such as /qnap/bats/chirp_meta.db; we turn that into
-        # /qnap/bats/chirp_meta_<timestamp>.db.
-        if db_path is not None:
-            _db_base = Path(db_path)
-            self.db_path = _db_base.parent / f"{_db_base.stem}_{self.timestamp}{_db_base.suffix}"
-        else:
-            self.db_path = None
-
-        if self.db_path is not None:
-            self.log.info(f"DB path (timestamped): {self.db_path}")
 
         self.rejected_entries = []
         self.composite_species: set[CompositeSpecies] = set()
@@ -453,13 +440,10 @@ class SonoBatPostProcessor:
             else:
                 from sonobat_utils.sb_measures_add_daytime_columns import DaytimeColumnAdder
                 self.log.info("Adding daytime columns to measures parquet ...")
-                new_measures_path, new_noise_path = DaytimeColumnAdder(
+                DaytimeColumnAdder(
                     measures_path=str(out_path),
                     db_path=str(self.db_path),
                 ).run()
-                self.log.info(f"Daytime-augmented measures: {new_measures_path}")
-                if new_noise_path:
-                    self.log.info(f"Daytime-augmented noise:    {new_noise_path}")
             
     #------------------------------------
     # _seed_recordings_db

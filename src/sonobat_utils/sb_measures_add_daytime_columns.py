@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-21 11:15:48
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-22 20:56:27
+# @Last Modified time: 2026-04-23 10:42:38
 # ******************************************
 
 '''
@@ -36,22 +36,15 @@ Known patterns (see _FNAME_PATTERNS):
   - YYYY-MM-DD_HH-MM-SS: site_2022-02-05_19-20-49
   - 14 consecutive digits YYYYMMDDHHMMSS
 
-New parquet files are written next to their originals with a fresh
+Output parquet files are written next to their originals with a fresh
 timestamp in the name:
 
     bats_2026-04-21T14_03_27.123456.parquet
     bats_noise_2026-04-21T14_03_27.123456.parquet
 
-Both output files carry the full BatsData envelope (file_map, normalizer
-state) copied from their originals, so Utils.read_df_file() works on them
-without any KeyError.
-
-run() returns the two new paths as a tuple so callers are never left
-holding a stale filename.
-
 Usage
 -----
-    python sb_measures_add_daytime_columns.py \\
+    python add_daytime_columns.py \\
         /data/bats_2026-04-14T23_44_31.660585.parquet \\
         /data/chirp_meta.db
 '''
@@ -62,7 +55,7 @@ import re
 import sqlite3
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, NamedTuple
 
@@ -70,8 +63,24 @@ import pandas as pd
 
 from data_calcs.daytime_file_selection import DaytimeFileSelector
 from logging_service import LoggingService
-from sonobat_utils.sb_measures_postprocessing import BatsData
 from sonobat_utils.utils import Utils
+
+
+# ---------------------------------------------------------------------------
+# Fixed timezone constant
+# ---------------------------------------------------------------------------
+
+# The Jasper Ridge audio recorders are set to Pacific Standard Time (UTC−8)
+# year-round and never observe Daylight Saving Time.  All timestamps parsed
+# from recording filenames must be tagged with this fixed offset.
+#
+# We deliberately do NOT use zoneinfo.ZoneInfo("America/Los_Angeles") or any
+# other DST-aware timezone here.  A DST-aware tzinfo would silently shift
+# summer recordings by +1 hour (to PDT / UTC−7), producing wrong UTC times,
+# wrong is_daytime verdicts, and wrong ISO offset strings in the output
+# column.  The data has ~1.7 M recordings in April–October (the DST window),
+# so the error would affect the large majority of the dataset.
+_PST = timezone(timedelta(hours=-8))
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +171,6 @@ class DaytimeColumnAdder:
     table was built exclusively from files that produced measures, so
     noise file_ids are not present there.
 
-    Both output files preserve the full BatsData envelope (file_map,
-    normalizer state) from their originals so that Utils.read_df_file()
-    works on them without a KeyError.
-
     :param measures_path: path to the bat measures parquet file
     :type measures_path: str
     :param db_path: path to chirp_meta.db SQLite database
@@ -196,7 +201,7 @@ class DaytimeColumnAdder:
     # run
     # ------------------------------------------------------------------
 
-    def run(self) -> tuple[Path, Path | None]:
+    def run(self) -> None:
         '''
         Orchestrate the full augmentation workflow:
 
@@ -205,13 +210,7 @@ class DaytimeColumnAdder:
         3. Load both dataframes.
         4. Build a file_id → (was_daytime, time_of_day_pactime) lookup.
         5. Append the two new columns to each dataframe.
-        6. Write new parquet files next to their originals, preserving
-           the BatsData envelope (file_map, normalizer state) from the
-           originals.
-
-        :return: Tuple of (new_measures_path, new_noise_path).  The noise
-                 path is None when no sibling noise file was found.
-        :rtype: tuple[Path, Path | None]
+        6. Write new parquet files next to their originals.
         '''
         noise_path = self._derive_noise_path(self.measures_path)
         if not noise_path.exists():
@@ -236,47 +235,34 @@ class DaytimeColumnAdder:
             self.log.info(f"  {len(noise_df):,} rows")
 
         # ---- build file_id lookup ----------------------------------------
-        # Cast to Python int — measures_df['file_id'] is numpy int32, and
-        # sqlite3 binds parameters via isinstance(val, int), which numpy
-        # scalars fail.  Passing numpy int32 produces 0 rows silently.
-        unique_ids = [int(fid) for fid in measures_df['file_id'].unique()]
+        unique_ids = list(measures_df['file_id'].unique())
         self.log.info(
-            f"Resolving {len(unique_ids):,} unique file_ids via recordings table ...")
+            f"Resolving {len(unique_ids):,} unique file_ids via recordings table …")
         fid_map = self._build_fid_map(unique_ids)
 
         # ---- augment measures (populated) --------------------------------
-        self.log.info("Appending daytime columns to measures ...")
+        self.log.info("Appending daytime columns to measures …")
         measures_aug = self._append_columns(measures_df, fid_map, populate=True)
 
         # ---- augment noise (always empty) --------------------------------
         noise_aug: pd.DataFrame | None = None
         if noise_df is not None:
-            self.log.info("Appending empty daytime columns to noise ...")
+            self.log.info("Appending empty daytime columns to noise …")
             noise_aug = self._append_columns(noise_df, fid_map={}, populate=False)
 
         # ---- write -------------------------------------------------------
-        # Re-use the BatsData envelope from the originals so the file_map and
-        # normalizer state are preserved.  Plain DataFrame.to_parquet() would
-        # strip the bats_metadata key, breaking Utils.read_df_file() on the
-        # output.
-        ts = datetime.now().strftime('%Y-%m-%dT%H_%M_%S.%f')
+        ts = datetime.now(_PST).strftime('%Y-%m-%dT%H_%M_%S.%f')
 
         out_measures = self.measures_path.parent / f"bats_{ts}.parquet"
-        self.log.info(f"Writing measures -> {out_measures}")
-        bats_m = BatsData.read_parquet(str(self.measures_path))
-        bats_m.df = measures_aug
-        bats_m.to_parquet(out_measures)
+        self.log.info(f"Writing measures → {out_measures}")
+        measures_aug.to_parquet(out_measures, index=False)
 
-        out_noise: Path | None = None
         if noise_aug is not None:
             out_noise = noise_path.parent / f"bats_noise_{ts}.parquet"
-            self.log.info(f"Writing noise   -> {out_noise}")
-            bats_n = BatsData.read_parquet(str(noise_path))
-            bats_n.df = noise_aug
-            bats_n.to_parquet(out_noise)
+            self.log.info(f"Writing noise   → {out_noise}")
+            noise_aug.to_parquet(out_noise, index=False)
 
         self.log.info("Done.")
-        return out_measures, out_noise
 
     # ------------------------------------------------------------------
     # _survey_filename_patterns
@@ -439,33 +425,39 @@ class DaytimeColumnAdder:
         first successfully parsed timezone-aware datetime together with
         the name of the matching pattern.
 
-        Recorders were configured to use Pacific Standard Time year-round
-        (UTC-8, fixed offset — no DST adjustment).  The datetime is
-        therefore constructed with a fixed UTC-8 timezone so that
-        sunrise/sunset comparisons in DaytimeFileSelector are correct
-        regardless of the time of year.
+        All datetimes are tagged with the module-level ``_PST`` constant
+        (``timezone(timedelta(hours=-8))`` — a fixed UTC−8 offset with no
+        DST adjustments).  This is intentional and correct: the Jasper Ridge
+        recorders run on Pacific Standard Time year-round and never observe
+        Daylight Saving Time.
+
+        Using a DST-aware tzinfo such as
+        ``zoneinfo.ZoneInfo("America/Los_Angeles")`` would be WRONG here:
+        Python would resolve summer wall-clock times as PDT (UTC−7) instead
+        of PST (UTC−8), silently shifting those datetimes by +1 hour in UTC.
+        The dataset contains ~1.7 M recordings in April–October (the DST
+        window), so the corruption would affect the large majority of rows:
+
+          - ``is_daytime_recording()`` comparisons with sunrise/sunset would
+            be off by one hour for ~7 months of the year.
+          - The ``time_of_day_pactime`` ISO strings would carry ``-07:00``
+            instead of the correct ``-08:00`` during DST months.
 
         :param filename: recording filename (pipe-suffix already removed)
         :type filename: str
-        :return: (timezone-aware datetime in fixed PST, matched-pattern name)
+        :return: (UTC−8-aware datetime, matched-pattern name)
         :rtype: tuple[datetime, str]
         :raises ValueError: if no pattern in _FNAME_PATTERNS matches
         '''
-        import pytz
-        # Fixed UTC-8 offset (PST year-round, as the recorders were set).
-        # Using pytz.FixedOffset rather than self.selector.timezone avoids
-        # the LMT-offset artifact that pytz produces when a tzinfo is passed
-        # directly to the datetime constructor instead of via .localize().
-        PST = pytz.FixedOffset(-8 * 60)
-
         for pat in _FNAME_PATTERNS:
             m = pat.regex.search(filename)
             if m is None:
                 continue
             try:
                 yr, mo, dy, hr, mi, sc = pat.extractor(m.groups())
-                dt = PST.localize(datetime(yr, mo, dy,
-                                           hour=hr, minute=mi, second=sc))
+                dt = datetime(yr, mo, dy,
+                              hour=hr, minute=mi, second=sc,
+                              tzinfo=_PST)          # fixed UTC-8, never DST
                 return dt, pat.name
             except (ValueError, IndexError) as exc:
                 # Groups matched but produced an invalid date/time value
@@ -565,10 +557,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 if __name__ == '__main__':
     args = _build_parser().parse_args()
-    new_measures, new_noise = DaytimeColumnAdder(
+    DaytimeColumnAdder(
         measures_path=args.measures_file,
         db_path=args.db_path,
     ).run()
-    print(f"Measures: {new_measures}")
-    if new_noise:
-        print(f"Noise:    {new_noise}")
