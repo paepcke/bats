@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-21 14:58:50
+# @Last Modified time: 2026-04-22 18:46:54
 #
 # **********************************************************
 
@@ -429,10 +429,13 @@ class SonoBatPostProcessor:
             else:
                 from sonobat_utils.sb_measures_add_daytime_columns import DaytimeColumnAdder
                 self.log.info("Adding daytime columns to measures parquet ...")
-                DaytimeColumnAdder(
+                new_measures_path, new_noise_path = DaytimeColumnAdder(
                     measures_path=str(out_path),
                     db_path=str(self.db_path),
                 ).run()
+                self.log.info(f"Daytime-augmented measures: {new_measures_path}")
+                if new_noise_path:
+                    self.log.info(f"Daytime-augmented noise:    {new_noise_path}")
             
     #------------------------------------
     # _seed_recordings_db
