@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-22 19:32:01
+# @Last Modified time: 2026-04-22 20:17:55
 #
 # **********************************************************
 
@@ -213,9 +213,18 @@ class BatsData:
                  ``timestamp`` populated.
         :raises KeyError: If the file is missing the expected metadata key.
         """
-        # Read schema/metadata only (no row data) to avoid the PyArrow thrift
-        # buffer limit that pq.read_table() hits on large BatsData files.
-        raw_meta = pq.read_schema(path).metadata or {}
+        # Both pq.read_schema() and the default pq.read_table() go through
+        # ParquetFile with default thrift limits and fail on large BatsData
+        # files ("Exceeded size limit").  Read the file once with raised limits
+        # — the same 1 GB ceiling that Utils.read_df_file() uses — to obtain
+        # both the schema metadata and the row data in a single pass.
+        _LIMIT = Utils.PARQUET_FILES_THRIFT_LIMIT
+        table = pq.read_table(
+            path,
+            thrift_string_size_limit=_LIMIT,
+            thrift_container_size_limit=_LIMIT,
+        )
+        raw_meta = table.schema.metadata or {}
 
         if cls._META_KEY not in raw_meta:
             raise KeyError(
@@ -227,11 +236,7 @@ class BatsData:
         file_map   = {int(k): v for k, v in meta_dict['file_map'].items()}
         normalizer = MeasureNormalizer.from_dict(meta_dict['normalizer'])
         timestamp  = meta_dict['timestamp']
-
-        # Utils.read_df_file() raises the PyArrow thrift buffer limit before
-        # reading, which is the only safe way to load large BatsData parquet
-        # files.  Never use pd.read_parquet() or pq.read_table() directly.
-        df = Utils.read_df_file(str(path))
+        df         = table.to_pandas()
 
         return cls(df=df, file_map=file_map,
                    normalizer=normalizer, timestamp=timestamp)
@@ -346,8 +351,21 @@ class SonoBatPostProcessor:
         self.rec_sites        = rec_sites
         self.dest_dir         = Path(dest_dir)
         self.conf_thresh      = conf_thresh
-        self.db_path          = Path(db_path) if db_path is not None else None
         self.add_daytime_cols = add_daytime_cols
+
+        # Stamp the DB filename with the same timestamp as the parquet files
+        # so every run produces a fresh, self-consistent trio of outputs
+        # (measures parquet, noise parquet, chirp_meta DB).  The caller passes
+        # a base path such as /qnap/bats/chirp_meta.db; we turn that into
+        # /qnap/bats/chirp_meta_<timestamp>.db.
+        if db_path is not None:
+            _db_base = Path(db_path)
+            self.db_path = _db_base.parent / f"{_db_base.stem}_{self.timestamp}{_db_base.suffix}"
+        else:
+            self.db_path = None
+
+        if self.db_path is not None:
+            self.log.info(f"DB path (timestamped): {self.db_path}")
 
         self.rejected_entries = []
         self.composite_species: set[CompositeSpecies] = set()
