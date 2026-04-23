@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-22 18:46:54
+# @Last Modified time: 2026-04-22 19:32:01
 #
 # **********************************************************
 
@@ -100,6 +100,7 @@ import sqlite3
 
 from logging_service import LoggingService
 from sklearn.preprocessing import RobustScaler
+from sonobat_utils.utils import Utils
 
 # ---------------------------- Class BatsData -------------
 
@@ -212,8 +213,9 @@ class BatsData:
                  ``timestamp`` populated.
         :raises KeyError: If the file is missing the expected metadata key.
         """
-        table    = pq.read_table(path)
-        raw_meta = table.schema.metadata or {}
+        # Read schema/metadata only (no row data) to avoid the PyArrow thrift
+        # buffer limit that pq.read_table() hits on large BatsData files.
+        raw_meta = pq.read_schema(path).metadata or {}
 
         if cls._META_KEY not in raw_meta:
             raise KeyError(
@@ -225,7 +227,11 @@ class BatsData:
         file_map   = {int(k): v for k, v in meta_dict['file_map'].items()}
         normalizer = MeasureNormalizer.from_dict(meta_dict['normalizer'])
         timestamp  = meta_dict['timestamp']
-        df         = table.to_pandas()
+
+        # Utils.read_df_file() raises the PyArrow thrift buffer limit before
+        # reading, which is the only safe way to load large BatsData parquet
+        # files.  Never use pd.read_parquet() or pq.read_table() directly.
+        df = Utils.read_df_file(str(path))
 
         return cls(df=df, file_map=file_map,
                    normalizer=normalizer, timestamp=timestamp)
