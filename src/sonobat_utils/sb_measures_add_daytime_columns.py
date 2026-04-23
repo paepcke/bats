@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-21 11:15:48
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-22 18:46:22
+# @Last Modified time: 2026-04-22 20:56:27
 # ******************************************
 
 '''
@@ -236,7 +236,10 @@ class DaytimeColumnAdder:
             self.log.info(f"  {len(noise_df):,} rows")
 
         # ---- build file_id lookup ----------------------------------------
-        unique_ids = list(measures_df['file_id'].unique())
+        # Cast to Python int — measures_df['file_id'] is numpy int32, and
+        # sqlite3 binds parameters via isinstance(val, int), which numpy
+        # scalars fail.  Passing numpy int32 produces 0 rows silently.
+        unique_ids = [int(fid) for fid in measures_df['file_id'].unique()]
         self.log.info(
             f"Resolving {len(unique_ids):,} unique file_ids via recordings table ...")
         fid_map = self._build_fid_map(unique_ids)
