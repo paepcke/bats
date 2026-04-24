@@ -5,7 +5,7 @@
 # @Date:   2026-03-08 16:27:19
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/chirp_detection/chirp_measures_extraction.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-16 15:28:07
+# @Last Modified time: 2026-04-23 12:46:24
 #
 # **********************************************************#
 
@@ -575,10 +575,11 @@ def _measures_from_chirp(
     ffwd15 = _freq_at_db_drop(15.0, 'fwd')
     ffwd5  = _freq_at_db_drop(5.0,  'fwd')
     fbak5  = _freq_at_db_drop(5.0,  'bak')
+    fbak32 = _freq_at_db_drop(32.0, 'bak')   # upper 32 dB point for Bndw32dB
 
     bndw32 = NaN
-    if not math.isnan(ffwd32) and not math.isnan(fbak5):
-        bndw32 = fbak5 - ffwd32
+    if not math.isnan(ffwd32) and not math.isnan(fbak32):
+        bndw32 = fbak32 - ffwd32              # symmetric 32 dB bandwidth
 
     s_onset  = int(round(onset_s * sr))
     s_offset = min(int(round(offset_s * sr)), len(audio))
