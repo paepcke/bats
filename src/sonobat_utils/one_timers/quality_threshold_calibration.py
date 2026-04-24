@@ -4,9 +4,8 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-23 17:04:55
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-23 17:05:37
+# @Last Modified time: 2026-04-23 17:20:34
 # **********************************************
-
 """
 quality_threshold_calibration.py
 ==================================
@@ -185,12 +184,13 @@ class QualityThresholdCalibrator:
             # Load and normalize paths to bare stems in both files.
             params_dfs  = []
             for pf in params_files:
-                df = pd.read_csv(pf, sep='\t', usecols=['Path', 'Quality'],
+                df = pd.read_csv(pf, sep='\t',
+                                 usecols=['Path', 'TimeInFile', 'Quality'],
                                  low_memory=False)
                 df['stem'] = df['Path'].astype(str)\
                     .str.replace('\\', '/', regex=False)\
                     .apply(lambda p: Path(p).stem)
-                params_dfs.append(df[['stem', 'Quality']])
+                params_dfs.append(df[['stem', 'TimeInFile', 'Quality']])
 
             species_dfs = []
             for sf in species_files:
@@ -205,8 +205,47 @@ class QualityThresholdCalibrator:
                 species_dfs.append(df[['stem', '#Accp']])
 
             params_df  = pd.concat(params_dfs,  ignore_index=True)
-            species_df = pd.concat(species_dfs, ignore_index=True)\
-                .drop_duplicates('stem')
+            species_df = pd.concat(species_dfs, ignore_index=True)
+
+            # ── Deduplication ─────────────────────────────────────────
+            # The same Cumulative files can appear in multiple root_dirs
+            # due to human error (e.g. two barn directories that overlap).
+            # A chirp is uniquely identified by (stem, TimeInFile): same
+            # recording, same onset time within the chop.  For the species
+            # side the key is just stem (one row per chop per Cumulative
+            # file); keep the row with the highest #Accp so that genuine
+            # detections are not discarded in favour of a no-detection row
+            # from an earlier run.
+
+            n_params_before  = len(params_df)
+            n_species_before = len(species_df)
+
+            params_df = (
+                params_df
+                .sort_values('Quality', ascending=False)   # keep higher Quality on tie
+                .drop_duplicates(subset=['stem', 'TimeInFile'], keep='first')
+                .reset_index(drop=True)
+            )
+            species_df = (
+                species_df
+                .sort_values('#Accp', ascending=False)     # keep higher #Accp on tie
+                .drop_duplicates(subset='stem', keep='first')
+                .reset_index(drop=True)
+            )
+
+            n_params_dups  = n_params_before  - len(params_df)
+            n_species_dups = n_species_before - len(species_df)
+
+            if n_params_dups or n_species_dups:
+                self.log.warn(
+                    f"  {site}: removed duplicates — "
+                    f"{n_params_dups:,} chirp rows (Parameters), "
+                    f"{n_species_dups:,} chop rows (SonoBatch). "
+                    f"This indicates overlapping Cumulative files across "
+                    f"root_dirs for this site."
+                )
+            else:
+                self.log.info(f"  {site}: no duplicate rows detected.")
 
             self.log.info(
                 f"  {site}: {params_df['stem'].nunique():,} chops in Parameters, "
