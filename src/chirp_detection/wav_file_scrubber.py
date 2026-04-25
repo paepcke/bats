@@ -5,10 +5,9 @@
 # @Date:   2026-03-07 16:37:48
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/chirp_detection/wav_file_scrubber.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-23 12:45:43
+# @Last Modified time: 2026-04-24 18:12:56
 #
 # **********************************************************
-
 """
 wav_scrubber.py
 ===============
@@ -75,7 +74,7 @@ import logging
 import os
 import time
 import warnings
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from enum import auto
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
@@ -818,8 +817,7 @@ class WavScrubber:
         if self.checkpoint_csv is not None:
             completed = self._load_checkpoint(self.checkpoint_csv)
             if completed:
-                log.info("WavScrubber: resuming — %d files already in checkpoint",
-                         len(completed))
+                log.info(f"WavScrubber: resuming — {len(completed)} files already in checkpoint")
             # Open for append so new results land immediately on disk.
             # newline='' is required by csv.DictWriter on all platforms.
             self.checkpoint_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -891,19 +889,13 @@ class WavScrubber:
 
                 done_this_run = 0
                 while in_flight:
-                    from concurrent.futures import FIRST_COMPLETED, wait as _fut_wait
-                    done_set, _ = _fut_wait(
-                        in_flight,
-                        timeout=self.worker_timeout,
-                        return_when=FIRST_COMPLETED,
-                    )
+                    # as_completed yields the next finished future
+                    for future in as_completed(in_flight):
+                        path = in_flight.pop(future)
 
-                    if not done_set:
-                        # Timeout elapsed with no worker finishing: cancel every
-                        # still-pending future and mark each file as UNREADABLE.
-                        for fut, path in list(in_flight.items()):
-                            if not fut.done():
-                                fut.cancel()
+                        try:
+                            rec = future.result(timeout=self.worker_timeout)
+                        except TimeoutError:
                             rec = ScrubRecord(
                                 path    = path.resolve(),
                                 verdict = ScrubReason.UNREADABLE,
@@ -912,32 +904,6 @@ class WavScrubber:
                                     f"{self.worker_timeout:.0f}s"
                                 ),
                             )
-                            records[idx_map[path.resolve()]] = rec
-                            done_this_run += 1
-                            if checkpoint_writer is not None:
-                                row = dataclasses.asdict(rec)
-                                row["path"] = str(rec.path)
-                                checkpoint_writer.writerow(row)
-                                checkpoint_fh.flush()
-                            if pbar is not None:
-                                pbar.update(1)
-                            elif self.show_progress:
-                                done_total = skip + done_this_run
-                                if done_total % 1000 == 0 or done_total == total:
-                                    pct = 100 * done_total / total
-                                    print(
-                                        f"  scrubbing {done_total}/{total}"
-                                        f"  ({pct:.0f}%)",
-                                        flush=True,
-                                    )
-                        in_flight.clear()
-                        break
-
-                    for future in done_set:
-                        path = in_flight.pop(future)
-
-                        try:
-                            rec = future.result()
                         except Exception as exc:
                             rec = ScrubRecord(
                                 path    = path.resolve(),
@@ -970,6 +936,11 @@ class WavScrubber:
                                     f"  ({pct:.0f}%)",
                                     flush=True,
                                 )
+
+                        # as_completed only yields one future per call when
+                        # used this way; break back to the while loop so we
+                        # re-enter as_completed with the updated in_flight dict.
+                        break
 
         except KeyboardInterrupt:
             # Close gracefully before raising so the terminal is clean
@@ -1034,8 +1005,7 @@ class WavScrubber:
                     except Exception:
                         pass  # skip malformed rows
         except Exception as exc:
-            log.warn("WavScrubber: could not read checkpoint '%s': %s",
-                        csv_path, exc)
+            log.warn(f"WavScrubber: could not read checkpoint '{csv_path}': {exc}")
         return result
 
     @staticmethod
@@ -1051,8 +1021,7 @@ class WavScrubber:
             import torchaudio  # noqa: F401
             available = bool(torch.cuda.is_available())
             if available:
-                log.info("WavScrubber: GPU STFT enabled (%s)",
-                         torch.cuda.get_device_name(0))
+                log.info(f"WavScrubber: GPU STFT enabled ({torch.cuda.get_device_name(0)})")
             else:
                 log.info("WavScrubber: PyTorch present but no CUDA device; "
                          "using CPU STFT")
