@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-16 13:42:25
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-16 14:53:30
+# @Last Modified time: 2026-04-25 08:52:27
 # *************************************
 
 # Run three related random forest trainings in parallel:
@@ -68,7 +68,7 @@ show_progress() {
 echo "$(date '+%H:%M:%S')  Launching training runs..."
 TRAIN_START=$(date +%s)
 
-src/species_classification/species_pred_random_forest.py \
+src/species_classification/training/species_pred_random_forest.py \
     --input "$CHIRP_MEASURES" \
     --out-dir $DEST_DIR_MAIN \
     --min-species-count 500 --n-estimators 300 --n-jobs -1 \
@@ -76,7 +76,7 @@ src/species_classification/species_pred_random_forest.py \
     > $DEST_DIR_MAIN/train.log 2>&1 &
 PID_MAIN=$!
 
-src/species_classification/species_pred_random_forest.py \
+src/species_classification/inference/species_pred_random_forest.py \
     --input "$CHIRP_MEASURES" \
     --out-dir $DEST_DIR_COTO_TABR \
     --mode binary --species-pair Coto Tabr \
@@ -84,7 +84,7 @@ src/species_classification/species_pred_random_forest.py \
     > $DEST_DIR_COTO_TABR/train.log 2>&1 &
 PID_COTO_TABR=$!
 
-src/species_classification/species_pred_random_forest.py \
+src/species_classification/inference/species_pred_random_forest.py \
     --input "$CHIRP_MEASURES" \
     --out-dir $DEST_DIR_LANO_TABR \
     --mode binary --species-pair Lano Tabr \
@@ -117,7 +117,7 @@ echo ""
 echo "$(date '+%H:%M:%S')  Launching hierarchical inference..."
 INFER_START=$(date +%s)
 
-src/species_classification/hierarchical_rf_predict.py \
+src/species_classification/inference/hierarchical_rf_predict.py \
     --input "$CHIRP_MEASURES" \
     --main-rf      $DEST_DIR_MAIN \
     --coto-tabr-rf $DEST_DIR_COTO_TABR \
