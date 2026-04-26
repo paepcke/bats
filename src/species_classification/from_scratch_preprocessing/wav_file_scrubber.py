@@ -5,7 +5,7 @@
 # @Date:   2026-03-07 16:37:48
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/chirp_detection/wav_file_scrubber.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-24 18:12:56
+# @Last Modified time: 2026-04-26 15:52:55
 #
 # **********************************************************
 """
@@ -309,6 +309,7 @@ def _scrub_one(
     min_pulses: int,
     max_ipi_cv: float,
     use_gpu: bool,
+    ipi_freq_floor_hz: float = 800.0,
 ) -> ScrubRecord:
     """
     Apply all scrub checks to a single ``.wav`` file and return a
@@ -318,13 +319,27 @@ def _scrub_one(
     :class:`ProcessPoolExecutor` can pickle it for dispatch to worker
     processes.
 
-    :param path:       Path to the ``.wav`` file.
-    :param min_pulses: Minimum number of valid bat-band pulses required.
-    :param max_ipi_cv: Maximum allowed coefficient of variation for inter-pulse
-                       intervals.
-    :param use_gpu:    If ``True``, attempt GPU-accelerated STFT; fall back to
-                       CPU on failure.
-    :return:           :class:`ScrubRecord` with verdict and diagnostics.
+    :param path:               Path to the ``.wav`` file.
+    :param min_pulses:         Minimum number of valid bat-band pulses required.
+    :param max_ipi_cv:         Maximum allowed coefficient of variation for
+                               inter-pulse intervals.
+    :param use_gpu:            If ``True``, attempt GPU-accelerated STFT; fall
+                               back to CPU on failure.
+    :param ipi_freq_floor_hz:  Low-frequency cutoff (Hz, at the *true* sample
+                               rate after any TE correction) applied to the
+                               energy envelope used for IPI pulse detection.
+                               Frequencies below this value are excluded from
+                               the envelope sum so that sub-bat interference
+                               (e.g. frog choruses at marsh sites) cannot
+                               corrupt the IPI regularity check.  The full
+                               bat-band spectrogram is still used for bandwidth
+                               filtering and all other checks.
+                               Default: 800 Hz (true), safely below the lowest
+                               bat species in the label set (~12 kHz for Anpa,
+                               ~20 kHz for Coto) and well above the frog
+                               interference observed in marsh recordings
+                               (< 600 Hz true).
+    :return:                   :class:`ScrubRecord` with verdict and diagnostics.
     """
     rec = ScrubRecord(path=path.resolve(), verdict=ScrubReason.RETAINED)
 
@@ -442,8 +457,14 @@ def _scrub_one(
     # ------------------------------------------------------------------ #
     #  7. Pulse detection on bat-band energy envelope                     #
     # ------------------------------------------------------------------ #
-    # Collapse spectrogram to 1-D energy envelope (sum across bat freqs)
-    energy     = Sxx_bat.sum(axis=0)                   # (n_times,)
+    # For IPI detection, restrict to frequencies above ipi_freq_floor_hz.
+    # This excludes sub-bat interference (e.g. frog choruses in marsh
+    # habitat that sit solidly below 600 Hz true) without affecting the
+    # bandwidth check in step 8 which still uses the full Sxx_bat.
+    ipi_mask  = freqs_bat >= ipi_freq_floor_hz
+    Sxx_ipi   = Sxx_bat[ipi_mask, :] if ipi_mask.any() else Sxx_bat
+    # Collapse spectrogram to 1-D energy envelope (sum across IPI freqs)
+    energy     = Sxx_ipi.sum(axis=0)                   # (n_times,)
     energy_db  = 10.0 * np.log10(energy + 1e-12)
 
     threshold_linear = 10.0 ** (_PULSE_THRESHOLD_DBFS / 10.0) * Sxx_bat.shape[0]
@@ -729,41 +750,52 @@ class WavScrubber:
     def __init__(
         self,
         wav_paths: Sequence[str | Path],
-        min_pulses:      int            = 5,
-        max_ipi_cv:      float          = 1.5,
-        n_workers:       Optional[int]  = None,
-        use_gpu:         bool           = True,
-        max_duration_s:  float          = 60.0,
-        show_progress:   bool           = True,
-        checkpoint_csv:  Optional[str | Path] = None,
-        worker_timeout:  Optional[float] = 120.0,
+        min_pulses:          int            = 5,
+        max_ipi_cv:          float          = 1.5,
+        ipi_freq_floor_hz:   float          = 800.0,
+        n_workers:           Optional[int]  = None,
+        use_gpu:             bool           = True,
+        max_duration_s:      float          = 60.0,
+        show_progress:       bool           = True,
+        checkpoint_csv:      Optional[str | Path] = None,
+        worker_timeout:      Optional[float] = 120.0,
     ) -> None:
         """
-        :param wav_paths:       Paths to ``.wav`` files to evaluate.
-        :param min_pulses:      Minimum valid bat-band pulses to retain a file.
-        :param max_ipi_cv:      IPI regularity tolerance.
-        :param n_workers:       Worker processes.  ``None`` (default) reserves
-                                4 cores for the OS and interactive use;
-                                pass ``0`` to use every available core.
-        :param use_gpu:         Enable GPU-accelerated STFT.
-        :param max_duration_s:  Files longer than this are rejected.
-        :param show_progress:   Show a tqdm progress bar (falls back to
-                                periodic print lines if tqdm is not installed).
-        :param checkpoint_csv:  Path to a CSV file used for incremental
-                                checkpointing.  If the file already exists,
-                                any paths already present in it are skipped
-                                (resume after interruption).  New results are
-                                appended row-by-row as they complete so that
-                                progress is never lost.
-        :param worker_timeout:  Seconds to wait for a single worker result
-                                before marking the file as UNREADABLE.  Protects
-                                against worker processes that hang on corrupt
-                                files.  ``None`` disables the timeout.
+        :param wav_paths:           Paths to ``.wav`` files to evaluate.
+        :param min_pulses:          Minimum valid bat-band pulses to retain a
+                                    file.
+        :param max_ipi_cv:          IPI regularity tolerance.
+        :param ipi_freq_floor_hz:   Low-frequency cutoff (Hz, true rate) for
+                                    the IPI pulse-detection envelope.
+                                    Excludes sub-bat noise sources such as frog
+                                    choruses from the regularity check without
+                                    affecting bandwidth filtering or any other
+                                    check.  Default: 800 Hz.
+        :param n_workers:           Worker processes.  ``None`` (default)
+                                    reserves 4 cores for the OS and interactive
+                                    use; pass ``0`` to use every available core.
+        :param use_gpu:             Enable GPU-accelerated STFT.
+        :param max_duration_s:      Files longer than this are rejected.
+        :param show_progress:       Show a tqdm progress bar (falls back to
+                                    periodic print lines if tqdm is not
+                                    installed).
+        :param checkpoint_csv:      Path to a CSV file used for incremental
+                                    checkpointing.  If the file already exists,
+                                    any paths already present in it are skipped
+                                    (resume after interruption).  New results
+                                    are appended row-by-row as they complete so
+                                    that progress is never lost.
+        :param worker_timeout:      Seconds to wait for a single worker result
+                                    before marking the file as UNREADABLE.
+                                    Protects against worker processes that hang
+                                    on corrupt files.  ``None`` disables the
+                                    timeout.
         """
 
-        self.wav_paths      = [Path(p) for p in wav_paths]
-        self.min_pulses     = min_pulses
-        self.max_ipi_cv     = max_ipi_cv
+        self.wav_paths          = [Path(p) for p in wav_paths]
+        self.min_pulses         = min_pulses
+        self.max_ipi_cv         = max_ipi_cv
+        self.ipi_freq_floor_hz  = ipi_freq_floor_hz
         # Default: leave 4 cores free for the OS, shell, and interactive
         # use.  On a 48-core machine this gives 44 workers; on an 8-core
         # laptop it gives 4.  Pass n_workers=0 to use every core.
@@ -878,6 +910,7 @@ class WavScrubber:
                     f = executor.submit(
                         _scrub_one, p,
                         self.min_pulses, self.max_ipi_cv, self._gpu_available,
+                        self.ipi_freq_floor_hz,
                     )
                     in_flight[f] = p
                     return True
@@ -1080,6 +1113,22 @@ def _parse_args():
         help="max IPI coefficient of variation (default: 1.5)",
     )
     parser.add_argument(
+        "--ipi-freq-floor",
+        type=float, default=800.0,
+        metavar="HZ",
+        dest="ipi_freq_floor_hz",
+        help=(
+            "Low-frequency cutoff in Hz (true rate) for the IPI pulse-"
+"            detection envelope.  Frequencies below this value are "
+"            excluded from the energy envelope used to time bat pulses, "
+"            preventing sub-bat interference (e.g. frog choruses) from "
+"            corrupting the IPI regularity check.  The full bat-band "
+"            spectrogram is still used for all other checks.  "
+"            Default: 800 Hz (safely below all species in the label set, "
+"            well above marsh frog interference at < 600 Hz true)."
+        ),
+    )
+    parser.add_argument(
         "-w", "--workers",
         type=int, default=None,
         help=(
@@ -1171,14 +1220,15 @@ def main() -> None:
               f"pass --checkpoint <path> to choose your own)")
 
     scrubber = WavScrubber(
-        wav_paths       = paths,
-        min_pulses      = args.min_pulses,
-        max_ipi_cv      = args.ipi_cv,
-        n_workers       = args.workers,
-        use_gpu         = not args.no_gpu,
-        show_progress   = True,
-        checkpoint_csv  = args.checkpoint,
-        worker_timeout  = args.timeout,
+        wav_paths          = paths,
+        min_pulses         = args.min_pulses,
+        max_ipi_cv         = args.ipi_cv,
+        ipi_freq_floor_hz  = args.ipi_freq_floor_hz,
+        n_workers          = args.workers,
+        use_gpu            = not args.no_gpu,
+        show_progress      = True,
+        checkpoint_csv     = args.checkpoint,
+        worker_timeout     = args.timeout,
     )
 
     try:
