@@ -4,7 +4,7 @@
 # @Date:   2026-03-16 15:41:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/train_cnn.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-09 10:41:15
+# @Last Modified time: 2026-04-27 10:49:08
 # **********************************************************
 
 """
@@ -796,7 +796,7 @@ class CnnTrainer:
             # when the backbone is frozen and its parameters receive no
             # gradients.  The overhead in Phase 2 is negligible.
             model = DDP(model, device_ids=[device.index],
-                        find_unused_parameters=True)
+                        find_unused_parameters=False)
 
         # ── Phase 1: head only ─────────────────────────────────────────
         freeze_backbone(model)
