@@ -5,9 +5,9 @@
 # @Date:   2026-03-08 15:19:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/chirp_detection/wav_chopper.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-03-08 15:35:07
+# @Last Modified time: 2026-04-27 18:07:21
 #
-# **********************************************************
+# **********************************************************#!/usr/bin/env python
 """
 wav_chopper.py
 ==============
@@ -790,11 +790,27 @@ def _parse_args():
     )
     parser.add_argument(
         'input',
-        nargs='+',
+        nargs='*',
         help=(
             'one or more .wav files, shell globs (e.g. wav_dir/*.wav), '
             'or directories.\nDirectories are searched at the top level only; '
-            'use -r/--recursive to descend into subdirectories.'
+            'use -r/--recursive to descend into subdirectories.\n'
+            'May be omitted when --file-list is supplied.'
+        ),
+    )
+    parser.add_argument(
+        '--file-list',
+        default=None,
+        metavar='TXT',
+        dest='file_list',
+        help=(
+            'path to a plain-text file containing one .wav path per line '
+            '(e.g. retained_wavs.txt from wav_file_scrubber.py).\n'
+            'Use instead of positional args when the path list is too large '
+            'for the shell argument limit (~174K paths × 50 chars ≈ 8.7 MB '
+            'exceeds ARG_MAX on Linux).  Paths are read and deduplicated '
+            'exactly as if passed positionally.  --recursive has no effect '
+            'on paths sourced from --file-list.'
         ),
     )
     parser.add_argument(
@@ -846,14 +862,38 @@ def _parse_args():
     )
     args = parser.parse_args()
 
+    if not args.input and args.file_list is None:
+        parser.error('Provide .wav paths as positional arguments or via --file-list.')
+
     # Collect .wav paths — no recursion by default; -r/--recursive to descend.
     recurse = args.recursive
     seen:  set[Path]  = set()
     paths: list[Path] = []
+
+    # ── Source 1: --file-list (one absolute path per line) ────────────────
+    if args.file_list is not None:
+        fl = Path(args.file_list)
+        if not fl.exists():
+            parser.error(f'--file-list path not found: {fl}')
+        with open(fl) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                p = Path(line)
+                if p.suffix.lower() != '.wav':
+                    print(f"Warning: skipping non-WAV entry in file-list '{p}'",
+                          file=sys.stderr)
+                    continue
+                if p not in seen:
+                    seen.add(p)
+                    paths.append(p)
+
+    # ── Source 2: positional args (files, globs, directories) ─────────────
     for item in args.input:
         p = Path(item)
         if p.is_dir():
-            glob_fn  = p.rglob if recurse else p.glob
+            glob_fn = p.rglob if recurse else p.glob
             for w in sorted(glob_fn('*.wav')):
                 if w not in seen:
                     seen.add(w)
