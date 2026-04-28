@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-24 17:19:27
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-24 17:19:55
+# @Last Modified time: 2026-04-28 09:40:16
 # **********************************************************
 """
 rf_confidence_join.py
@@ -181,6 +181,9 @@ class RFConfidenceJoiner:
         accp_quality_thresh:  float = _ACCP_QUALITY_THRESH_DEFAULT,
         max_calls_considered: int   = _MAX_CALLS_CONSIDERED_DEFAULT,
         maj_prob_thresh:      float = _MAJ_PROB_THRESH_DEFAULT,
+        chop_report:          str | Path | None = None,
+        manifest:             str | Path | None = None,
+        chop_duration:        float = 2.0,
     ) -> None:
         self.log                  = LoggingService()
         self.measures_csv         = Path(measures_csv)
@@ -189,6 +192,9 @@ class RFConfidenceJoiner:
         self.accp_quality_thresh  = accp_quality_thresh
         self.max_calls_considered = max_calls_considered
         self.maj_prob_thresh      = maj_prob_thresh
+        self.chop_report          = Path(chop_report) if chop_report else None
+        self.manifest             = Path(manifest)    if manifest    else None
+        self.chop_duration        = chop_duration
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -212,12 +218,122 @@ class RFConfidenceJoiner:
         """
         measures, predictions = self._load_and_validate()
         merged                = self._join(measures, predictions)
+        merged                = self._attach_source_duration(merged)
         merged                = self._compute_confidence(merged)
         self._write(merged)
 
     # ------------------------------------------------------------------
     # Load and validate
     # ------------------------------------------------------------------
+
+    def _attach_source_duration(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Attach a ``source_duration_s`` column to the merged DataFrame.
+
+        The column is not used in the confidence formula itself (which
+        retains the fixed ``log1p(30)`` ceiling for cross-site
+        comparability) but is carried through to ``measures_classified.csv``
+        so downstream analysis can stratify confidence values by recording
+        length.  This matters because marsh recordings are 5-second files
+        while barn/lake2 recordings are 2-second chops — confidence values
+        are structurally lower for shorter recordings with fewer calls.
+
+        Three resolution paths, tried in order:
+
+        **Path 1 — ``--chop-report``** (from-scratch pipeline):
+            ``chop_report.csv`` from ``wav_chopper.py`` has
+            ``source_duration_s`` per ``file_id``.  Joined directly.
+
+        **Path 2 — ``--manifest``** (legacy SonoBat pipeline):
+            ``manifest.csv`` has ``time_in_file_ms`` per chirp.
+            ``source_duration_s ≈ max(time_in_file_ms)/1000 + 0.005``
+            per ``file_id`` (the +5ms accounts for the tail of the last
+            detected call).  For SonoBat 2-second chops this consistently
+            returns ~1.995s, confirming the approach.
+
+        **Path 3 — ``--chop-duration``** (fallback constant):
+            Broadcasts the scalar value to all rows.  Default 2.0s.
+            Used when neither of the above files is available.
+
+        :param df: Merged measures + predictions DataFrame with
+                   ``file_id`` column.
+        :return:   DataFrame with ``source_duration_s`` column added.
+        """
+        if self.chop_report is not None:
+            # ── Path 1: chop_report.csv ───────────────────────────────
+            self.log.info(
+                f"Resolving source_duration_s from chop report: "
+                f"{self.chop_report}"
+            )
+            cr = pd.read_csv(self.chop_report,
+                             usecols=['file_id', 'source_duration_s'],
+                             low_memory=False)
+            # One row per chunk; take the first (all share the same source).
+            dur_map = (
+                cr.drop_duplicates('file_id')
+                  .set_index('file_id')['source_duration_s']
+            )
+            df = df.copy()
+            df['source_duration_s'] = df['file_id'].map(dur_map)
+            n_missing = df['source_duration_s'].isna().sum()
+            if n_missing:
+                self.log.warn(
+                    f"{n_missing:,} chirp rows have no matching file_id "
+                    f"in chop_report — filling with chop_duration="
+                    f"{self.chop_duration}s."
+                )
+                df['source_duration_s'] = df['source_duration_s'].fillna(
+                    self.chop_duration
+                )
+
+        elif self.manifest is not None:
+            # ── Path 2: manifest.csv (legacy SonoBat) ─────────────────
+            self.log.info(
+                f"Resolving source_duration_s from manifest: "
+                f"{self.manifest}"
+            )
+            mf = pd.read_csv(self.manifest,
+                             usecols=['file_id', 'time_in_file_ms'],
+                             low_memory=False)
+            mf['time_in_file_ms'] = pd.to_numeric(
+                mf['time_in_file_ms'], errors='coerce'
+            )
+            dur_map = (
+                mf.groupby('file_id')['time_in_file_ms']
+                  .max()
+                  .div(1000.0)          # ms → s
+                  .add(0.005)           # +5ms for call tail
+            )
+            df = df.copy()
+            df['source_duration_s'] = df['file_id'].map(dur_map)
+            n_missing = df['source_duration_s'].isna().sum()
+            if n_missing:
+                self.log.warn(
+                    f"{n_missing:,} chirp rows have no matching file_id "
+                    f"in manifest — filling with chop_duration="
+                    f"{self.chop_duration}s."
+                )
+                df['source_duration_s'] = df['source_duration_s'].fillna(
+                    self.chop_duration
+                )
+            self.log.info(
+                f"  source_duration_s: "
+                f"median={df['source_duration_s'].median():.3f}s  "
+                f"min={df['source_duration_s'].min():.3f}s  "
+                f"max={df['source_duration_s'].max():.3f}s"
+            )
+
+        else:
+            # ── Path 3: constant fallback ──────────────────────────────
+            self.log.info(
+                f"source_duration_s: using constant "
+                f"{self.chop_duration}s for all rows "
+                f"(no --chop-report or --manifest supplied)."
+            )
+            df = df.copy()
+            df['source_duration_s'] = self.chop_duration
+
+        return df
 
     def _load_and_validate(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -592,11 +708,46 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
 
+    dur_group = parser.add_mutually_exclusive_group()
+    dur_group.add_argument(
+        '--chop-report',
+        default=None, metavar='CSV', type=Path, dest='chop_report',
+        help=(
+            'chop_report.csv from wav_chopper.py (from-scratch pipeline). '
+            'Provides source_duration_s per file_id by joining on file_id. '
+            'Takes priority over --manifest and --chop-duration.'
+        ),
+    )
+    dur_group.add_argument(
+        '--manifest',
+        default=None, metavar='CSV', type=Path,
+        help=(
+            'manifest.csv from the legacy SonoBat pipeline. '
+            'source_duration_s is reconstructed as '
+            'max(time_in_file_ms)/1000 + 0.005 per file_id. '
+            'Used when --chop-report is not available.'
+        ),
+    )
+    dur_group.add_argument(
+        '--chop-duration',
+        type=float, default=2.0, metavar='SECS', dest='chop_duration',
+        help=(
+            'Fallback constant source duration in seconds broadcast to '
+            'all rows when neither --chop-report nor --manifest is '
+            'supplied.  Default: 2.0 (SonoBat standard chop length).'
+        ),
+    )
+
     args = parser.parse_args()
     for attr, flag in [('measures_csv',    '--measures-csv'),
                        ('predictions_csv', '--predictions-csv')]:
         if not getattr(args, attr).exists():
             parser.error(f'{flag} path not found: {getattr(args, attr)}')
+    for attr, flag in [('chop_report', '--chop-report'),
+                       ('manifest',    '--manifest')]:
+        val = getattr(args, attr)
+        if val is not None and not val.exists():
+            parser.error(f'{flag} path not found: {val}')
     return args
 
 
@@ -614,6 +765,9 @@ def main() -> None:
         accp_quality_thresh  = args.accp_quality_thresh,
         max_calls_considered = args.max_calls_considered,
         maj_prob_thresh      = args.maj_prob_thresh,
+        chop_report          = args.chop_report,
+        manifest             = args.manifest,
+        chop_duration        = args.chop_duration,
     ).run()
 
 
