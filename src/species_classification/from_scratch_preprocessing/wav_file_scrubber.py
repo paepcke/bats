@@ -5,11 +5,12 @@
 # @Date:   2026-03-07 16:37:48
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/chirp_detection/wav_file_scrubber.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-26 15:52:55
+# @Last Modified time: 2026-04-30 09:55:57
 #
 # **********************************************************
+
 """
-wav_scrubber.py
+wav_file_scrubber.py
 ===============
 Filter a collection of ultrasound bat-detector ``.wav`` files, retaining only
 those that contain at least *min_pulses* plausible bat echolocation pulses.
@@ -466,8 +467,13 @@ def _scrub_one(
     # Collapse spectrogram to 1-D energy envelope (sum across IPI freqs)
     energy     = Sxx_ipi.sum(axis=0)                   # (n_times,)
     energy_db  = 10.0 * np.log10(energy + 1e-12)
+ 
+    # Scale threshold by Sxx_ipi bin count, not Sxx_bat — the energy being
+    # compared is the sum over IPI-band bins only, so the threshold must
+    # match that reduced bin count.  Using Sxx_bat.shape[0] here would set
+    # the bar too high and suppress detection of real bat pulses.
+    threshold_linear = 10.0 ** (_PULSE_THRESHOLD_DBFS / 10.0) * Sxx_ipi.shape[0]    
 
-    threshold_linear = 10.0 ** (_PULSE_THRESHOLD_DBFS / 10.0) * Sxx_bat.shape[0]
     above            = energy >= threshold_linear
 
     # Find contiguous ON-segments, then merge fragments separated by a short
