@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-16 13:02:21
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-30 09:59:00
+# @Last Modified time: 2026-04-30 13:03:38
 # ********************************************
 
 """
@@ -100,6 +100,7 @@ _NON_FEATURE_COLS: frozenset[str] = frozenset([
     'file_id', 'chirp_idx', 'rec_site',
     'species', 'confidence',
     'TimeInFile',
+    'is_last',                          # ← add this line
     'Filename', 'species_prob', 'species_2nd',
     'cntxt_sz', 'split', 'index',
     'Path', 'ParentDir', 'NextDirUp', 'Version', 'Filter',
@@ -412,6 +413,9 @@ class HierarchicalPredictor:
 
         classes = sorted(known_species & set(y_true))
 
+        if len(classes) == 0 or len(y_true) == 0:
+            log.info('No labeled in-vocabulary rows — skipping classification report.')
+            return
         report = classification_report(y_true, y_pred,
                                        labels=classes,
                                        target_names=classes,
