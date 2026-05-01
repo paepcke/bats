@@ -107,7 +107,34 @@ Data changes never require a rebuild.
 
 ---
 
+## Pre-seed GCS with a partial checkpoint from quintus
+
+If quintus has already trained for some epochs, upload its checkpoint to GCS
+before creating the VM so the GCP run can resume where quintus left off.
+
+```bash
+# Verify checkpoint_latest.pt is present — this is what --resume loads.
+# best_model.pt alone is not sufficient (it contains only weights, not
+# optimizer/scheduler/early-stop state).
+ls -lh /qnap/bats/jr_pipeline/models/efficientnet_b0_v3/
+
+# Upload to GCS (gcloud storage rsync creates the destination prefix
+# automatically — no mkdir needed on either end).
+gcloud storage rsync \
+    /qnap/bats/jr_pipeline/models/efficientnet_b0_v3/ \
+    gs://bat-training-output/checkpoints/ \
+    --recursive
+```
+
+Then add `--resume` to `EXTRA_ARGS` when creating the VM (see next section).
+`startup.sh` will pull the checkpoint to `/mnt/disks/output/` before
+launching the container, and `train_cnn.py` will continue from the next epoch.
+
+---
+
 ## Create and launch the VM
+
+### Fresh run
 
 ```bash
 PROJECT=dresl-bats-2026
@@ -141,6 +168,37 @@ startup-script-url=gs://bat_png_tar_files/scripts/startup.sh,\
 shutdown-script-url=gs://bat_png_tar_files/scripts/shutdown.sh
 ```
 
+### Resuming from a quintus checkpoint (or after interruption)
+
+Add `--resume` to `EXTRA_ARGS`:
+
+```bash
+gcloud compute instances create bat-cnn-training \
+    --project=${PROJECT} \
+    --zone=${ZONE} \
+    --machine-type=a2-ultragpu-2g \
+    --accelerator=type=nvidia-a100-80gb,count=2 \
+    --maintenance-policy=TERMINATE \
+    --provisioning-model=STANDARD \
+    --service-account=${SA} \
+    --scopes=cloud-platform \
+    --boot-disk-size=100GB \
+    --boot-disk-type=pd-ssd \
+    --create-disk=auto-delete=yes,size=600,type=pd-ssd,name=data-disk \
+    --image-family=ubuntu-2204-lts \
+    --image-project=ubuntu-os-cloud \
+    --metadata=\
+GCS_DATA_BUCKET=bat_png_tar_files,\
+GCS_OUTPUT_BUCKET=bat-training-output,\
+GCS_CROPS_PREFIX=crops-tar,\
+IMAGE_URI=${IMAGE},\
+NPROC_PER_NODE=2,\
+EPOCHS=40,\
+EXTRA_ARGS="--resume --patience 7 --cw-power 0.5",\
+startup-script-url=gs://bat_png_tar_files/scripts/startup.sh,\
+shutdown-script-url=gs://bat_png_tar_files/scripts/shutdown.sh
+```
+
 Notes:
 - `--scopes=cloud-platform` combined with the service account grants full
   GCS access without any credentials files.
@@ -168,7 +226,9 @@ gcloud storage ls -l gs://bat-training-output/checkpoints/
 
 ## Resume after interruption
 
-Add `--resume` to `EXTRA_ARGS` and recreate or restart the VM:
+If the VM is interrupted mid-run, the checkpoint already in GCS (uploaded
+per-epoch by `train_cnn.py`) is the recovery point.  Update the metadata
+and restart:
 
 ```bash
 # Update metadata to add --resume
@@ -188,10 +248,13 @@ resumes from the next epoch.
 
 ## Retrieve results
 
+`gcloud storage rsync` creates the local destination directory automatically
+— no `mkdir` needed beforehand.
+
 ```bash
 gcloud storage rsync \
     gs://bat-training-output/checkpoints/ \
-    /qnap/bats/jr_pipeline/models/efficientnet_b0_v2/ \
+    /qnap/bats/jr_pipeline/models/efficientnet_b0_v3/ \
     --recursive
 ```
 
