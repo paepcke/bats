@@ -4,7 +4,7 @@
 # @Date:   2026-03-16 15:41:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/train_cnn.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-27 10:49:08
+# @Last Modified time: 2026-04-30 17:54:33
 # **********************************************************
 
 """
@@ -103,6 +103,18 @@ Outputs (all written to ``--out-dir`` by rank 0)
 ``confusion_matrix.png``    Confusion matrix on held-out test set.
 ``classification_report.txt``  Per-class precision/recall/F1 on test set.
 
+GCS per-epoch upload
+--------------------
+Pass ``--gcs-output-bucket BUCKET`` (no gs:// prefix) to upload
+``checkpoint_latest.pt`` to ``gs://BUCKET/checkpoints/`` after every epoch,
+and ``best_model.pt`` whenever a new best val_acc is reached.  Each upload
+runs in a subprocess with a 60-second timeout so a slow upload never stalls
+training.  Upload failures are logged as warnings and do not abort training.
+
+This ensures checkpoints are durably stored in GCS even if the VM is
+hard-killed (budget cap, crash) before the startup.sh final sync or the
+shutdown.sh preemption handler can run.
+
 Resuming after a crash
 -----------------------
 Add ``--resume`` to the original launch command and re-run.  The trainer
@@ -120,6 +132,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -206,6 +219,63 @@ def _teardown_ddp() -> None:
 
 def _is_rank0(rank: int) -> bool:
     return rank == 0
+
+
+# ---------------------------------------------------------------------------
+# GCS upload helper
+# ---------------------------------------------------------------------------
+
+def _push_ckpt_to_gcs(
+    local_path:  Path,
+    bucket:      str,
+    epoch:       int,
+    best_model:  bool = False,
+) -> None:
+    """
+    Upload checkpoint files to GCS after each epoch.
+
+    Uploads ``checkpoint_latest.pt`` unconditionally, and ``best_model.pt``
+    when *best_model* is True.  Each upload runs as a blocking subprocess
+    with a 60-second timeout so a slow upload never stalls training for
+    more than two minutes total.  Any failure is logged as a warning and
+    does not abort training.
+
+    :param local_path:  Path to ``checkpoint_latest.pt`` on disk.
+    :param bucket:      GCS bucket name (no ``gs://`` prefix).
+    :param epoch:       Current epoch number (used in log messages only).
+    :param best_model:  If ``True``, also upload ``best_model.pt`` from the
+                        same directory.
+    """
+    dest = f'gs://{bucket}/checkpoints/'
+    files_to_push = [str(local_path)]
+    if best_model:
+        best_path = local_path.parent / 'best_model.pt'
+        if best_path.exists():
+            files_to_push.append(str(best_path))
+
+    for fpath in files_to_push:
+        fname = Path(fpath).name
+        try:
+            result = subprocess.run(
+                ['gcloud', 'storage', 'cp', fpath, dest],
+                timeout=60,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                log.info(f'  ☁  GCS upload OK: {fname} → {dest}')
+            else:
+                log.warn(
+                    f'  GCS upload failed for {fname} at epoch {epoch}: '
+                    f'{result.stderr.strip()}'
+                )
+        except subprocess.TimeoutExpired:
+            log.warn(
+                f'  GCS upload timed out for {fname} at epoch {epoch} '
+                f'— continuing training.'
+            )
+        except Exception as exc:
+            log.warn(f'  GCS upload error for {fname} at epoch {epoch}: {exc}')
 
 
 # ---------------------------------------------------------------------------
@@ -386,10 +456,10 @@ def run_epoch(
     world_size:int = 1,
 ) -> tuple[float, float]:
     """
-    Run one epoch of training or evaluation.
+    Run one epoch of training or validation and return (loss, accuracy).
 
-    In DDP mode, loss and accuracy are all-reduced across ranks so the
-    returned values are the global average (rank 0 receives the result).
+    In DDP mode metrics are all-reduced across ranks so rank 0 always
+    receives the global average.
 
     :param model:      The model (may be DDP-wrapped).
     :param loader:     DataLoader for this split.
@@ -555,6 +625,12 @@ class CnnTrainer:
                                 this many epochs in addition to
                                 ``checkpoint_latest.pt``.  0 disables periodic
                                 snapshots (default).
+    :param gcs_output_bucket:   GCS bucket name (no ``gs://`` prefix) for
+                                per-epoch checkpoint upload.  When set,
+                                ``checkpoint_latest.pt`` is uploaded after
+                                every epoch and ``best_model.pt`` whenever a
+                                new best val_acc is reached.  Empty string
+                                (default) disables GCS upload.
     """
 
     def __init__(
@@ -582,6 +658,7 @@ class CnnTrainer:
         lr_patience:         int            = _DEFAULT_LR_PATIENCE,
         min_delta:           float          = _DEFAULT_MIN_DELTA,
         cw_power:            float          = _DEFAULT_CW_POWER,
+        gcs_output_bucket:   str            = '',
     ) -> None:
         self.manifest_csv        = Path(manifest_csv)
         self.out_dir             = Path(out_dir)
@@ -606,6 +683,7 @@ class CnnTrainer:
         self.lr_patience         = lr_patience
         self.min_delta           = min_delta
         self.cw_power            = cw_power
+        self.gcs_output_bucket   = gcs_output_bucket
 
     # ------------------------------------------------------------------ #
     #  Data loading                                                        #
@@ -704,6 +782,11 @@ class CnnTrainer:
 
         if is_main:
             self.out_dir.mkdir(parents=True, exist_ok=True)
+            if self.gcs_output_bucket:
+                log.info(
+                    f'Per-epoch GCS upload enabled: '
+                    f'gs://{self.gcs_output_bucket}/checkpoints/'
+                )
 
         torch.manual_seed(self.seed + rank)   # different seed per rank for augmentation
         np.random.seed(self.seed + rank)
@@ -925,7 +1008,8 @@ class CnnTrainer:
                     'val_acc':    round(val_acc,    6),
                 })
 
-                if val_acc > best_val_acc:
+                new_best = val_acc > best_val_acc
+                if new_best:
                     best_val_acc = val_acc
                     best_epoch   = epoch
                     base = model.module if isinstance(model, DDP) else model
@@ -968,11 +1052,21 @@ class CnnTrainer:
                     'es_epochs_waited': es_epochs_waited,
                 }
                 torch.save(ckpt, self.out_dir / 'checkpoint_latest.pt')
+                log.info(f'  Saved checkpoint_latest.pt (epoch {epoch})')
 
                 if self.ckpt_every > 0 and epoch % self.ckpt_every == 0:
                     snap = self.out_dir / f'checkpoint_epoch_{epoch:04d}.pt'
                     torch.save(ckpt, snap)
                     log.info(f'  📸 Periodic snapshot saved: {snap.name}')
+
+                # ── Push checkpoints to GCS after every epoch ──────────
+                if self.gcs_output_bucket:
+                    _push_ckpt_to_gcs(
+                        self.out_dir / 'checkpoint_latest.pt',
+                        self.gcs_output_bucket,
+                        epoch,
+                        best_model=new_best,
+                    )
 
             # ── DDP-safe early stop: broadcast rank-0 decision ─────────
             # All ranks must stop together or NCCL collectives will hang.
@@ -1047,6 +1141,7 @@ class CnnTrainer:
                 {'parameter': 'best_epoch',          'value': best_epoch},
                 {'parameter': 'best_val_acc',        'value': round(best_val_acc, 6)},
                 {'parameter': 'elapsed_secs',        'value': round(elapsed, 1)},
+                {'parameter': 'gcs_output_bucket',   'value': self.gcs_output_bucket},
             ]).to_csv(self.out_dir / 'train_config.csv', index=False)
 
             log.info(
@@ -1138,6 +1233,17 @@ def _parse_args():
             f'0.0 = uniform. Default: {_DEFAULT_CW_POWER}.'
         ),
     )
+    parser.add_argument(
+        '--gcs-output-bucket', default='', metavar='BUCKET',
+        help=(
+            'GCS bucket name (no gs:// prefix) for per-epoch checkpoint upload. '
+            'Uploads checkpoint_latest.pt after every epoch and best_model.pt '
+            'whenever a new best val_acc is reached. '
+            'Upload runs in a subprocess with a 60s timeout; failures are '
+            'logged as warnings and do not abort training. '
+            'Leave empty (default) to disable GCS upload.'
+        ),
+    )
 
     args = parser.parse_args()
     if not Path(args.manifest).exists():
@@ -1173,6 +1279,7 @@ def main() -> None:
         lr_patience         = args.lr_patience,
         min_delta           = args.min_delta,
         cw_power            = args.cw_power,
+        gcs_output_bucket   = args.gcs_output_bucket,
     )
     trainer.run()
 

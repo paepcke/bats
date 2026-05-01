@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-19 10:39:30
+# @Last Modified time: 2026-04-30 17:55:00
 # ***********************************************
 # startup.sh
 # GCP Compute Engine startup script for bat CNN training.
@@ -17,6 +17,9 @@
 #   5. Downloading and rewriting manifest crop_path to container-local paths
 #   6. Pulling the training Docker image from Artifact Registry
 #   7. Launching training (2-GPU DDP via torchrun)
+#      - Passes --gcs-output-bucket so train_cnn.py uploads checkpoint_latest.pt
+#        and best_model.pt to GCS after every epoch, independently of this
+#        script's final sync and the shutdown.sh preemption handler.
 #   8. Syncing outputs back to GCS on completion
 #
 # Authentication: VM must be created with a service account that has
@@ -185,6 +188,10 @@ if echo "${EXTRA_ARGS}" | grep -q -- "--resume"; then
 fi
 
 # ── Run training ──────────────────────────────────────────────
+# --gcs-output-bucket is passed explicitly so train_cnn.py uploads
+# checkpoint_latest.pt and best_model.pt to GCS after every epoch.
+# This ensures checkpoints are durably stored even if the VM is
+# hard-killed before this script's final sync or shutdown.sh runs.
 echo "Starting training container: $(date)"
 docker run --rm \
     --gpus all \
@@ -197,11 +204,16 @@ docker run --rm \
     -e EPOCHS="${EPOCHS}" \
     -e NPROC_PER_NODE="${NPROC_PER_NODE}" \
     "${IMAGE_URI}" \
+    --gcs-output-bucket "${GCS_OUTPUT_BUCKET}" \
     ${EXTRA_ARGS}
 
 echo "Training complete: $(date)"
 
 # ── Sync outputs back to GCS ──────────────────────────────────
+# This final rsync picks up final_model.pt, train_log.csv,
+# confusion_matrix.png, and classification_report.txt, which are only
+# written at the very end of training.  checkpoint_latest.pt and
+# best_model.pt were already uploaded per-epoch by train_cnn.py.
 echo "Syncing outputs to gs://${GCS_OUTPUT_BUCKET}/checkpoints/ ..."
 gcloud storage rsync \
     "${OUTPUT_DIR}/" \
