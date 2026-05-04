@@ -66,6 +66,7 @@ RUN pip install --no-cache-dir \
 WORKDIR /workspace
 COPY . /workspace/bats
 RUN pip install --no-cache-dir /workspace/bats
+ENV PYTHONPATH=/workspace/bats/src
 
 # ── Runtime defaults ─────────────────────────────────────────
 ENV MANIFEST_CSV=/data/manifest.csv
