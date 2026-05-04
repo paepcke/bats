@@ -73,7 +73,7 @@ once.  Both the CNN and RF use this file so they are evaluated on the same
 held-out test set.  Generate it on quintus from the manifest:
 
 ```bash
-python src/species_classification/make_holdout_split.py \
+python src/species_classification/training/make_holdout_split.py \
     --manifest /qnap/bats/jr_pipeline/data/bat_crops/manifest.csv \
     --out-dir  /qnap/bats/jr_pipeline/data \
     --seed 42
