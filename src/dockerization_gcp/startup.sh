@@ -3,9 +3,8 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-04 10:58:09
+# @Last Modified time: 2026-05-04 13:08:34
 # ***********************************************
-
 # startup.sh
 # GCP Compute Engine startup script for bat CNN training.
 # VM: a2-ultragpu-2g (2x A100 80GB), us-central1
@@ -253,3 +252,16 @@ gcloud storage rsync \
 echo "Output sync complete."
 
 echo "====== Startup script finished: $(date) ======"
+
+# ── Self-delete the VM ────────────────────────────────────────
+# Fetch instance name and zone from the metadata server so this
+# script works without hardcoding the VM name.
+INSTANCE_NAME=$(curl -sf -H "Metadata-Flavor: Google" \
+    http://metadata.google.internal/computeMetadata/v1/instance/name)
+INSTANCE_ZONE=$(curl -sf -H "Metadata-Flavor: Google" \
+    http://metadata.google.internal/computeMetadata/v1/instance/zone \
+    | cut -d/ -f4)
+echo "Deleting VM ${INSTANCE_NAME} in ${INSTANCE_ZONE} ..."
+gcloud compute instances delete "${INSTANCE_NAME}" \
+    --zone="${INSTANCE_ZONE}" \
+    --quiet
