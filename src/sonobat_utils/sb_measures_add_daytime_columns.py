@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-21 11:15:48
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-03 19:18:58
+# @Last Modified time: 2026-05-03 20:33:01
 # ******************************************
 
 '''
@@ -65,6 +65,7 @@ import pandas as pd
 from data_calcs.daytime_file_selection import DaytimeFileSelector
 from logging_service import LoggingService
 from sonobat_utils.utils import Utils
+from sonobat_utils.sb_measures_postprocessing import BatsData
 
 
 # ---------------------------------------------------------------------------
@@ -226,15 +227,21 @@ class DaytimeColumnAdder:
         self._survey_filename_patterns()
 
         # ---- load --------------------------------------------------------
+        # Read measures via BatsData to preserve file_map and normalizer
+        # metadata; the augmented output must be written back with the same
+        # envelope so downstream consumers (BatsData.read_parquet) still work.
         self.log.info(f"Loading measures: {self.measures_path}")
-        measures_df: pd.DataFrame = Utils.read_df_file(str(self.measures_path))
+        measures_bats = BatsData.read_parquet(self.measures_path)
+        measures_df: pd.DataFrame = measures_bats.df.copy()
         self.log.info(f"  {len(measures_df):,} rows, "
                       f"{len(measures_df.columns)} columns")
 
         noise_df: pd.DataFrame | None = None
+        noise_bats: BatsData | None = None
         if noise_path is not None:
             self.log.info(f"Loading noise: {noise_path}")
-            noise_df = Utils.read_df_file(str(noise_path))
+            noise_bats = BatsData.read_parquet(noise_path)
+            noise_df = noise_bats.df.copy()
             self.log.info(f"  {len(noise_df):,} rows")
 
         # ---- build file_id lookup from union of both dataframes ----------
@@ -259,17 +266,21 @@ class DaytimeColumnAdder:
             self.log.info("Appending daytime columns to noise ...")
             noise_aug = self._append_columns(noise_df, fid_map, populate=True)
 
-        # ---- write -------------------------------------------------------
+        # ---- write via BatsData to preserve metadata --------------------
+        # Writing through BatsData.to_parquet() embeds file_map and normalizer
+        # state in the Parquet schema metadata, which BatsData.read_parquet()
+        # requires.  Using plain df.to_parquet() would silently drop that
+        # metadata and break all downstream consumers.
         ts = datetime.now(_PST).strftime('%Y-%m-%dT%H_%M_%S.%f')
 
         out_measures = self.measures_path.parent / f"bats_{ts}.parquet"
         self.log.info(f"Writing measures -> {out_measures}")
-        measures_aug.to_parquet(out_measures, index=False)
+        measures_bats.to_parquet(measures_aug, out_measures)
 
         if noise_aug is not None:
             out_noise = noise_path.parent / f"bats_noise_{ts}.parquet"
             self.log.info(f"Writing noise   -> {out_noise}")
-            noise_aug.to_parquet(out_noise, index=False)
+            noise_bats.to_parquet(noise_aug, out_noise)
 
         self.log.info("Done.")
 
