@@ -2,9 +2,8 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-14 13:11:23
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-04 10:58:39
+# @Last Modified time: 2026-05-04 12:47:37
 
-#!/bin/bash
 # entrypoint.sh
 # Launches train_cnn.py via torchrun (multi-GPU) or python (single-GPU).
 # All CLI args passed to this script are forwarded to train_cnn.py.
@@ -61,7 +60,7 @@ if [ "${NPROC_PER_NODE}" -gt 1 ]; then
     exec torchrun \
         --nproc_per_node="${NPROC_PER_NODE}" \
         --standalone \
-        -m species_classification.train_cnn \
+        -m species_classification.training.train_cnn \
         --manifest  "${MANIFEST_CSV}" \
         --out-dir   "${OUT_DIR}" \
         --epochs    "${EPOCHS}" \
@@ -71,7 +70,7 @@ if [ "${NPROC_PER_NODE}" -gt 1 ]; then
         "$@"
 else
     echo "Launching with python (single GPU)"
-    exec python -m species_classification.train_cnn \
+    exec python -m species_classification.training.train_cnn \
         --manifest  "${MANIFEST_CSV}" \
         --out-dir   "${OUT_DIR}" \
         --epochs    "${EPOCHS}" \
