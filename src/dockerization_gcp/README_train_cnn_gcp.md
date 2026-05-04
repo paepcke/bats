@@ -120,7 +120,7 @@ IMAGE=us-central1-docker.pkg.dev/${PROJECT}/bats/bat-cnn:latest
 gcloud auth configure-docker us-central1-docker.pkg.dev
 
 # Build
-docker build -t ${IMAGE} .
+docker build -f src/dockerization_gcp/Dockerfile -t ${IMAGE} .
 
 # Test locally if you have a GPU
 docker run --rm --gpus all ${IMAGE} --help
