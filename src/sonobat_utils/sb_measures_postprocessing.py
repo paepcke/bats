@@ -5,7 +5,7 @@
 # @Date:   2026-03-31 11:29:40
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/sonobat_utils/sb_measures_postprocessing.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-23 10:42:46
+# @Last Modified time: 2026-05-03 19:21:58
 #
 # **********************************************************
 
@@ -444,6 +444,11 @@ class SonoBatPostProcessor:
                     measures_path=str(out_path),
                     db_path=str(self.db_path),
                 ).run()
+
+                # Remove pre-daytime intermediates; DaytimeColumnAdder wrote replacements
+                out_path.unlink(missing_ok=True)
+                noise_path.unlink(missing_ok=True)
+                self.log.info("Removed intermediate (pre-daytime) parquet files.")
             
     #------------------------------------
     # _seed_recordings_db

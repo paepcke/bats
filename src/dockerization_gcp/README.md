@@ -170,6 +170,38 @@ shutdown-script-url=gs://bat_png_tar_files/scripts/shutdown.sh
 
 ### Resuming from a quintus checkpoint (or after interruption)
 
+#### 1 — Upload the quintus checkpoint to GCS
+
+First verify that `checkpoint_latest.pt` is present in the quintus model
+directory.  This file contains the full training state (model weights,
+optimizer, scheduler, early-stop counters).  `best_model.pt` alone is **not**
+sufficient for resumption — it contains only the model weights.
+
+```bash
+ls -lh /qnap/bats/jr_pipeline/models/efficientnet_b0_v3/
+```
+
+Then upload to GCS.  `gcloud storage rsync` creates the destination prefix
+automatically — no `mkdir` needed.
+
+```bash
+gcloud storage rsync \
+    /qnap/bats/jr_pipeline/models/efficientnet_b0_v3/ \
+    gs://bat-training-output/checkpoints/ \
+    --recursive
+```
+
+Spot-check that the upload landed:
+
+```bash
+gcloud storage ls -l gs://bat-training-output/checkpoints/
+```
+
+`checkpoint_latest.pt` should be ~150 MB.  If it is missing or suspiciously
+small, do not proceed — training would restart from scratch.
+
+#### 2 — Create the VM with `--resume`
+
 Add `--resume` to `EXTRA_ARGS`:
 
 ```bash

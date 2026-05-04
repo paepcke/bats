@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-21 11:15:48
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-23 10:42:38
+# @Last Modified time: 2026-05-03 19:18:58
 # ******************************************
 
 '''
@@ -13,16 +13,17 @@ sb_measures_add_daytime_columns.py
 Adds was_daytime (bool) and time_of_day_pactime (ISO datetime string)
 columns to a bat measures parquet file and its sibling noise parquet file.
 
-For the measures file the columns are populated by looking up each row's
+For both files the columns are populated by looking up each row's
 file_id in the recordings SQLite table to obtain the original recording
 filename, extracting the timestamp from that filename, and then asking
 DaytimeFileSelector whether that moment falls within daylight hours at
 Jasper Ridge Biological Preserve.
 
-For the noise file the columns are added but always left empty (None).
-The recordings table was built only from files that produced measures,
-so noise file_ids are not present there; timestamp resolution is
-therefore not possible for noise rows.
+Noise rows share the same file_ids as their corresponding measures rows
+(they come from the same recordings, just with low confidence or no
+detection), so the recordings table lookup succeeds for noise rows too.
+file_ids that cannot be resolved (no DB entry, unparseable filename) get
+None in both new columns.
 
 Recording filename formats have varied over time.  At startup the script
 samples filenames from the database, tallies which of the known patterns
@@ -162,14 +163,15 @@ class DaytimeColumnAdder:
     appends was_daytime and time_of_day_pactime columns, and writes new
     parquet files with current-timestamp names alongside the originals.
 
-    The recording datetime for each measures row is resolved by joining
-    on file_id to the recordings table in the SQLite database and parsing
-    the stored filename.  All sunrise/sunset logic is delegated to
-    DaytimeFileSelector.
+    The recording datetime for each row is resolved by joining on file_id
+    to the recordings table in the SQLite database and parsing the stored
+    filename.  All sunrise/sunset logic is delegated to DaytimeFileSelector.
 
-    Noise rows receive both new columns set to None.  The recordings
-    table was built exclusively from files that produced measures, so
-    noise file_ids are not present there.
+    Both the measures and noise parquets are fully populated: noise rows
+    share file_ids with their corresponding measures rows (same recordings,
+    lower confidence), so the recordings table lookup succeeds for them too.
+    file_ids with no DB entry or an unparseable filename get None in both
+    new columns.
 
     :param measures_path: path to the bat measures parquet file
     :type measures_path: str
@@ -208,8 +210,9 @@ class DaytimeColumnAdder:
         1. Locate the sibling noise parquet.
         2. Sample the DB and log which filename patterns are present.
         3. Load both dataframes.
-        4. Build a file_id → (was_daytime, time_of_day_pactime) lookup.
-        5. Append the two new columns to each dataframe.
+        4. Build a file_id -> (was_daytime, time_of_day_pactime) lookup
+           from the union of file_ids across measures and noise.
+        5. Append the two new columns to each dataframe (both fully populated).
         6. Write new parquet files next to their originals.
         '''
         noise_path = self._derive_noise_path(self.measures_path)
@@ -234,32 +237,38 @@ class DaytimeColumnAdder:
             noise_df = Utils.read_df_file(str(noise_path))
             self.log.info(f"  {len(noise_df):,} rows")
 
-        # ---- build file_id lookup ----------------------------------------
-        unique_ids = list(measures_df['file_id'].unique())
+        # ---- build file_id lookup from union of both dataframes ----------
+        # Noise rows share file_ids with their measures counterparts (same
+        # recordings, lower confidence), so a single lookup covers both.
+        noise_ids = noise_df['file_id'] if noise_df is not None else pd.Series(
+            dtype='int32')
+        unique_ids = list(
+            pd.concat([measures_df['file_id'], noise_ids]).unique()
+        )
         self.log.info(
-            f"Resolving {len(unique_ids):,} unique file_ids via recordings table …")
+            f"Resolving {len(unique_ids):,} unique file_ids via recordings table ...")
         fid_map = self._build_fid_map(unique_ids)
 
-        # ---- augment measures (populated) --------------------------------
-        self.log.info("Appending daytime columns to measures …")
+        # ---- augment measures --------------------------------------------
+        self.log.info("Appending daytime columns to measures ...")
         measures_aug = self._append_columns(measures_df, fid_map, populate=True)
 
-        # ---- augment noise (always empty) --------------------------------
+        # ---- augment noise (same lookup, fully populated) ----------------
         noise_aug: pd.DataFrame | None = None
         if noise_df is not None:
-            self.log.info("Appending empty daytime columns to noise …")
-            noise_aug = self._append_columns(noise_df, fid_map={}, populate=False)
+            self.log.info("Appending daytime columns to noise ...")
+            noise_aug = self._append_columns(noise_df, fid_map, populate=True)
 
         # ---- write -------------------------------------------------------
         ts = datetime.now(_PST).strftime('%Y-%m-%dT%H_%M_%S.%f')
 
         out_measures = self.measures_path.parent / f"bats_{ts}.parquet"
-        self.log.info(f"Writing measures → {out_measures}")
+        self.log.info(f"Writing measures -> {out_measures}")
         measures_aug.to_parquet(out_measures, index=False)
 
         if noise_aug is not None:
             out_noise = noise_path.parent / f"bats_noise_{ts}.parquet"
-            self.log.info(f"Writing noise   → {out_noise}")
+            self.log.info(f"Writing noise   -> {out_noise}")
             noise_aug.to_parquet(out_noise, index=False)
 
         self.log.info("Done.")
@@ -486,8 +495,9 @@ class DaytimeColumnAdder:
         :type df: pd.DataFrame
         :param fid_map: mapping from file_id to (was_daytime, iso_str)
         :type fid_map: dict
-        :param populate: when True, values are drawn from fid_map;
-            when False, both columns are set to None regardless
+        :param populate: when True, values are drawn from fid_map; file_ids
+            absent from fid_map get (None, None).  When False, both columns
+            are set to None unconditionally (reserved for testing).
         :type populate: bool
         :return: augmented copy of df
         :rtype: pd.DataFrame
