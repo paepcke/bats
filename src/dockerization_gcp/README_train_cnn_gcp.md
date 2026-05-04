@@ -197,6 +197,16 @@ startup-script-url=gs://bat_png_tar_files/scripts/startup.sh,\
 shutdown-script-url=gs://bat_png_tar_files/scripts/shutdown.sh
 ```
 
+### Emergency stop:
+```
+gcloud compute instances delete bat-cnn-training \
+    --zone=us-central1-a \
+    --quiet    
+```
+After the above, outputs are safely in
+`gs://bat-training-output/checkpoints/`, and the expensive per-hour
+billing stops immediately
+
 ### Resuming from a quintus checkpoint (or after interruption)
 
 #### 1 — Upload the quintus checkpoint to GCS
