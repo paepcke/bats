@@ -3,8 +3,9 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-30 17:55:00
+# @Last Modified time: 2026-05-04 10:58:09
 # ***********************************************
+
 # startup.sh
 # GCP Compute Engine startup script for bat CNN training.
 # VM: a2-ultragpu-2g (2x A100 80GB), us-central1
@@ -53,6 +54,7 @@ IMAGE_URI=$(curl -sf -H "${H}" "${META}/IMAGE_URI")
 NPROC_PER_NODE=$(curl -sf -H "${H}" "${META}/NPROC_PER_NODE" || echo "2")
 EPOCHS=$(curl -sf -H "${H}" "${META}/EPOCHS" || echo "40")
 EXTRA_ARGS=$(curl -sf -H "${H}" "${META}/EXTRA_ARGS" || echo "")
+SPLIT_FILE_KEY=$(curl -sf -H "${H}" "${META}/SPLIT_FILE_KEY" || echo "holdout_split.csv")
 
 echo "GCS_DATA_BUCKET   : gs://${GCS_DATA_BUCKET}"
 echo "GCS_OUTPUT_BUCKET : gs://${GCS_OUTPUT_BUCKET}"
@@ -61,6 +63,7 @@ echo "IMAGE_URI         : ${IMAGE_URI}"
 echo "NPROC_PER_NODE    : ${NPROC_PER_NODE}"
 echo "EPOCHS            : ${EPOCHS}"
 echo "EXTRA_ARGS        : ${EXTRA_ARGS}"
+echo "SPLIT_FILE_KEY    : ${SPLIT_FILE_KEY}"
 
 # ── Create output bucket if it does not exist ─────────────────
 if ! gcloud storage buckets describe "gs://${GCS_OUTPUT_BUCKET}" &>/dev/null; then
@@ -171,6 +174,25 @@ else
     echo "  Check SOURCE_PREFIX detection and tar directory structure."
 fi
 
+# ── Download holdout split file ───────────────────────────────
+# holdout_split.csv is produced once by make_holdout_split.py on quintus
+# and uploaded to GCS alongside the manifest.  It maps file_id → partition
+# so CNN and RF share an identical held-out test set.
+SPLIT_FILE_HOST="${DATA_DIR}/holdout_split.csv"
+SPLIT_FILE_GCS="gs://${GCS_DATA_BUCKET}/${SPLIT_FILE_KEY}"
+
+if gcloud storage ls "${SPLIT_FILE_GCS}" &>/dev/null; then
+    echo "Downloading split file from ${SPLIT_FILE_GCS} ..."
+    gcloud storage cp "${SPLIT_FILE_GCS}" "${SPLIT_FILE_HOST}"
+    echo "Split file downloaded: $(wc -l < "${SPLIT_FILE_HOST}") rows"
+else
+    echo "WARNING: split file not found at ${SPLIT_FILE_GCS}."
+    echo "  Training will use an internal random split instead."
+    echo "  To use a shared holdout, upload holdout_split.csv to GCS:"
+    echo "    gcloud storage cp /path/to/holdout_split.csv ${SPLIT_FILE_GCS}"
+    SPLIT_FILE_HOST=""
+fi
+
 # ── Configure Docker auth for Artifact Registry ───────────────
 echo "Configuring Docker auth for Artifact Registry..."
 gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
@@ -193,16 +215,26 @@ fi
 # This ensures checkpoints are durably stored even if the VM is
 # hard-killed before this script's final sync or shutdown.sh runs.
 echo "Starting training container: $(date)"
+# Build optional split-file volume mount and env var.
+SPLIT_MOUNT_ARG=""
+SPLIT_ENV_ARG=""
+if [[ -n "${SPLIT_FILE_HOST}" && -f "${SPLIT_FILE_HOST}" ]]; then
+    SPLIT_MOUNT_ARG="-v ${SPLIT_FILE_HOST}:/data/holdout_split.csv:ro"
+    SPLIT_ENV_ARG="-e SPLIT_FILE=/data/holdout_split.csv"
+fi
+
 docker run --rm \
     --gpus all \
     --shm-size=32g \
     -v "${CROPS_DIR}:/data/crops:ro" \
     -v "${DATA_DIR}/manifest_fixed.csv:/data/manifest.csv:ro" \
     -v "${OUTPUT_DIR}:/output" \
+    ${SPLIT_MOUNT_ARG} \
     -e MANIFEST_CSV=/data/manifest.csv \
     -e OUT_DIR=/output \
     -e EPOCHS="${EPOCHS}" \
     -e NPROC_PER_NODE="${NPROC_PER_NODE}" \
+    ${SPLIT_ENV_ARG} \
     "${IMAGE_URI}" \
     --gcs-output-bucket "${GCS_OUTPUT_BUCKET}" \
     ${EXTRA_ARGS}

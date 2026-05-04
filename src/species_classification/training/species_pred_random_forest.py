@@ -5,11 +5,13 @@
 # @Date:   2026-03-13 15:10:24
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/species_pred_random_forest.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-15 19:32:03
+# @Last Modified time: 2026-05-04 11:06:17
 #
 # **********************************************************
 
 """
+species_pred_random_forest.py
+
 Train and evaluate a Random Forest classifier for bat species identification
 from SonoBat acoustic measures.
 
@@ -253,6 +255,14 @@ class RFTrainer:
                               ``min_species_count``.  Useful for catch-all
                               categories (e.g. ``HiF``) or species with
                               insufficient data to be learnable.
+    :param split_file:        Optional path to a ``holdout_split.csv``
+                              produced by ``make_holdout_split.py``.  When
+                              supplied the pre-assigned ``file_id`` →
+                              partition mapping is used instead of computing
+                              a new random split, ensuring CNN and RF share
+                              the same held-out test set.  ``--val-frac``
+                              and ``--test-frac`` are ignored when a split
+                              file is provided.
     """
 
     def __init__(
@@ -270,6 +280,7 @@ class RFTrainer:
         mode:              str   = 'multiclass',
         species_pair:      Optional[tuple[str, str]] = None,
         exclude_species:   Optional[list[str]] = None,
+        split_file:        Optional[str | Path] = None,
     ) -> None:
         self.input_path        = Path(input_path)
         self.out_dir           = Path(out_dir)
@@ -284,6 +295,7 @@ class RFTrainer:
         self.mode              = mode
         self.species_pair      = species_pair
         self.exclude_species   = set(exclude_species) if exclude_species else set()
+        self.split_file        = Path(split_file) if split_file else None
 
     # ------------------------------------------------------------------ #
     #  Data loading                                                       #
@@ -478,6 +490,34 @@ class RFTrainer:
         # The caller passes the filtered 'labeled' df — access via _split.
         raise NotImplementedError  # replaced by _split_indices below
 
+    def _load_split_file(self) -> Optional[dict[int, str]]:
+        """
+        Load ``holdout_split.csv`` produced by ``make_holdout_split.py``
+        and return a mapping of ``file_id`` → partition string.
+
+        :return: ``{file_id: 'train'|'val'|'test'}`` or ``None`` if no
+                 split file was configured.
+        """
+        if self.split_file is None:
+            return None
+        log.info(f'Loading external split file: {self.split_file}')
+        split_df = pd.read_csv(self.split_file)
+        if not {'file_id', 'partition'}.issubset(split_df.columns):
+            log.err(
+                f'Split file {self.split_file} must have columns '
+                f'file_id and partition'
+            )
+            sys.exit(1)
+        mapping = dict(zip(split_df['file_id'].astype(int),
+                           split_df['partition']))
+        counts = split_df['partition'].value_counts()
+        log.info(
+            f'Split file: {counts.get("train", 0):,} train | '
+            f'{counts.get("val", 0):,} val | '
+            f'{counts.get("test", 0):,} test file_ids'
+        )
+        return mapping
+
     def _split_indices(
         self,
         labeled: pd.DataFrame,
@@ -487,6 +527,17 @@ class RFTrainer:
         Return row-index arrays for train, val, and test partitions,
         splitting at the ``file_id`` level stratified by modal species.
 
+        When ``self.split_file`` is set the pre-assigned partition mapping
+        from ``make_holdout_split.py`` is used directly; otherwise a fresh
+        stratified random split is computed from ``self.val_frac`` and
+        ``self.test_frac``.
+
+        For the binary RF case the split is applied *after*
+        ``_balance_by_file_id`` has already subsampled file_ids, so only
+        the file_ids that survived balancing are looked up in the mapping.
+        This keeps the test partition clean: file_ids assigned to test in
+        the split file are never trained on, even in binary mode.
+
         :param labeled:      Filtered chirp DataFrame containing ``file_id``
                              and ``species`` columns.
         :param feature_cols: Feature column names (used only to confirm
@@ -495,9 +546,28 @@ class RFTrainer:
                              ``(train_idx, val_idx, test_idx)`` into
                              ``labeled``.
         """
+        split_map = self._load_split_file()
+
+        if split_map is not None:
+            # Use external mapping; file_ids not in the map go to train
+            # (can happen for binary mode after balancing subsamples).
+            partitions = labeled['file_id'].astype(int).map(
+                lambda fid: split_map.get(fid, 'train')
+            )
+            train_idx = labeled.index[partitions == 'train']
+            val_idx   = labeled.index[partitions == 'val']
+            test_idx  = labeled.index[partitions == 'test']
+            log.info(
+                f'Split (from file): '
+                f'train {len(train_idx):,} chirps | '
+                f'val {len(val_idx):,} chirps | '
+                f'test {len(test_idx):,} chirps'
+            )
+            return train_idx, val_idx, test_idx
+
+        # ---- Fallback: compute a fresh random split -------------------- #
         rng = np.random.default_rng(self.random_state)
 
-        # Modal species per file_id.
         modal = (
             labeled.groupby('file_id')['species']
             .agg(lambda s: s.mode().iloc[0])
@@ -526,7 +596,7 @@ class RFTrainer:
         test_idx  = labeled.index[labeled['file_id'].isin(test_set)]
 
         log.info(
-            f'Split (by file_id): '
+            f'Split (random, by file_id): '
             f'train {len(train_fids):,} fids / {len(train_idx):,} chirps | '
             f'val {len(val_fids):,} fids / {len(val_idx):,} chirps | '
             f'test {len(test_fids):,} fids / {len(test_idx):,} chirps'
@@ -1116,6 +1186,18 @@ def _parse_args():
             'learnable.  Example: --exclude-species HiF Anpa Lafr Myvo'
         ),
     )
+    parser.add_argument(
+        '--split-file',
+        default=None,
+        metavar='CSV',
+        help=(
+            'Path to holdout_split.csv produced by make_holdout_split.py.\n'
+            'When supplied the pre-assigned file_id → partition mapping is\n'
+            'used instead of a new random split.  --val-frac and --test-frac\n'
+            'are ignored.  Use this to share an identical held-out test set\n'
+            'with train_cnn.py.'
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -1153,6 +1235,7 @@ def main() -> None:
         mode              = args.mode,
         species_pair      = tuple(args.species_pair) if args.species_pair else None,
         exclude_species   = args.exclude_species,
+        split_file        = args.split_file,
     )
 
     result = trainer.run()
@@ -1163,3 +1246,4 @@ def main() -> None:
 # ------------------- Main Section --------------
 if __name__ == '__main__':
     main()
+    

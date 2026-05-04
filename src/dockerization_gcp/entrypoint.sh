@@ -1,4 +1,10 @@
 #!/bin/bash
+# @Author: Andreas Paepcke
+# @Date:   2026-04-14 13:11:23
+# @Last Modified by:   Andreas Paepcke
+# @Last Modified time: 2026-05-04 10:58:39
+
+#!/bin/bash
 # entrypoint.sh
 # Launches train_cnn.py via torchrun (multi-GPU) or python (single-GPU).
 # All CLI args passed to this script are forwarded to train_cnn.py.
@@ -19,8 +25,24 @@ EPOCHS="${EPOCHS:-40}"
 BATCH="${BATCH:-64}"
 WORKERS="${WORKERS:-8}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+# Optional: path to holdout_split.csv inside the container.
+# Set via -e SPLIT_FILE=/data/holdout_split.csv in docker run.
+# When set, train_cnn.py uses the pre-assigned file_id partitions
+# instead of computing its own random split.
+SPLIT_FILE="${SPLIT_FILE:-}"
 
 mkdir -p "${OUT_DIR}"
+
+# Build the optional --split-file argument.
+SPLIT_FILE_ARG=""
+if [[ -n "${SPLIT_FILE}" ]]; then
+    if [[ ! -f "${SPLIT_FILE}" ]]; then
+        echo "ERROR: SPLIT_FILE set to '${SPLIT_FILE}' but file not found inside container."
+        exit 1
+    fi
+    SPLIT_FILE_ARG="--split-file ${SPLIT_FILE}"
+    echo "  SPLIT_FILE   : ${SPLIT_FILE}"
+fi
 
 echo "=========================================="
 echo "  Bat CNN Training"
@@ -30,6 +52,7 @@ echo "  EPOCHS       : ${EPOCHS}"
 echo "  BATCH        : ${BATCH} (per GPU)"
 echo "  WORKERS      : ${WORKERS}"
 echo "  NPROC        : ${NPROC_PER_NODE} GPU(s)"
+echo "  SPLIT_FILE   : ${SPLIT_FILE:-<none — internal random split>}"
 echo "  EXTRA ARGS   : $*"
 echo "=========================================="
 
@@ -44,6 +67,7 @@ if [ "${NPROC_PER_NODE}" -gt 1 ]; then
         --epochs    "${EPOCHS}" \
         --batch     "${BATCH}" \
         --workers   "${WORKERS}" \
+        ${SPLIT_FILE_ARG} \
         "$@"
 else
     echo "Launching with python (single GPU)"
@@ -53,5 +77,6 @@ else
         --epochs    "${EPOCHS}" \
         --batch     "${BATCH}" \
         --workers   "${WORKERS}" \
+        ${SPLIT_FILE_ARG} \
         "$@"
 fi

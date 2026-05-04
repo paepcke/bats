@@ -13,8 +13,10 @@ from quintus.  At VM startup, `startup.sh`:
 1. Downloads all tar files to local NVMe SSD
 2. Untars them to `/mnt/disks/data/crops/`
 3. Rewrites manifest `crop_path` values to container-local paths
-4. Runs the Docker training container (2-GPU DDP)
-5. Syncs outputs back to GCS
+4. Downloads `holdout_split.csv` from GCS (if present) and mounts it into
+   the container so CNN and RF share the same held-out test set
+5. Runs the Docker training container (2-GPU DDP)
+6. Syncs outputs back to GCS
 
 The training container (`train_cnn.py`, `entrypoint.sh`, `Dockerfile`) is
 **identical** to the Vultr version — only the host-side scripts change.
@@ -64,7 +66,32 @@ gcloud artifacts repositories create bats \
     --description="Bat CNN training images"
 ```
 
-### 3 — Upload the manifest (not included in tars)
+### 3 — Generate and upload the holdout split file
+
+The holdout split assigns every `file_id` to `train`, `val`, or `test`
+once.  Both the CNN and RF use this file so they are evaluated on the same
+held-out test set.  Generate it on quintus from the manifest:
+
+```bash
+python src/species_classification/make_holdout_split.py \
+    --manifest /qnap/bats/jr_pipeline/data/bat_crops/manifest.csv \
+    --out-dir  /qnap/bats/jr_pipeline/data \
+    --seed 42
+```
+
+Then upload to GCS:
+
+```bash
+gcloud storage cp \
+    /qnap/bats/jr_pipeline/data/holdout_split.csv \
+    gs://bat_png_tar_files/holdout_split.csv
+```
+
+> Generate the split file **once** and reuse it for every subsequent CNN
+> and RF training run.  Never regenerate it — doing so would change the
+> test partition and invalidate cross-model comparisons.
+
+### 4 — Upload the manifest (not included in tars)
 
 ```bash
 gcloud storage cp \
@@ -72,7 +99,7 @@ gcloud storage cp \
     gs://bat_png_tar_files/
 ```
 
-### 4 — Upload startup/shutdown scripts to GCS
+### 5 — Upload startup/shutdown scripts to GCS
 
 ```bash
 gcloud storage cp startup.sh  gs://bat_png_tar_files/scripts/startup.sh
@@ -103,7 +130,8 @@ docker push ${IMAGE}
 ```
 
 Rebuild and push only when `train_cnn.py` or other training code changes.
-Data changes never require a rebuild.
+Data changes (including a new `holdout_split.csv`) never require a rebuild —
+the split file is fetched from GCS at VM startup.
 
 ---
 
@@ -160,10 +188,11 @@ gcloud compute instances create bat-cnn-training \
 GCS_DATA_BUCKET=bat_png_tar_files,\
 GCS_OUTPUT_BUCKET=bat-training-output,\
 GCS_CROPS_PREFIX=crops-tar,\
+SPLIT_FILE_KEY=holdout_split.csv,\
 IMAGE_URI=${IMAGE},\
 NPROC_PER_NODE=2,\
 EPOCHS=40,\
-EXTRA_ARGS="--patience 7 --cw-power 0.5",\
+EXTRA_ARGS="--patience 10 --cw-power 0.75",\
 startup-script-url=gs://bat_png_tar_files/scripts/startup.sh,\
 shutdown-script-url=gs://bat_png_tar_files/scripts/shutdown.sh
 ```
@@ -223,10 +252,11 @@ gcloud compute instances create bat-cnn-training \
 GCS_DATA_BUCKET=bat_png_tar_files,\
 GCS_OUTPUT_BUCKET=bat-training-output,\
 GCS_CROPS_PREFIX=crops-tar,\
+SPLIT_FILE_KEY=holdout_split.csv,\
 IMAGE_URI=${IMAGE},\
 NPROC_PER_NODE=2,\
 EPOCHS=40,\
-EXTRA_ARGS="--resume --patience 7 --cw-power 0.5",\
+EXTRA_ARGS="--resume --patience 10 --cw-power 0.75",\
 startup-script-url=gs://bat_png_tar_files/scripts/startup.sh,\
 shutdown-script-url=gs://bat_png_tar_files/scripts/shutdown.sh
 ```
@@ -238,6 +268,9 @@ Notes:
   headroom for the output directory.
 - `a2-ultragpu-2g` is only available in select zones; `us-central1-a` and
   `us-central1-c` typically have availability. If creation fails try `-c`.
+- `SPLIT_FILE_KEY` defaults to `holdout_split.csv` (root of the data
+  bucket) if omitted.  If the file is absent from GCS, `startup.sh` logs
+  a warning and training falls back to an internal random split.
 
 ---
 
@@ -266,7 +299,7 @@ and restart:
 # Update metadata to add --resume
 gcloud compute instances add-metadata bat-cnn-training \
     --zone=${ZONE} \
-    --metadata=EXTRA_ARGS="--resume --patience 7 --cw-power 0.5"
+    --metadata=EXTRA_ARGS="--resume --patience 10 --cw-power 0.75"
 
 # Restart (startup script runs automatically)
 gcloud compute instances start bat-cnn-training --zone=${ZONE}
@@ -299,15 +332,36 @@ gcloud storage rsync \
 /mnt/disks/data/crops/             Untarred PNG subdirectories
 /mnt/disks/data/manifest.csv       Original manifest from GCS
 /mnt/disks/data/manifest_fixed.csv Path-rewritten manifest (used by container)
+/mnt/disks/data/holdout_split.csv  Shared file_id partition map (from GCS)
 /mnt/disks/output/                 Training outputs (checkpoints, logs, etc.)
 ```
 
 ## Container volume mounts
 
 ```
-/data/crops/        <- /mnt/disks/data/crops/           (read-only)
-/data/manifest.csv  <- /mnt/disks/data/manifest_fixed.csv (read-only)
-/output/            <- /mnt/disks/output/
+/data/crops/              <- /mnt/disks/data/crops/            (read-only)
+/data/manifest.csv        <- /mnt/disks/data/manifest_fixed.csv (read-only)
+/data/holdout_split.csv   <- /mnt/disks/data/holdout_split.csv  (read-only, if present)
+/output/                  <- /mnt/disks/output/
+```
+
+---
+
+## Recommended hyperparameters for the GCP run
+
+Based on the quintus training run (early-stopped epoch 19, best val_acc 0.761):
+
+| Flag | Value | Rationale |
+|------|-------|-----------|
+| `--batch` | 64 | Per-GPU. Conservative; prevents minority species from being drowned out at large batch sizes |
+| `--lr` | 1e-3 | Default; 2e-3 caused instability in prior run |
+| `--cw-power` | 0.75 | Stronger minority weighting than the previous 0.5 (sqrt) |
+| `--patience` | 10 | Prior run stopped at epoch 19 with best at 10; more patience allows further LR-reduction recovery |
+| `--epochs` | 40 | Unchanged |
+
+Full command reflected in `EXTRA_ARGS` above:
+```
+--patience 10 --cw-power 0.75
 ```
 
 ---
@@ -320,7 +374,7 @@ gcloud storage rsync \
 | Full run (40 epochs, 2×A100)      | ~12 hrs   | ~$126          |
 
 At $10.50/hr, early stopping (typically saving 20-40% of epochs) matters.
-Default `--patience 7` will halt training if val_loss plateaus, keeping
+Default `--patience 10` will halt training if val_loss plateaus, keeping
 costs down. A validation run first at 5 epochs is recommended to confirm
 the pipeline before committing to a full run.
 
