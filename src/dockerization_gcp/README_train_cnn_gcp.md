@@ -102,8 +102,8 @@ gcloud storage cp \
 ### 5 — Upload startup/shutdown scripts to GCS
 
 ```bash
-gcloud storage cp startup.sh  gs://bat_png_tar_files/scripts/startup.sh
-gcloud storage cp shutdown.sh gs://bat_png_tar_files/scripts/shutdown.sh
+gcloud storage cp src/dockerization_gcp/startup.sh gs://bat_png_tar_files/scripts/startup.sh
+gcloud storage cp src/dockerization_gcp/shutdown.sh gs://bat_png_tar_files/scripts/shutdown.sh
 ```
 
 ---
