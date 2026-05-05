@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-05 11:39:25
+# @Last Modified time: 2026-05-05 11:44:34
 # ***********************************************
 # startup.sh
 # GCP Compute Engine startup script for bat CNN training.
@@ -125,11 +125,16 @@ CROPS_DIR=${DATA_DIR}/crops
 mkdir -p "${TAR_DIR}" "${CROPS_DIR}" "${OUTPUT_DIR}"
 
 # ── Copy tar files from GCS ───────────────────────────────────
-# Tars live under gs://<bucket>/<prefix>/*.tar — must include prefix.
-echo "Copying tar files from gs://${GCS_DATA_BUCKET}/${GCS_CROPS_PREFIX}/ ..."
+# Tars may be at the bucket root or under a prefix.
+if [[ -n "${GCS_CROPS_PREFIX}" ]]; then
+    TAR_SOURCE="gs://${GCS_DATA_BUCKET}/${GCS_CROPS_PREFIX}/*.tar"
+else
+    TAR_SOURCE="gs://${GCS_DATA_BUCKET}/*.tar"
+fi
+echo "Copying tar files from ${TAR_SOURCE} ..."
 START=$(date +%s)
 gcloud storage cp \
-    "gs://${GCS_DATA_BUCKET}/${GCS_CROPS_PREFIX}/*.tar" \
+    "${TAR_SOURCE}" \
     "${TAR_DIR}/"
 END=$(date +%s)
 TAR_COUNT=$(ls "${TAR_DIR}"/*.tar 2>/dev/null | wc -l)
