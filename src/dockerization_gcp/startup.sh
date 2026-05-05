@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-04 13:08:34
+# @Last Modified time: 2026-05-05 11:39:25
 # ***********************************************
 # startup.sh
 # GCP Compute Engine startup script for bat CNN training.
@@ -73,6 +73,17 @@ if ! gcloud storage buckets describe "gs://${GCS_OUTPUT_BUCKET}" &>/dev/null; th
     echo "Output bucket created."
 else
     echo "Output bucket gs://${GCS_OUTPUT_BUCKET} already exists."
+fi
+
+# ── Install Docker ───────────────────────────────────────────
+if ! command -v docker &>/dev/null; then
+    echo "Installing Docker..."
+    curl -fsSL https://get.docker.com | sh
+    systemctl enable docker
+    systemctl start docker
+    echo "Docker installed."
+else
+    echo "Docker already installed: $(docker --version)"
 fi
 
 # ── NVIDIA Container Toolkit ──────────────────────────────────
