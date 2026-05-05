@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-05 11:44:34
+# @Last Modified time: 2026-05-05 13:40:33
 # ***********************************************
 # startup.sh
 # GCP Compute Engine startup script for bat CNN training.
@@ -48,7 +48,7 @@ H="Metadata-Flavor: Google"
 
 GCS_DATA_BUCKET=$(curl -sf -H "${H}" "${META}/GCS_DATA_BUCKET")
 GCS_OUTPUT_BUCKET=$(curl -sf -H "${H}" "${META}/GCS_OUTPUT_BUCKET" || echo "bat-training-output")
-GCS_CROPS_PREFIX=$(curl -sf -H "${H}" "${META}/GCS_CROPS_PREFIX" || echo "crops-tar")
+GCS_CROPS_PREFIX=$(curl -sf -H "${H}" "${META}/GCS_CROPS_PREFIX" || echo "")
 IMAGE_URI=$(curl -sf -H "${H}" "${META}/IMAGE_URI")
 NPROC_PER_NODE=$(curl -sf -H "${H}" "${META}/NPROC_PER_NODE" || echo "2")
 EPOCHS=$(curl -sf -H "${H}" "${META}/EPOCHS" || echo "40")
@@ -104,7 +104,7 @@ fi
 
 # ── Mount data disk ───────────────────────────────────────────
 # The 600GB SSD data disk is attached but may not be formatted/mounted yet.
-DATA_DISK=/dev/disk/by-id/google-data-disk
+DATA_DISK=/dev/disk/by-id/google-persistent-disk-1
 DATA_DIR=/mnt/disks/data
 OUTPUT_DIR=/mnt/disks/output
 

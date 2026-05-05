@@ -187,7 +187,6 @@ gcloud compute instances create bat-cnn-training \
     --metadata=\
 GCS_DATA_BUCKET=bat_png_tar_files,\
 GCS_OUTPUT_BUCKET=bat-training-output,\
-GCS_CROPS_PREFIX=crops-tar,\
 SPLIT_FILE_KEY=holdout_split.csv,\
 IMAGE_URI=${IMAGE},\
 NPROC_PER_NODE=2,\
