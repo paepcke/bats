@@ -182,8 +182,8 @@ gcloud compute instances create bat-cnn-training \
     --boot-disk-size=100GB \
     --boot-disk-type=pd-ssd \
     --create-disk=auto-delete=yes,size=600,type=pd-ssd,name=data-disk \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
+    --image-family=common-cu124 \
+    --image-project=deeplearning-platform-release \
     --metadata=\
 GCS_DATA_BUCKET=bat_png_tar_files,\
 GCS_OUTPUT_BUCKET=bat-training-output,\
@@ -199,7 +199,7 @@ shutdown-script-url=gs://bat_png_tar_files/scripts/shutdown.sh
 ### Emergency stop:
 ```
 gcloud compute instances delete bat-cnn-training \
-    --zone=us-central1-a \
+    --zone=${ZONE} \
     --quiet    
 ```
 After the above, outputs are safely in
@@ -255,12 +255,11 @@ gcloud compute instances create bat-cnn-training \
     --boot-disk-size=100GB \
     --boot-disk-type=pd-ssd \
     --create-disk=auto-delete=yes,size=600,type=pd-ssd,name=data-disk \
-    --image-family=ubuntu-2204-lts \
-    --image-project=ubuntu-os-cloud \
+    --image-family=common-cu124 \
+    --image-project=deeplearning-platform-release \
     --metadata=\
 GCS_DATA_BUCKET=bat_png_tar_files,\
 GCS_OUTPUT_BUCKET=bat-training-output,\
-GCS_CROPS_PREFIX=crops-tar,\
 SPLIT_FILE_KEY=holdout_split.csv,\
 IMAGE_URI=${IMAGE},\
 NPROC_PER_NODE=2,\
