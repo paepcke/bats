@@ -182,7 +182,7 @@ gcloud compute instances create bat-cnn-training \
     --boot-disk-size=100GB \
     --boot-disk-type=pd-ssd \
     --create-disk=auto-delete=yes,size=600,type=pd-ssd,name=data-disk \
-    --image-family=common-cu124 \
+    --image-family=common-cu129-ubuntu-2204-nvidia-580 \
     --image-project=deeplearning-platform-release \
     --metadata=\
 GCS_DATA_BUCKET=bat_png_tar_files,\
@@ -255,7 +255,7 @@ gcloud compute instances create bat-cnn-training \
     --boot-disk-size=100GB \
     --boot-disk-type=pd-ssd \
     --create-disk=auto-delete=yes,size=600,type=pd-ssd,name=data-disk \
-    --image-family=common-cu124 \
+    --image-family=common-cu129-ubuntu-2204-nvidia-580 \
     --image-project=deeplearning-platform-release \
     --metadata=\
 GCS_DATA_BUCKET=bat_png_tar_files,\
