@@ -168,7 +168,7 @@ launching the container, and `train_cnn.py` will continue from the next epoch.
 PROJECT=dresl-bats-2026
 SA=bat-training-sa@${PROJECT}.iam.gserviceaccount.com
 IMAGE=us-central1-docker.pkg.dev/${PROJECT}/bats/bat-cnn:latest
-ZONE=us-central1-a
+ZONE=us-central1-c
 
 gcloud compute instances create bat-cnn-training \
     --project=${PROJECT} \
@@ -287,7 +287,7 @@ Notes:
 ## Monitor training
 
 ```bash
-ZONE=us-central1-a
+ZONE=us-central1-c
 
 # Tail the startup log (data copy progress, then training output)
 gcloud compute ssh bat-cnn-training --zone=${ZONE} \
@@ -295,6 +295,26 @@ gcloud compute ssh bat-cnn-training --zone=${ZONE} \
 
 # Watch for checkpoint files appearing in GCS
 gcloud storage ls -l gs://bat-training-output/checkpoints/
+
+# Any shell command on the fly:
+gcloud compute ssh bat-cnn-training --zone=us-central1-c  -- "<bash command>"
+
+# Other useful one-liners:
+
+# Is the startup script running yet?
+gcloud compute ssh bat-cnn-training --zone=${ZONE} \
+    -- "ps aux | grep startup"
+
+# How full is the data disk?
+gcloud compute ssh bat-cnn-training --zone=${ZONE} \
+    -- "df -h"
+
+# Is Docker running yet?
+gcloud compute ssh bat-cnn-training --zone=${ZONE} \
+    -- "docker ps"
+
+# Or start a regular shell in the VM:
+gcloud compute ssh bat-cnn-training --zone=${ZONE}
 ```
 
 ---
