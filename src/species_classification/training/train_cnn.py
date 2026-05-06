@@ -4,7 +4,7 @@
 # @Date:   2026-03-16 15:41:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/train_cnn.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-05 18:05:46
+# @Last Modified time: 2026-05-05 18:43:59
 # **********************************************************
 
 """
@@ -348,17 +348,52 @@ def make_splits(
     val_frac:   float = _DEFAULT_VAL_FRAC,
     test_frac:  float = _DEFAULT_TEST_FRAC,
     seed:       int   = 42,
+    split_file: Optional[Path] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Split *df* into train/val/test at the ``file_id`` level, stratified by
-    each fragment's modal species label.
+    Split *df* into train/val/test at the ``file_id`` level.
 
-    :param df:        Full crop DataFrame with ``file_id`` and ``species``.
-    :param val_frac:  Fraction of file_ids for validation.
-    :param test_frac: Fraction of file_ids for test.
-    :param seed:      Random seed for reproducibility.
-    :return:          ``(train_df, val_df, test_df)``
+    When *split_file* is supplied (path to ``holdout_split.csv`` produced by
+    ``make_holdout_split.py``) the pre-assigned ``file_id`` → partition
+    mapping is used directly, guaranteeing that CNN and RF share the same
+    held-out test set.  ``val_frac`` and ``test_frac`` are ignored in that
+    case.
+
+    Without *split_file* the split is computed fresh: stratified by each
+    fragment's modal species label so every partition receives a
+    proportional share of every species.
+
+    :param df:         Full crop DataFrame with ``file_id`` and ``species``.
+    :param val_frac:   Fraction of file_ids for validation (ignored with
+                       *split_file*).
+    :param test_frac:  Fraction of file_ids for test (ignored with
+                       *split_file*).
+    :param seed:       Random seed for reproducibility.
+    :param split_file: Optional path to ``holdout_split.csv``.
+    :return:           ``(train_df, val_df, test_df)``
     """
+    if split_file is not None:
+        log.info(f'Loading external split file: {split_file}')
+        split_df = pd.read_csv(split_file)
+        if not {'file_id', 'partition'}.issubset(split_df.columns):
+            raise ValueError(
+                f'Split file {split_file} must have columns file_id and partition'
+            )
+        split_map = dict(zip(split_df['file_id'].astype(int),
+                             split_df['partition']))
+        partitions = df['file_id'].astype(int).map(
+            lambda fid: split_map.get(fid, 'train')
+        )
+        train_df = df[partitions == 'train'].copy()
+        val_df   = df[partitions == 'val'].copy()
+        test_df  = df[partitions == 'test'].copy()
+        log.info(
+            f'Split (from file): {len(train_df):,} train / '
+            f'{len(val_df):,} val / {len(test_df):,} test crops'
+        )
+        return train_df, val_df, test_df
+
+    # ---- Fallback: fresh stratified random split ----------------------- #
     rng = np.random.default_rng(seed)
 
     fid_species = (
@@ -659,6 +694,7 @@ class CnnTrainer:
         min_delta:           float          = _DEFAULT_MIN_DELTA,
         cw_power:            float          = _DEFAULT_CW_POWER,
         gcs_output_bucket:   str            = '',
+        split_file:          Optional[str | Path] = None,
     ) -> None:
         self.manifest_csv        = Path(manifest_csv)
         self.out_dir             = Path(out_dir)
@@ -684,6 +720,7 @@ class CnnTrainer:
         self.min_delta           = min_delta
         self.cw_power            = cw_power
         self.gcs_output_bucket   = gcs_output_bucket
+        self.split_file          = Path(split_file) if split_file else None
 
     # ------------------------------------------------------------------ #
     #  Data loading                                                        #
@@ -811,7 +848,7 @@ class CnnTrainer:
             )
 
         train_df, val_df, test_df = make_splits(
-            df, self.val_frac, self.test_frac, self.seed
+            df, self.val_frac, self.test_frac, self.seed, self.split_file
         )
 
         # ── Class weights (rank 0 computes, broadcasts to all) ─────────
@@ -1204,6 +1241,17 @@ def _parse_args():
         help='Save a named checkpoint_epoch_N.pt every N epochs (0 = disabled).',
     )
     parser.add_argument(
+        '--split-file',
+        default=None,
+        metavar='CSV',
+        help=(
+            'Path to holdout_split.csv produced by make_holdout_split.py. '
+            'When supplied, the pre-assigned file_id → partition mapping '
+            'is used instead of a random split, so CNN and RF share the '
+            'same held-out test set. --val-frac and --test-frac are ignored.'
+        ),
+    )
+    parser.add_argument(
         '--patience', type=int, default=_DEFAULT_PATIENCE, metavar='N',
         help=(
             'Early stopping: stop if val_loss has not improved by '
@@ -1280,6 +1328,7 @@ def main() -> None:
         min_delta           = args.min_delta,
         cw_power            = args.cw_power,
         gcs_output_bucket   = args.gcs_output_bucket,
+        split_file          = args.split_file,
     )
     trainer.run()
 
