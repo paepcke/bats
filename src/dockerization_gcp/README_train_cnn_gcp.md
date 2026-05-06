@@ -191,7 +191,7 @@ SPLIT_FILE_KEY=holdout_split.csv,\
 IMAGE_URI=${IMAGE},\
 NPROC_PER_NODE=2,\
 EPOCHS=40,\
-EXTRA_ARGS="--patience 10 --cw-power 0.75",\
+EXTRA_ARGS="--patience 10 --cw-power 0.75 --batch 256",\
 startup-script-url=gs://bat_png_tar_files/scripts/startup.sh,\
 shutdown-script-url=gs://bat_png_tar_files/scripts/shutdown.sh
 ```
@@ -264,7 +264,7 @@ SPLIT_FILE_KEY=holdout_split.csv,\
 IMAGE_URI=${IMAGE},\
 NPROC_PER_NODE=2,\
 EPOCHS=40,\
-EXTRA_ARGS="--resume --patience 10 --cw-power 0.75",\
+EXTRA_ARGS="--resume --patience 10 --cw-power 0.75  --batch 256",\
 startup-script-url=gs://bat_png_tar_files/scripts/startup.sh,\
 shutdown-script-url=gs://bat_png_tar_files/scripts/shutdown.sh
 ```
