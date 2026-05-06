@@ -1,7 +1,8 @@
 # ============================================================
 # Bat species CNN training image
-# Base: CUDA 12.1 + cuDNN 8 on Ubuntu 22.04
-# Compatible with PyTorch 2.x cu121 wheels and NVIDIA A100 80GB
+# Base: CUDA 12.4 + cuDNN 9 on Ubuntu 22.04
+# Compatible with PyTorch 2.6 cu124 wheels and NVIDIA A100 80GB
+# Host driver >= 550 required (GCP deep learning image ships 580).
 #
 # Python 3.12 installed via deadsnakes PPA (Ubuntu 22.04 ships 3.10).
 #
@@ -14,7 +15,7 @@
 # not inside the container.
 # ============================================================
 
-FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 # Prevent interactive prompts during apt installs
 ENV DEBIAN_FRONTEND=noninteractive
@@ -44,10 +45,10 @@ RUN update-alternatives --install /usr/bin/pip pip /usr/local/bin/pip3.12 1
 # ── Python dependencies ───────────────────────────────────────
 # Install PyTorch first (large wheel, cached separately from the rest).
 RUN pip install --no-cache-dir \
-        torch==2.3.0+cu121 \
-        torchvision==0.18.0+cu121 \
-        torchaudio==2.3.0+cu121 \
-        --extra-index-url https://download.pytorch.org/whl/cu121
+        torch==2.6.0+cu124 \
+        torchvision==0.21.0+cu124 \
+        torchaudio==2.6.0+cu124 \
+        --extra-index-url https://download.pytorch.org/whl/cu124
 
 # Install everything else the training script needs.
 RUN pip install --no-cache-dir \

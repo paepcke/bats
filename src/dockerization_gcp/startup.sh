@@ -3,11 +3,14 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-05 13:40:33
+# @Last Modified time: 2026-05-05 17:09:19
 # ***********************************************
+
 # startup.sh
 # GCP Compute Engine startup script for bat CNN training.
 # VM: a2-ultragpu-2g (2x A100 80GB), us-central1
+# Host image: deeplearning-platform-release/common-cu129-ubuntu-2204-nvidia-580
+#   (includes NVIDIA driver 580, Docker, NVIDIA container toolkit pre-installed)
 #
 # Handles:
 #   1. Installing NVIDIA Container Toolkit (if not already present)
@@ -172,7 +175,9 @@ SOURCE_PREFIX=$(awk -F',' 'NR==2 {
     prefix = ""
     for (i = 1; i <= n; i++) {
         if (parts[i] ~ /^[0-9]{8}_/) { break }
-        prefix = prefix (prefix == "" ? "" : "/") parts[i]
+        if (parts[i] != "") {
+            prefix = prefix (prefix == "" ? "" : "/") parts[i]
+        }
     }
     print prefix
 }' "${MANIFEST_RAW}")
