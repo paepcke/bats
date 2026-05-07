@@ -4,7 +4,7 @@
 # @Date:   2026-03-16 15:41:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/train_cnn.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-05 18:43:59
+# @Last Modified time: 2026-05-07 08:24:15
 # **********************************************************
 
 """
@@ -132,7 +132,6 @@ from __future__ import annotations
 import csv
 import json
 import os
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -235,10 +234,12 @@ def _push_ckpt_to_gcs(
     Upload checkpoint files to GCS after each epoch.
 
     Uploads ``checkpoint_latest.pt`` unconditionally, and ``best_model.pt``
-    when *best_model* is True.  Each upload runs as a blocking subprocess
-    with a 60-second timeout so a slow upload never stalls training for
-    more than two minutes total.  Any failure is logged as a warning and
-    does not abort training.
+    when *best_model* is True.  Uses the ``google-cloud-storage`` Python
+    library directly — no dependency on the ``gcloud`` CLI being present
+    inside the container.  The VM's attached service account provides
+    credentials automatically via the metadata server.
+
+    Any failure is logged as a warning and does not abort training.
 
     :param local_path:  Path to ``checkpoint_latest.pt`` on disk.
     :param bucket:      GCS bucket name (no ``gs://`` prefix).
@@ -246,36 +247,36 @@ def _push_ckpt_to_gcs(
     :param best_model:  If ``True``, also upload ``best_model.pt`` from the
                         same directory.
     """
-    dest = f'gs://{bucket}/checkpoints/'
-    files_to_push = [str(local_path)]
+    try:
+        from google.cloud import storage as gcs
+    except ImportError:
+        log.warn(
+            '  google-cloud-storage not installed — skipping GCS upload. '
+            'Add google-cloud-storage to the Dockerfile pip install block.'
+        )
+        return
+
+    files_to_push = [local_path]
     if best_model:
         best_path = local_path.parent / 'best_model.pt'
         if best_path.exists():
-            files_to_push.append(str(best_path))
+            files_to_push.append(best_path)
+
+    try:
+        client     = gcs.Client()
+        gcs_bucket = client.bucket(bucket)
+    except Exception as exc:
+        log.warn(f'  GCS client init failed at epoch {epoch}: {exc}')
+        return
 
     for fpath in files_to_push:
-        fname = Path(fpath).name
+        fname = fpath.name
+        blob  = gcs_bucket.blob(f'checkpoints/{fname}')
         try:
-            result = subprocess.run(
-                ['gcloud', 'storage', 'cp', fpath, dest],
-                timeout=60,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                log.info(f'  ☁  GCS upload OK: {fname} → {dest}')
-            else:
-                log.warn(
-                    f'  GCS upload failed for {fname} at epoch {epoch}: '
-                    f'{result.stderr.strip()}'
-                )
-        except subprocess.TimeoutExpired:
-            log.warn(
-                f'  GCS upload timed out for {fname} at epoch {epoch} '
-                f'— continuing training.'
-            )
+            blob.upload_from_filename(str(fpath))
+            log.info(f'  ☁  GCS upload OK: {fname} → gs://{bucket}/checkpoints/')
         except Exception as exc:
-            log.warn(f'  GCS upload error for {fname} at epoch {epoch}: {exc}')
+            log.warn(f'  GCS upload failed for {fname} at epoch {epoch}: {exc}')
 
 
 # ---------------------------------------------------------------------------
@@ -1287,8 +1288,9 @@ def _parse_args():
             'GCS bucket name (no gs:// prefix) for per-epoch checkpoint upload. '
             'Uploads checkpoint_latest.pt after every epoch and best_model.pt '
             'whenever a new best val_acc is reached. '
-            'Upload runs in a subprocess with a 60s timeout; failures are '
-            'logged as warnings and do not abort training. '
+            'Uses the google-cloud-storage Python library; VM service account '
+            'provides credentials automatically. Failures are logged as warnings '
+            'and do not abort training. '
             'Leave empty (default) to disable GCS upload.'
         ),
     )

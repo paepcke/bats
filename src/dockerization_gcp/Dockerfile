@@ -60,7 +60,8 @@ RUN pip install --no-cache-dir \
         seaborn \
         tqdm \
         logging_singleton>=1.0.1 \
-        pyarrow>=22.0.0
+        pyarrow>=22.0.0 \
+        google-cloud-storage
 
 # ── Copy and install the bats package ────────────────────────
 # Build context is the repo root; pyproject.toml uses src layout.
