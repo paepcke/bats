@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-05-08 16:11:10
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-08 16:12:06
+# @Last Modified time: 2026-05-08 16:43:23
 # **********************************************************
 
 """
@@ -252,29 +252,40 @@ class SampleSelector:
     Sample correct and misclassified crops from the manifest for a set of
     species, running batched inference to obtain predictions.
 
-    :param manifest_path: Path to ``manifest.csv``.
-    :param crops_dir:     Root directory under which crop PNGs live.
-    :param model:         Eval-mode model.
-    :param preprocessor:  ``CropPreprocessor`` instance.
-    :param label_to_idx:  Species → class index mapping.
-    :param idx_to_label:  Class index → species mapping.
-    :param device:        Torch device.
-    :param partition:     Restrict to this partition column value
-                          (``'test'``, ``'val'``, or ``None`` for all).
-    :param batch_size:    Inference batch size.
+    :param manifest_path:    Path to ``manifest.csv``.
+    :param crops_dir:        Root directory under which crop PNGs live.
+    :param model:            Eval-mode model.
+    :param preprocessor:     ``CropPreprocessor`` instance.
+    :param label_to_idx:     Species → class index mapping.
+    :param idx_to_label:     Class index → species mapping.
+    :param device:           Torch device.
+    :param split_file:       Path to ``holdout_split.csv`` (columns: ``file_id``,
+                             ``partition``).  When supplied, only rows whose
+                             ``file_id`` maps to ``split_partition`` are kept.
+                             This is the same split used during training so
+                             Grad-CAM samples are drawn from the true held-out
+                             test set.  Pass ``None`` to use all rows.
+    :param split_partition:  Which partition to keep when *split_file* is given
+                             (``'test'``, ``'val'``, or ``'train'``).
+                             Default: ``'test'``.
+    :param primary_harmonic: If ``True`` keep only ``harmonic_idx == 0`` rows
+                             (fundamental chirps, skipping harmonic copies).
+    :param batch_size:       Inference batch size.
     """
 
     def __init__(
         self,
-        manifest_path: Path,
-        crops_dir:     Path,
-        model:         nn.Module,
-        preprocessor:  CropPreprocessor,
-        label_to_idx:  Dict[str, int],
-        idx_to_label:  Dict[int, str],
-        device:        torch.device,
-        partition:     Optional[str],
-        batch_size:    int = 64,
+        manifest_path:   Path,
+        crops_dir:       Path,
+        model:           nn.Module,
+        preprocessor:    CropPreprocessor,
+        label_to_idx:    Dict[str, int],
+        idx_to_label:    Dict[int, str],
+        device:          torch.device,
+        split_file:      Optional[Path] = None,
+        split_partition: str            = 'test',
+        primary_harmonic: bool          = True,
+        batch_size:      int            = 64,
     ) -> None:
         self.model        = model
         self.preprocessor = preprocessor
@@ -289,16 +300,36 @@ class SampleSelector:
         # Keep only species the model knows.
         df = df[df['species'].isin(label_to_idx)].copy()
 
-        # Partition filter.
-        if partition is not None and 'partition' in df.columns:
+        # Split-file filter: join on file_id to restrict to train/val/test.
+        # holdout_split.csv has columns file_id, partition with values
+        # 'train' / 'val' / 'test' — this is the authoritative split used
+        # during training (make_splits() in train_cnn.py).
+        if split_file is not None:
+            log.info(f'Loading split file: {split_file}')
+            split_df  = pd.read_csv(split_file)
+            split_map = dict(zip(split_df['file_id'].astype(int),
+                                 split_df['partition']))
             before = len(df)
-            df = df[df['partition'] == partition].copy()
-            log.info(f'Partition filter "{partition}": {before:,} → {len(df):,} rows')
-        elif partition is not None:
-            log.warn(
-                f'Manifest has no "partition" column; '
-                f'ignoring --partition {partition}'
+            df['_split'] = df['file_id'].astype(int).map(split_map)
+            df = df[df['_split'] == split_partition].drop(columns=['_split']).copy()
+            log.info(
+                f'Split filter "{split_partition}": {before:,} → {len(df):,} rows'
             )
+            if len(df) == 0:
+                log.warn(
+                    f'Split filter produced 0 rows.  Check that holdout_split.csv '
+                    f'file_ids overlap with the manifest.'
+                )
+        else:
+            log.info('No split file supplied — using all manifest rows.')
+
+        # Primary-harmonic filter: keep only fundamental chirps (harmonic_idx == 0).
+        # Harmonic copies share acoustic content with their fundamental and would
+        # produce near-identical Grad-CAM maps, so excluding them avoids redundancy.
+        if primary_harmonic and 'harmonic_idx' in df.columns:
+            before = len(df)
+            df = df[df['harmonic_idx'] == 0].copy()
+            log.info(f'Primary-harmonic filter: {before:,} → {len(df):,} rows')
 
         # Keep only target species.
         df = df[df['species'].isin(_TARGET_SPECIES)].copy()
@@ -534,24 +565,32 @@ class GradCamRunner:
     :param crops_dir:     Root directory of PNG crops.
     :param out_dir:       Output directory for figures.
     :param n_samples:     Number of correct and misclassified samples per species.
-    :param partition:     Restrict manifest to this partition (``'test'``, etc.).
-    :param batch_size:    Inference batch size.
-    :param device_str:    ``'auto'``, ``'cpu'``, ``'cuda'``, ``'cuda:0'``, etc.
-    :param seed:          Random seed for sample selection.
+    :param split_file:       Path to ``holdout_split.csv`` (file_id → partition).
+                             When supplied only the *split_partition* subset is used,
+                             matching the held-out test set from training.
+                             Pass ``None`` to use all manifest rows.
+    :param split_partition:  Which partition to keep: ``'test'``, ``'val'``, or
+                             ``'train'``.  Ignored when *split_file* is ``None``.
+    :param primary_harmonic: If ``True`` keep only ``harmonic_idx == 0`` rows.
+    :param batch_size:       Inference batch size.
+    :param device_str:       ``'auto'``, ``'cpu'``, ``'cuda'``, ``'cuda:0'``, etc.
+    :param seed:             Random seed for sample selection.
     """
 
     def __init__(
         self,
-        model_path:    Path,
-        encoder_path:  Path,
-        manifest_path: Path,
-        crops_dir:     Path,
-        out_dir:       Path,
-        n_samples:     int            = 8,
-        partition:     Optional[str]  = 'test',
-        batch_size:    int            = 64,
-        device_str:    str            = 'auto',
-        seed:          int            = 42,
+        model_path:      Path,
+        encoder_path:    Path,
+        manifest_path:   Path,
+        crops_dir:       Path,
+        out_dir:         Path,
+        n_samples:       int            = 8,
+        split_file:      Optional[Path] = None,
+        split_partition: str            = 'test',
+        primary_harmonic: bool          = True,
+        batch_size:      int            = 64,
+        device_str:      str            = 'auto',
+        seed:            int            = 42,
     ) -> None:
         if device_str == 'auto':
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -565,26 +604,31 @@ class GradCamRunner:
         preprocessor = CropPreprocessor()
         gradcam      = GradCam(model, device)
         selector     = SampleSelector(
-            manifest_path = manifest_path,
-            crops_dir     = crops_dir,
-            model         = model,
-            preprocessor  = preprocessor,
-            label_to_idx  = label_to_idx,
-            idx_to_label  = idx_to_label,
-            device        = device,
-            partition     = partition,
-            batch_size    = batch_size,
+            manifest_path    = manifest_path,
+            crops_dir        = crops_dir,
+            model            = model,
+            preprocessor     = preprocessor,
+            label_to_idx     = label_to_idx,
+            idx_to_label     = idx_to_label,
+            device           = device,
+            split_file       = split_file,
+            split_partition  = split_partition,
+            primary_harmonic = primary_harmonic,
+            batch_size       = batch_size,
         )
         visualiser = GradCamVisualiser(gradcam, preprocessor, idx_to_label, out_dir)
 
-        self.model        = model
-        self.label_to_idx = label_to_idx
-        self.idx_to_label = idx_to_label
-        self.selector     = selector
-        self.visualiser   = visualiser
-        self.n_samples    = n_samples
-        self.seed         = seed
-        self.out_dir      = out_dir
+        self.model           = model
+        self.label_to_idx    = label_to_idx
+        self.idx_to_label    = idx_to_label
+        self.selector        = selector
+        self.visualiser      = visualiser
+        self.n_samples       = n_samples
+        self.split_file      = split_file
+        self.split_partition = split_partition
+        self.primary_harmonic = primary_harmonic
+        self.seed            = seed
+        self.out_dir         = out_dir
 
     # ----------------------------------------------------------------------- #
 
@@ -672,11 +716,25 @@ def _parse_args() -> argparse.Namespace:
         help='Number of correct and misclassified crops to visualise per species (default: 8).',
     )
     parser.add_argument(
-        '--partition', default='test', metavar='PART',
+        '--split-file', default=None, metavar='CSV',
         help=(
-            'Manifest partition to draw samples from: test, val, or train. '
-            'Pass "all" to ignore the partition column. (default: test)'
+            'Path to holdout_split.csv (columns: file_id, partition). '
+            'When supplied, only crops whose file_id maps to --split-partition '
+            'are used, matching the held-out set from training. '
+            'Omit to sample from all manifest rows.'
         ),
+    )
+    parser.add_argument(
+        '--split-partition', default='test', metavar='PART',
+        help='Partition to draw samples from: test (default), val, or train.',
+    )
+    parser.add_argument(
+        '--primary-harmonic', action='store_true', default=True,
+        help='Keep only harmonic_idx==0 rows (fundamental chirps). Default: on.',
+    )
+    parser.add_argument(
+        '--all-harmonics', dest='primary_harmonic', action='store_false',
+        help='Include harmonic copies (harmonic_idx > 0) as well.',
     )
     parser.add_argument(
         '--batch-size', type=int, default=64, metavar='N',
@@ -716,19 +774,21 @@ def main() -> None:
         sys.exit(1)
 
     crops_dir  = Path(args.crops_dir) if args.crops_dir else None
-    partition  = None if args.partition == 'all' else args.partition
+    split_file = Path(args.split_file) if args.split_file else None
 
     runner = GradCamRunner(
-        model_path    = model_path,
-        encoder_path  = encoder_path,
-        manifest_path = manifest_path,
-        crops_dir     = crops_dir,
-        out_dir       = Path(args.out_dir),
-        n_samples     = args.n_samples,
-        partition     = partition,
-        batch_size    = args.batch_size,
-        device_str    = args.device,
-        seed          = args.seed,
+        model_path       = model_path,
+        encoder_path     = encoder_path,
+        manifest_path    = manifest_path,
+        crops_dir        = crops_dir,
+        out_dir          = Path(args.out_dir),
+        n_samples        = args.n_samples,
+        split_file       = split_file,
+        split_partition  = args.split_partition,
+        primary_harmonic = args.primary_harmonic,
+        batch_size       = args.batch_size,
+        device_str       = args.device,
+        seed             = args.seed,
     )
     runner.run()
 
