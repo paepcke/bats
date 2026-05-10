@@ -4,11 +4,11 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-05-08 16:11:10
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-08 16:43:23
+# @Last Modified time: 2026-05-10 11:30:01
 # **********************************************************
 
 """
-gradcam_bats.py
+gradcam_bat.py
 ==============
 Produce Grad-CAM activation-map visualisations for the Coto, Lano, and Tabr
 species classes using the trained EfficientNet-B0 bat classifier.
@@ -210,14 +210,18 @@ class GradCam:
         self,
         tensor: torch.Tensor,
         class_idx: int,
-    ) -> np.ndarray:
+    ) -> Tuple[np.ndarray, torch.Tensor]:
         """
-        Compute the Grad-CAM heatmap for *class_idx*.
+        Compute the Grad-CAM heatmap for *class_idx* and return raw logits.
 
         :param tensor:    Pre-processed image tensor of shape ``(3, H, W)``
                           (no batch dim).
         :param class_idx: Index of the class to explain.
-        :return:          Float32 array of shape ``(H, W)`` in ``[0, 1]``.
+        :return:          Tuple of:
+                          * Float32 CAM array of shape ``(H, W)`` in ``[0, 1]``.
+                          * 1-D logits tensor of shape ``(n_classes,)`` (detached,
+                            on CPU).  Identical for both calls on the same image,
+                            so callers may reuse the value from the first call.
         """
         self.model.zero_grad()
         inp = tensor.unsqueeze(0).to(self.device).requires_grad_(True)
@@ -240,7 +244,7 @@ class GradCam:
         vmax = cam.max()
         if vmax > 0:
             cam /= vmax
-        return cam.astype(np.float32)
+        return cam.astype(np.float32), logits.detach().cpu().squeeze()
 
 
 # ---------------------------------------------------------------------------
@@ -462,32 +466,74 @@ class GradCamVisualiser:
 
     # ----------------------------------------------------------------------- #
 
+    @staticmethod
+    def _focus_score(cam: np.ndarray, gray: np.ndarray,
+                     bright_pct: float = 0.20) -> float:
+        """
+        Fraction of total CAM activation that falls on bright spectrogram pixels.
+
+        A high score means the model is attending to actual call energy; a low
+        score means it is firing on background/silence.
+
+        :param cam:        Normalised CAM array ``(H, W)`` in ``[0, 1]``.
+        :param gray:       De-normalised grayscale image ``(H, W)`` uint8.
+        :param bright_pct: Top fraction of pixel intensities considered
+                           "call energy".  Default: top 20 %.
+        :return:           Scalar in ``[0, 1]``.
+        """
+        threshold   = np.percentile(gray, 100 * (1 - bright_pct))
+        call_mask   = gray >= threshold          # True where call energy is
+        total_act   = cam.sum()
+        if total_act == 0:
+            return 0.0
+        return float(cam[call_mask].sum() / total_act)
+
+    # ----------------------------------------------------------------------- #
+
     def _render_one(
         self,
-        path:       str,
-        true_sp:    str,
-        pred_sp:    str,
-        save_path:  Path,
-    ) -> None:
+        path:         str,
+        true_sp:      str,
+        pred_sp:      str,
+        save_path:    Path,
+        idx_to_label: Dict[int, str],
+    ) -> dict:
         """
-        Produce and save a two-panel Grad-CAM figure.
+        Produce and save a Grad-CAM figure and return per-image metrics.
 
-        :param path:      Absolute path to the crop PNG.
-        :param true_sp:   True species label.
-        :param pred_sp:   Predicted species label.
-        :param save_path: Output PNG path.
+        :param path:         Absolute path to the crop PNG.
+        :param true_sp:      True species label.
+        :param pred_sp:      Predicted species label.
+        :param save_path:    Output PNG path.
+        :param idx_to_label: Class index → species mapping (for top-3 labels).
+        :return:             Dict with keys ``focus_true``, ``focus_pred``
+                             (focus scores, pred==None when correctly classified),
+                             ``top3`` (list of ``(species, prob)`` tuples),
+                             ``pred_prob`` (softmax probability of predicted class),
+                             ``true_prob`` (softmax probability of true class).
         """
         tensor = self.preprocessor(path)
 
-        # Grad-CAM w.r.t. the TRUE class (what the model actually activated for
-        # the correct answer) and the PREDICTED class (what it fired on instead).
-        true_idx = {v: k for k, v in self.idx_to_label.items()}[true_sp]
-        pred_idx = {v: k for k, v in self.idx_to_label.items()}[pred_sp]
+        label_to_idx = {v: k for k, v in idx_to_label.items()}
+        true_idx = label_to_idx[true_sp]
+        pred_idx = label_to_idx[pred_sp]
 
-        cam_true = self.gradcam.compute(tensor, true_idx)
-        cam_pred = self.gradcam.compute(tensor, pred_idx) if pred_sp != true_sp else None
+        cam_true, logits = self.gradcam.compute(tensor, true_idx)
+        cam_pred, _      = self.gradcam.compute(tensor, pred_idx) if pred_sp != true_sp                            else (None, None)
+
+        # Softmax probabilities for top-3 reporting.
+        probs    = torch.softmax(logits, dim=0).numpy()
+        top3_idx = probs.argsort()[::-1][:3]
+        top3     = [(idx_to_label[int(i)], float(probs[i])) for i in top3_idx]
+        pred_prob = float(probs[pred_idx])
+        true_prob = float(probs[true_idx])
 
         gray = self._denorm(tensor)
+
+        focus_true = self._focus_score(cam_true, gray)
+        focus_pred = self._focus_score(cam_pred, gray) if cam_pred is not None else None
+
+        # ── figure ──────────────────────────────────────────────────────────
         n_panels = 3 if cam_pred is not None else 2
         fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 5))
 
@@ -500,7 +546,9 @@ class GradCamVisualiser:
         axes[1].imshow(gray, cmap='gray', origin='upper')
         axes[1].imshow(cam_true, cmap='jet', alpha=0.45, origin='upper',
                        vmin=0, vmax=1)
-        axes[1].set_title(f'Grad-CAM → {true_sp} (true class)', fontsize=10)
+        axes[1].set_title(
+            f'Grad-CAM → {true_sp} (true)  focus={focus_true:.2f}', fontsize=10
+        )
         axes[1].axis('off')
 
         # Panel 2 (misclassified only): CAM for the predicted class.
@@ -508,14 +556,25 @@ class GradCamVisualiser:
             axes[2].imshow(gray, cmap='gray', origin='upper')
             axes[2].imshow(cam_pred, cmap='jet', alpha=0.45, origin='upper',
                            vmin=0, vmax=1)
-            axes[2].set_title(f'Grad-CAM → {pred_sp} (predicted class)', fontsize=10)
+            axes[2].set_title(
+                f'Grad-CAM → {pred_sp} (pred)  focus={focus_pred:.2f}', fontsize=10
+            )
             axes[2].axis('off')
 
+        top3_str = '  '.join(f'{sp}:{p:.2f}' for sp, p in top3)
         crop_name = Path(path).name
-        fig.suptitle(crop_name, fontsize=8, y=0.02)
+        fig.suptitle(f'{crop_name}   [{top3_str}]', fontsize=8, y=0.02)
         plt.tight_layout()
         fig.savefig(save_path, dpi=120, bbox_inches='tight')
         plt.close(fig)
+
+        return {
+            'focus_true' : round(focus_true, 4),
+            'focus_pred' : round(focus_pred, 4) if focus_pred is not None else None,
+            'top3'       : top3,
+            'pred_prob'  : round(pred_prob, 4),
+            'true_prob'  : round(true_prob, 4),
+        }
 
     # ----------------------------------------------------------------------- #
 
@@ -524,31 +583,46 @@ class GradCamVisualiser:
         df:       pd.DataFrame,
         species:  str,
         tag:      str,
-    ) -> int:
+    ) -> List[dict]:
         """
         Render Grad-CAM figures for a batch of crops.
 
         :param df:      DataFrame rows with ``crop_path``, ``species``,
-                        ``predicted`` columns.
+                        ``predicted``, ``file_id``, ``chirp_idx``,
+                        ``Filename`` columns.
         :param species: Species label (used in filenames).
         :param tag:     ``'correct'`` or ``'misclassified'``.
-        :return:        Number of figures saved.
+        :return:        List of record dicts for each successfully saved figure,
+                        with keys ``figure``, ``file_id``, ``chirp_idx``,
+                        ``Filename``, ``true``, ``predicted``.
         """
-        saved = 0
+        records: List[dict] = []
         for i, row in enumerate(df.itertuples()):
             save_path = self.out_dir / f'{species}_{tag}_{i:03d}.png'
             try:
-                self._render_one(
-                    path      = row.crop_path,
-                    true_sp   = row.species,
-                    pred_sp   = row.predicted,
-                    save_path = save_path,
+                metrics = self._render_one(
+                    path         = row.crop_path,
+                    true_sp      = row.species,
+                    pred_sp      = row.predicted,
+                    save_path    = save_path,
+                    idx_to_label = self.idx_to_label,
                 )
-                saved += 1
-                log.info(f'  saved {save_path.name}')
+                log.info(f'  saved {save_path.name}  '
+                         f'focus={metrics["focus_true"]:.2f}  '
+                         f'pred_prob={metrics["pred_prob"]:.2f}')
+                records.append({
+                    'figure'     : save_path.name,
+                    'file_id'    : int(row.file_id),
+                    'chirp_idx'  : int(row.chirp_idx),
+                    'Filename'   : getattr(row, 'Filename', ''),
+                    'true'       : row.species,
+                    'predicted'  : row.predicted,
+                    'confidence' : round(float(getattr(row, 'confidence', float('nan'))), 3),
+                    **metrics,
+                })
             except Exception as exc:
                 log.warn(f'  failed on {row.crop_path}: {exc}')
-        return saved
+        return records
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +662,7 @@ class GradCamRunner:
         split_file:      Optional[Path] = None,
         split_partition: str            = 'test',
         primary_harmonic: bool          = True,
+        measures_path:   Optional[Path] = None,
         batch_size:      int            = 64,
         device_str:      str            = 'auto',
         seed:            int            = 42,
@@ -627,8 +702,117 @@ class GradCamRunner:
         self.split_file      = split_file
         self.split_partition = split_partition
         self.primary_harmonic = primary_harmonic
+        self.measures_path   = measures_path
         self.seed            = seed
         self.out_dir         = out_dir
+
+    # ----------------------------------------------------------------------- #
+
+    # ----------------------------------------------------------------------- #
+
+    @staticmethod
+    def _format_table(records: List[dict], aux_map: dict) -> str:
+        """
+        Format a list of figure records as a fixed-width text table.
+
+        :param records: List of dicts from :meth:`GradCamVisualiser.render_batch`.
+        :param aux_map: Mapping of ``(file_id, chirp_idx)`` →
+                        ``{'rec_site': str, 'was_daytime': str}``,
+                        or empty dict when no measures file was supplied.
+        :return:        Multi-line string with header + one row per figure.
+        """
+        has_aux = bool(aux_map)
+
+        # Core columns always present.
+        cols = [
+            'figure', 'file_id', 'chirp_idx',
+            'true', 'predicted',
+            'confidence', 'pred_prob', 'true_prob',
+            'focus_true', 'focus_pred',
+            'top3',
+            'Filename',
+        ]
+        if has_aux:
+            cols += ['rec_site', 'was_daytime']
+
+        rows = []
+        for r in records:
+            top3_str = '|'.join(f'{sp}:{p:.2f}' for sp, p in r.get('top3', []))
+            fp = r.get('focus_pred')
+            row = [
+                r['figure'],
+                str(r['file_id']),
+                str(r['chirp_idx']),
+                r['true'],
+                r['predicted'],
+                f'{r.get("confidence", float("nan")):.3f}',
+                f'{r.get("pred_prob", float("nan")):.3f}',
+                f'{r.get("true_prob",  float("nan")):.3f}',
+                f'{r.get("focus_true", float("nan")):.3f}',
+                f'{fp:.3f}' if fp is not None else '—',
+                top3_str,
+                str(r.get('Filename', '')),
+            ]
+            if has_aux:
+                key = (r['file_id'], r['chirp_idx'])
+                aux = aux_map.get(key, {})
+                row.append(str(aux.get('rec_site',    '?')))
+                row.append(str(aux.get('was_daytime', '?')))
+            rows.append(row)
+
+        widths = [max(len(c), max((len(r[i]) for r in rows), default=0))
+                  for i, c in enumerate(cols)]
+        sep  = '  '.join('-' * w for w in widths)
+        hdr  = '  '.join(c.ljust(w) for c, w in zip(cols, widths))
+        body = '\n'.join(
+            '  '.join(cell.ljust(w) for cell, w in zip(row, widths))
+            for row in rows
+        )
+        return '\n'.join([hdr, sep, body])
+
+    # ----------------------------------------------------------------------- #
+
+    def _load_aux_map(self, records: List[dict]) -> dict:
+        """
+        Look up ``rec_site`` and ``was_daytime`` for each figure record from
+        the measures parquet.
+
+        Reads only the rows needed via a file_id pre-filter.
+        Uses ``Utils.read_df_file()`` to respect thrift size limits.
+
+        :param records: Figure records containing ``file_id`` and ``chirp_idx``.
+        :return:        Dict mapping ``(file_id, chirp_idx)`` →
+                        ``{'rec_site': str, 'was_daytime': str}``.
+                        Returns empty dict when ``measures_path`` is ``None``
+                        or the parquet lacks a ``rec_site`` column.
+                        Note: ``was_daytime`` will be True for barn recordings
+                        near roost-exit at dusk — treat as descriptive only.
+        """
+        if self.measures_path is None:
+            return {}
+        try:
+            from sonobat_utils.utils import Utils
+            log.info(f'Loading measures for aux lookup: {self.measures_path}')
+            mdf = Utils.read_df_file(self.measures_path)
+            if 'rec_site' not in mdf.columns:
+                log.warn('measures parquet has no rec_site column; skipping aux lookup')
+                return {}
+            needed_fids = {r['file_id'] for r in records}
+            keep_cols = ['file_id', 'chirp_idx', 'rec_site']
+            if 'was_daytime' in mdf.columns:
+                keep_cols.append('was_daytime')
+            sub = mdf[mdf['file_id'].astype(int).isin(needed_fids)][keep_cols].copy()
+            result = {}
+            for row in sub.itertuples():
+                key = (int(row.file_id), int(row.chirp_idx))
+                result[key] = {
+                    'rec_site'   : str(row.rec_site),
+                    'was_daytime': str(getattr(row, 'was_daytime', '?')),
+                }
+            return result
+        except Exception as exc:
+            log.warn(f'Could not load aux map from measures parquet: {exc}')
+            return {}
 
     # ----------------------------------------------------------------------- #
 
@@ -637,6 +821,7 @@ class GradCamRunner:
         df_pred = self.selector.run_inference()
 
         summary_lines: List[str] = []
+        all_records:   List[dict] = []
 
         for sp in _TARGET_SPECIES:
             if sp not in self.label_to_idx:
@@ -651,18 +836,62 @@ class GradCamRunner:
                 f'(from {len(df_pred[df_pred["species"] == sp]):,} total)'
             )
 
-            n_c = self.visualiser.render_batch(correct_df, sp, 'correct')
-            n_m = self.visualiser.render_batch(wrong_df,   sp, 'misclassified')
+            rec_c = self.visualiser.render_batch(correct_df,  sp, 'correct')
+            rec_m = self.visualiser.render_batch(wrong_df,    sp, 'misclassified')
+
+            all_records.extend(rec_c)
+            all_records.extend(rec_m)
 
             summary_lines.append(
-                f'{sp}: {n_c} correct figures, {n_m} misclassified figures'
+                f'\n=== {sp}: {len(rec_c)} correct, {len(rec_m)} misclassified ==='
             )
 
-            # Log the confusion breakdown for misclassified crops.
+            # Confusion breakdown for misclassified crops.
             if len(wrong_df) > 0:
                 breakdown = wrong_df['predicted'].value_counts().to_dict()
                 log.info(f'  {sp} confused as: {breakdown}')
                 summary_lines.append(f'  confused as: {breakdown}')
+
+            # Confidence stats: compare SonoBat confidence for correct vs misclassified.
+            def _conf_stats(recs: List[dict]) -> str:
+                vals = [r['confidence'] for r in recs
+                        if r['confidence'] == r['confidence']]  # drop NaN
+                if not vals:
+                    return 'n/a'
+                arr = np.array(vals)
+                return (f'mean={arr.mean():.3f}  std={arr.std():.3f}  '
+                        f'min={arr.min():.3f}  max={arr.max():.3f}')
+
+            summary_lines.append(
+                f'  confidence correct:       {_conf_stats(rec_c)}'
+            )
+            summary_lines.append(
+                f'  confidence misclassified: {_conf_stats(rec_m)}'
+            )
+
+            # Focus score stats: are correct crops better focused on call energy?
+            def _focus_stats(recs: List[dict], key: str) -> str:
+                vals = [r[key] for r in recs if r.get(key) is not None]
+                if not vals:
+                    return 'n/a'
+                arr = np.array(vals)
+                return f'mean={arr.mean():.3f}  std={arr.std():.3f}'
+
+            summary_lines.append(
+                f'  focus_true correct:       {_focus_stats(rec_c, "focus_true")}'
+            )
+            summary_lines.append(
+                f'  focus_true misclassified: {_focus_stats(rec_m, "focus_true")}'
+            )
+
+            # Per-figure table for this species.
+            aux_map = self._load_aux_map(rec_c + rec_m)
+            if rec_c:
+                summary_lines.append('\n--- correct ---')
+                summary_lines.append(self._format_table(rec_c, aux_map))
+            if rec_m:
+                summary_lines.append('\n--- misclassified ---')
+                summary_lines.append(self._format_table(rec_m, aux_map))
 
         summary_path = self.out_dir / 'summary.txt'
         summary_path.write_text('\n'.join(summary_lines) + '\n')
@@ -729,6 +958,14 @@ def _parse_args() -> argparse.Namespace:
         help='Partition to draw samples from: test (default), val, or train.',
     )
     parser.add_argument(
+        '--measures', default=None, metavar='PARQUET',
+        help=(
+            'Path to the measures parquet (e.g. bats_2026-04-23T....parquet). '
+            'When supplied, rec_site is looked up per figure and added to the '
+            'summary table. The (file_id, chirp_idx) foreign key is used for the join.'
+        ),
+    )
+    parser.add_argument(
         '--primary-harmonic', action='store_true', default=True,
         help='Keep only harmonic_idx==0 rows (fundamental chirps). Default: on.',
     )
@@ -776,6 +1013,8 @@ def main() -> None:
     crops_dir  = Path(args.crops_dir) if args.crops_dir else None
     split_file = Path(args.split_file) if args.split_file else None
 
+    measures_path = Path(args.measures) if args.measures else None
+
     runner = GradCamRunner(
         model_path       = model_path,
         encoder_path     = encoder_path,
@@ -786,6 +1025,7 @@ def main() -> None:
         split_file       = split_file,
         split_partition  = args.split_partition,
         primary_harmonic = args.primary_harmonic,
+        measures_path    = measures_path,
         batch_size       = args.batch_size,
         device_str       = args.device,
         seed             = args.seed,
