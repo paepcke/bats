@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-05-08 16:11:10
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-10 11:30:01
+# @Last Modified time: 2026-05-11 15:45:23
 # **********************************************************
 
 """
@@ -144,18 +144,63 @@ class ModelLoader:
 
 class CropPreprocessor:
     """
-    Reproduce the inference-time transform used in ``train_cnn.py``.
+    Reproduce the inference-time transform used in ``train_cnn.py``, with an
+    optional median-column background subtraction stage.
 
-    Grayscale PNG → 3-channel tensor normalised with ImageNet statistics.
+    Pipeline (bg_subtract=True)::
+
+        grayscale PIL → numpy → subtract column median → clip → PIL
+        → Resize(224) → ToTensor → repeat 3ch → ImageNet normalise
+
+    The column-median step estimates the stationary background from the crop
+    itself: for each frequency bin (row), the median intensity across all time
+    columns is treated as the noise floor and subtracted.  Transient call
+    energy (present in only a fraction of columns) survives; persistent
+    background hum and vertical streaks are suppressed.  Horizontal streaks
+    that are constant across time are also removed, since they contribute to
+    the column median at every row.
+
+    The subtraction is applied *before* resizing so that the median is
+    computed on the native-resolution spectrogram, avoiding blur artefacts.
+
+    :param img_size:     Resize target (default: 224).
+    :param bg_subtract:  Enable median-column background subtraction.
     """
 
-    def __init__(self, img_size: int = _IMG_SIZE) -> None:
-        self.transform = transforms.Compose([
+    def __init__(
+        self,
+        img_size:    int  = _IMG_SIZE,
+        bg_subtract: bool = False,
+    ) -> None:
+        self.bg_subtract = bg_subtract
+        self.transform   = transforms.Compose([
             transforms.Resize((img_size, img_size)),
             transforms.ToTensor(),
             transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
             transforms.Normalize(_MEAN, _STD),
         ])
+
+    # ----------------------------------------------------------------------- #
+
+    @staticmethod
+    def _subtract_column_median(img: Image.Image) -> Image.Image:
+        """
+        Subtract the per-row median across the time axis from a grayscale image.
+
+        Each row corresponds to one frequency bin.  The median across all
+        time columns in that row estimates the stationary noise floor for
+        that frequency.  Subtracting it suppresses background while
+        preserving transient call structure.
+
+        :param img: Grayscale PIL image (mode ``'L'``).
+        :return:    Background-suppressed grayscale PIL image.
+        """
+        arr        = np.array(img, dtype=np.int16)       # (H, W)
+        row_median = np.median(arr, axis=1, keepdims=True)  # (H, 1)
+        arr        = np.clip(arr - row_median, 0, 255).astype(np.uint8)
+        return Image.fromarray(arr, mode='L')
+
+    # ----------------------------------------------------------------------- #
 
     def __call__(self, path: str) -> torch.Tensor:
         """
@@ -165,6 +210,8 @@ class CropPreprocessor:
         :return:     Normalised tensor of shape ``(3, H, W)``.
         """
         img = Image.open(path).convert('L')
+        if self.bg_subtract:
+            img = self._subtract_column_median(img)
         return self.transform(img)
 
 
@@ -663,6 +710,7 @@ class GradCamRunner:
         split_partition: str            = 'test',
         primary_harmonic: bool          = True,
         measures_path:   Optional[Path] = None,
+        bg_subtract:     bool           = False,
         batch_size:      int            = 64,
         device_str:      str            = 'auto',
         seed:            int            = 42,
@@ -676,7 +724,7 @@ class GradCamRunner:
         loader = ModelLoader(model_path, encoder_path, device)
         model, label_to_idx, idx_to_label = loader.load()
 
-        preprocessor = CropPreprocessor()
+        preprocessor = CropPreprocessor(bg_subtract=bg_subtract)
         gradcam      = GradCam(model, device)
         selector     = SampleSelector(
             manifest_path    = manifest_path,
@@ -703,6 +751,7 @@ class GradCamRunner:
         self.split_partition = split_partition
         self.primary_harmonic = primary_harmonic
         self.measures_path   = measures_path
+        self.bg_subtract     = bg_subtract
         self.seed            = seed
         self.out_dir         = out_dir
 
@@ -974,6 +1023,17 @@ def _parse_args() -> argparse.Namespace:
         help='Include harmonic copies (harmonic_idx > 0) as well.',
     )
     parser.add_argument(
+        '--bg-subtract', action='store_true', default=False,
+        help=(
+            'Apply median-column background subtraction before inference and '
+            'Grad-CAM.  For each frequency bin (row) the per-row median across '
+            'all time columns is subtracted, suppressing stationary background '
+            'hum and vertical streaks while preserving transient call energy. '
+            'Recommended for evaluating whether background texture is driving '
+            'classification decisions.'
+        ),
+    )
+    parser.add_argument(
         '--batch-size', type=int, default=64, metavar='N',
         help='Inference batch size (default: 64).',
     )
@@ -1026,6 +1086,7 @@ def main() -> None:
         split_partition  = args.split_partition,
         primary_harmonic = args.primary_harmonic,
         measures_path    = measures_path,
+        bg_subtract      = args.bg_subtract,
         batch_size       = args.batch_size,
         device_str       = args.device,
         seed             = args.seed,
