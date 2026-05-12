@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-05-08 16:11:10
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-11 15:45:23
+# @Last Modified time: 2026-05-12 16:26:21
 # **********************************************************
 
 """
@@ -145,35 +145,48 @@ class ModelLoader:
 class CropPreprocessor:
     """
     Reproduce the inference-time transform used in ``train_cnn.py``, with an
-    optional median-column background subtraction stage.
+    optional low-percentile row background subtraction stage.
 
     Pipeline (bg_subtract=True)::
 
-        grayscale PIL → numpy → subtract column median → clip → PIL
+        grayscale PIL → numpy → subtract row percentile floor → clip → PIL
         → Resize(224) → ToTensor → repeat 3ch → ImageNet normalise
 
-    The column-median step estimates the stationary background from the crop
-    itself: for each frequency bin (row), the median intensity across all time
-    columns is treated as the noise floor and subtracted.  Transient call
-    energy (present in only a fraction of columns) survives; persistent
-    background hum and vertical streaks are suppressed.  Horizontal streaks
-    that are constant across time are also removed, since they contribute to
-    the column median at every row.
+    For each frequency bin (row) the Nth percentile intensity across all time
+    columns is used as the noise-floor estimate.  Using a low percentile
+    (default: 10th) rather than the median (50th) is critical for species
+    with persistent narrow-band or shallow-sweep calls (Lano, Laci, Epfu):
+    the median is pulled up by call energy when the call occupies >50% of
+    time columns, causing self-cancellation.  The 10th percentile stays close
+    to the true silence floor even for long-duration calls.
 
-    The subtraction is applied *before* resizing so that the median is
+    A per-row silence guard skips subtraction on rows whose estimated floor
+    is below ``min_floor_dn`` digital numbers — these rows are already near
+    black and subtraction would only amplify quantisation noise.
+
+    The subtraction is applied *before* resizing so the percentile is
     computed on the native-resolution spectrogram, avoiding blur artefacts.
 
     :param img_size:     Resize target (default: 224).
-    :param bg_subtract:  Enable median-column background subtraction.
+    :param bg_subtract:  Enable background subtraction.
+    :param bg_percentile: Row percentile used as noise-floor estimate.
+                          10 works well for most bat species; lower values
+                          are more conservative (less subtraction).
+    :param min_floor_dn: Rows whose estimated floor is below this value
+                         (0-255) are left untouched.  Default: 4.
     """
 
     def __init__(
         self,
-        img_size:    int  = _IMG_SIZE,
-        bg_subtract: bool = False,
+        img_size:      int   = _IMG_SIZE,
+        bg_subtract:   bool  = False,
+        bg_percentile: float = 10.0,
+        min_floor_dn:  int   = 4,
     ) -> None:
-        self.bg_subtract = bg_subtract
-        self.transform   = transforms.Compose([
+        self.bg_subtract   = bg_subtract
+        self.bg_percentile = bg_percentile
+        self.min_floor_dn  = min_floor_dn
+        self.transform     = transforms.Compose([
             transforms.Resize((img_size, img_size)),
             transforms.ToTensor(),
             transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
@@ -182,22 +195,22 @@ class CropPreprocessor:
 
     # ----------------------------------------------------------------------- #
 
-    @staticmethod
-    def _subtract_column_median(img: Image.Image) -> Image.Image:
+    def subtract_bg(self, img: Image.Image) -> Image.Image:
         """
-        Subtract the per-row median across the time axis from a grayscale image.
+        Subtract the per-row low-percentile noise floor from a grayscale image.
 
-        Each row corresponds to one frequency bin.  The median across all
-        time columns in that row estimates the stationary noise floor for
-        that frequency.  Subtracting it suppresses background while
-        preserving transient call structure.
+        Public so that ``test_bg_subtract.py`` can call it directly for
+        visual inspection without running the full preprocessing pipeline.
 
         :param img: Grayscale PIL image (mode ``'L'``).
         :return:    Background-suppressed grayscale PIL image.
         """
-        arr        = np.array(img, dtype=np.int16)       # (H, W)
-        row_median = np.median(arr, axis=1, keepdims=True)  # (H, 1)
-        arr        = np.clip(arr - row_median, 0, 255).astype(np.uint8)
+        arr   = np.array(img, dtype=np.int16)                          # (H, W)
+        floor = np.percentile(arr, self.bg_percentile,
+                              axis=1, keepdims=True)                   # (H, 1)
+        # Silence guard: skip rows that are already near-black.
+        floor = np.where(floor < self.min_floor_dn, 0, floor)
+        arr   = np.clip(arr - floor, 0, 255).astype(np.uint8)
         return Image.fromarray(arr, mode='L')
 
     # ----------------------------------------------------------------------- #
@@ -211,7 +224,7 @@ class CropPreprocessor:
         """
         img = Image.open(path).convert('L')
         if self.bg_subtract:
-            img = self._subtract_column_median(img)
+            img = self.subtract_bg(img)
         return self.transform(img)
 
 
@@ -711,6 +724,8 @@ class GradCamRunner:
         primary_harmonic: bool          = True,
         measures_path:   Optional[Path] = None,
         bg_subtract:     bool           = False,
+        bg_percentile:   float          = 10.0,
+        min_floor_dn:    int            = 4,
         batch_size:      int            = 64,
         device_str:      str            = 'auto',
         seed:            int            = 42,
@@ -724,7 +739,11 @@ class GradCamRunner:
         loader = ModelLoader(model_path, encoder_path, device)
         model, label_to_idx, idx_to_label = loader.load()
 
-        preprocessor = CropPreprocessor(bg_subtract=bg_subtract)
+        preprocessor = CropPreprocessor(
+            bg_subtract   = bg_subtract,
+            bg_percentile = bg_percentile,
+            min_floor_dn  = min_floor_dn,
+        )
         gradcam      = GradCam(model, device)
         selector     = SampleSelector(
             manifest_path    = manifest_path,
@@ -752,6 +771,8 @@ class GradCamRunner:
         self.primary_harmonic = primary_harmonic
         self.measures_path   = measures_path
         self.bg_subtract     = bg_subtract
+        self.bg_percentile   = bg_percentile
+        self.min_floor_dn    = min_floor_dn
         self.seed            = seed
         self.out_dir         = out_dir
 
@@ -1025,12 +1046,28 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--bg-subtract', action='store_true', default=False,
         help=(
-            'Apply median-column background subtraction before inference and '
-            'Grad-CAM.  For each frequency bin (row) the per-row median across '
-            'all time columns is subtracted, suppressing stationary background '
-            'hum and vertical streaks while preserving transient call energy. '
-            'Recommended for evaluating whether background texture is driving '
-            'classification decisions.'
+            'Apply per-row low-percentile background subtraction before '
+            'inference and Grad-CAM.  For each frequency bin (row) the Nth '
+            'percentile intensity across time columns is used as the noise-floor '
+            'estimate and subtracted.  Suppresses stationary background hum and '
+            'vertical streaks while preserving call energy.'
+        ),
+    )
+    parser.add_argument(
+        '--bg-percentile', type=float, default=10.0, metavar='PCT',
+        help=(
+            'Row percentile (0-100) used as the per-row noise-floor estimate '
+            'when --bg-subtract is active.  Lower values are more conservative '
+            '(less subtraction, safer for persistent narrow-band calls like '
+            'Lano, Laci, Epfu).  Default: 10.',
+        ),
+    )
+    parser.add_argument(
+        '--min-floor-dn', type=int, default=4, metavar='DN',
+        help=(
+            'Rows whose estimated noise floor is below this digital-number '
+            'value (0-255) are left untouched — they are already near-black '
+            'and subtraction would only amplify quantisation noise.  Default: 4.'
         ),
     )
     parser.add_argument(
@@ -1087,6 +1124,8 @@ def main() -> None:
         primary_harmonic = args.primary_harmonic,
         measures_path    = measures_path,
         bg_subtract      = args.bg_subtract,
+        bg_percentile    = args.bg_percentile,
+        min_floor_dn     = args.min_floor_dn,
         batch_size       = args.batch_size,
         device_str       = args.device,
         seed             = args.seed,
