@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-13 09:46:27
+# @Last Modified time: 2026-05-13 11:55:00
 # **********************************************************
 
 # NOTE: we made some changes to this code after running it
@@ -206,8 +206,9 @@ def _chirp_to_spectro(
     freq_hi_hz:         float,
     img_size:           int,
     dynamic_range:      float,
-    pcen:               bool  = False,
-    pcen_time_constant: float = 0.1,
+    pcen:                  bool  = False,
+    pcen_time_constant:    float = 0.1,
+    pcen_snr_threshold_db: float = 18.0,
 ) -> Optional[np.ndarray]:
     """
     Load a short audio window from a full recording and return a normalised
@@ -248,10 +249,20 @@ def _chirp_to_spectro(
     :param img_size:           Output image size in pixels (square).
     :param dynamic_range:      Log-power normalisation range (dB).  Used
                                only when ``pcen=False``.
-    :param pcen:               If ``True`` use PCEN instead of log-power
-                               normalisation.  Requires ``librosa``.
+    :param pcen:                  If ``True`` enable adaptive PCEN: PCEN is
+                               applied only when the recording SNR is below
+                               ``pcen_snr_threshold_db``; cleaner recordings
+                               use log-power normalisation.  Requires
+                               ``librosa``.
     :param pcen_time_constant: Time constant (s) for the PCEN adaptive
                                filter.  Default: 0.1 s.
+    :param pcen_snr_threshold_db: SNR threshold (dB) below which PCEN is
+                               applied when ``pcen=True``.  SNR is computed
+                               as peak / median power across the bat-band
+                               spectrogram before normalisation.  Recordings
+                               with SNR >= this value are considered clean
+                               and use log-power normalisation instead.
+                               Default: 18.0 dB.
     :return:                   uint8 array of shape ``(img_size, img_size)``,
                                or ``None`` on any error.
     """
@@ -317,13 +328,42 @@ def _chirp_to_spectro(
             return None
         Sxx_band = Sxx[band, :]
 
+        # ── SNR estimate for adaptive PCEN switching ─────────────────
+        # Computed on the raw linear power spectrogram before any
+        # normalisation, giving a physics-based measure of recording quality
+        # that is independent of normalisation choices.
+        #
+        # SNR = peak_power / median_power across all (freq, time) bins.
+        # A high ratio means a strong call above a quiet floor (clean).
+        # A low ratio means background competes with the call (noisy).
+        # Converting to dB: SNR_db = 10 * log10(peak / median).
+        #
+        # Empirical threshold from sample comparison:
+        #   clean recordings (ref_mean_DN < 40):  SNR typically > 20 dB
+        #   noisy recordings (ref_mean_DN > 80):  SNR typically < 15 dB
+        # A threshold of 18 dB gives a clean gap between the two populations.
+        peak_power  = float(Sxx_band.max())
+        median_power = float(np.median(Sxx_band))
+        if peak_power <= 0:
+            return None
+        snr_db = 10.0 * np.log10(
+            peak_power / (median_power + 1e-12)
+        )
+        # Decide whether to use PCEN: apply it when requested AND the
+        # recording is noisy enough to benefit from adaptive gain control.
+        # On clean recordings PCEN can boost background streaks relative to
+        # the call (confirmed empirically on Laci crops); log-power is safer.
+        use_pcen = pcen and (snr_db < pcen_snr_threshold_db)
+
         # ── Normalisation ─────────────────────────────────────────────
-        if pcen:
+        if use_pcen:
             # PCEN: Per-Channel Energy Normalization.
             # Applies adaptive gain control and non-linear compression per
             # frequency bin using a running average to estimate and suppress
-            # the stationary background noise floor.  Far more effective than
-            # log-normalisation for recordings with heavy background hum.
+            # the stationary background noise floor.  Applied only when the
+            # recording SNR is below pcen_snr_threshold_db, i.e. the
+            # background is loud enough that PCEN's adaptive suppression
+            # genuinely helps rather than hurting clean calls.
             #
             # librosa.pcen expects power spectrogram values in a range
             # comparable to integer-PCM amplitudes (~2^31).  Sxx_band from
@@ -351,14 +391,15 @@ def _chirp_to_spectro(
             Sxx_norm = np.clip(Sxx_pcen / ceil * 255.0, 0, 255).astype(np.uint8)
         else:
             # Log-power normalisation anchored on call peak.
-            # Find the time frame of maximum total energy in the bat band.
-            # Anchoring on this frame's peak power prevents noise spikes
-            # elsewhere in the window from compressing the call signal.
+            # Used for clean recordings (SNR >= pcen_snr_threshold_db) and
+            # whenever pcen=False.  Anchoring on the peak-power frame
+            # prevents noise spikes elsewhere in the window from compressing
+            # the call signal into the gray midrange.
             peak_frame = int(np.argmax(Sxx_band.sum(axis=0)))
-            peak_power = float(Sxx_band[:, peak_frame].max())
-            if peak_power <= 0:
+            peak_power_frame = float(Sxx_band[:, peak_frame].max())
+            if peak_power_frame <= 0:
                 return None
-            db_ref   = 10.0 * np.log10(peak_power + 1e-12)
+            db_ref   = 10.0 * np.log10(peak_power_frame + 1e-12)
             eps      = 1e-12
             Sxx_db   = 10.0 * np.log10(Sxx_band + eps)
             db_floor = db_ref - dynamic_range
@@ -434,9 +475,10 @@ class ChirpSpectroExtractor:
         img_size:       int            = _DEFAULT_IMG_SIZE,
         dynamic_range:      float          = _DEFAULT_DYNAMIC_RANGE,
         n_workers:          int            = _DEFAULT_WORKERS,
-        pcen:               bool           = False,
-        pcen_time_constant: float          = 0.1,
-        filename_map_path:  Optional[Path] = None,
+        pcen:                  bool           = False,
+        pcen_time_constant:    float          = 0.1,
+        pcen_snr_threshold_db: float          = 18.0,
+        filename_map_path:     Optional[Path] = None,
         match_quality:      Sequence[str]  = ('window',),
         sample:             int            = 0,
         sample_species:     Sequence[str]  = (),
@@ -453,9 +495,10 @@ class ChirpSpectroExtractor:
         self.img_size      = img_size
         self.dynamic_range = dynamic_range
         self.n_workers     = n_workers
-        self.pcen               = pcen
-        self.pcen_time_constant = pcen_time_constant
-        self.filename_map_path  = Path(filename_map_path) if filename_map_path else None
+        self.pcen                  = pcen
+        self.pcen_time_constant    = pcen_time_constant
+        self.pcen_snr_threshold_db = pcen_snr_threshold_db
+        self.filename_map_path     = Path(filename_map_path) if filename_map_path else None
         self.match_quality      = set(match_quality)
         self.sample             = sample
         self.sample_species     = list(sample_species)
@@ -606,6 +649,12 @@ class ChirpSpectroExtractor:
         # ── Build fragment index and join fragment paths ──────────────
         if self.fragment_dirs:
             frag_index = self._build_fragment_index()
+            if not frag_index:
+                log.err(
+                    'Fragment index is empty — none of the --fragment-dirs '
+                    'exist or contain .wav files.  Check the paths and retry.'
+                )
+                sys.exit(1)
             df['fragment_wav'] = df['Filename'].map(
                 lambda s: frag_index.get(str(s))
             )
@@ -613,6 +662,14 @@ class ChirpSpectroExtractor:
             log.info(
                 f'  {len(merged):,} rows with resolved fragment wav'
             )
+            if merged.empty:
+                log.err(
+                    'No chirps could be matched to fragment WAV files. '
+                    'Check that --fragment-dirs contains the 2-second '
+                    'fragment .wav files whose stems match the Filename '
+                    'column (e.g. lake2_-20220706_000013_2secs.wav).'
+                )
+                sys.exit(1)
         else:
             log.warn(
                 'No --fragment-dirs supplied.  '
@@ -630,9 +687,15 @@ class ChirpSpectroExtractor:
         log.info(f'  {len(merged):,} rows with valid species code')
 
         # Confidence filter.
-        conf_ok = merged['confidence'].notna() & \
-                  (merged['confidence'] >= self.min_conf)
-        merged = merged[conf_ok]
+        if 'confidence' not in merged.columns:
+            log.warn(
+                'No confidence column found — skipping confidence filter. '
+                'All chirps will be included regardless of confidence score.'
+            )
+        else:
+            conf_ok = merged['confidence'].notna() & \
+                      (merged['confidence'] >= self.min_conf)
+            merged = merged[conf_ok]
         log.info(
             f'  {len(merged):,} rows after confidence filter '
             f'(min_conf={self.min_conf})'
@@ -894,6 +957,7 @@ class ChirpSpectroExtractor:
                         self.dynamic_range,
                         self.pcen,
                         self.pcen_time_constant,
+                        self.pcen_snr_threshold_db,
                     ): row
                     for row in batch
                 }
@@ -966,8 +1030,9 @@ class ChirpSpectroExtractor:
             {'parameter': 'freq_hi_khz',    'value': self.freq_hi_hz / 1000},
             {'parameter': 'img_size',       'value': self.img_size},
             {'parameter': 'dynamic_range',  'value': self.dynamic_range},
-            {'parameter': 'pcen',            'value': self.pcen},
-            {'parameter': 'pcen_time_constant', 'value': self.pcen_time_constant},
+            {'parameter': 'pcen',                  'value': self.pcen},
+            {'parameter': 'pcen_time_constant',    'value': self.pcen_time_constant},
+            {'parameter': 'pcen_snr_threshold_db', 'value': self.pcen_snr_threshold_db},
             {'parameter': 'n_workers',       'value': self.n_workers},
             {'parameter': 'match_quality',   'value': str(list(self.match_quality))},
             {'parameter': 'sample',          'value': self.sample},
@@ -1169,6 +1234,20 @@ def _parse_args():
         ),
     )
     parser.add_argument(
+        '--pcen-snr-threshold',
+        type=float,
+        default=18.0,
+        metavar='DB',
+        help=(
+            'SNR threshold (dB) for adaptive PCEN switching (used with --pcen).\n'
+            'SNR = 10*log10(peak / median) of the raw bat-band spectrogram.\n'
+            'Recordings with SNR below this value are noisy and get PCEN;\n'
+            'cleaner recordings (SNR >= threshold) use log-power normalisation.\n'
+            'Default: 18.0 dB.  Lower values apply PCEN more aggressively;\n'
+            'higher values restrict it to only the noisiest recordings.'
+        ),
+    )
+    parser.add_argument(
         '--include-nearest',
         action='store_true',
         help=(
@@ -1207,9 +1286,10 @@ def main() -> None:
         img_size      = args.img_size,
         dynamic_range       = args.dynamic_range,
         n_workers           = args.workers,
-        pcen                = args.pcen,
-        pcen_time_constant  = args.pcen_time_constant,
-        filename_map_path   = Path(args.filename_map) if args.filename_map else None,
+        pcen                   = args.pcen,
+        pcen_time_constant     = args.pcen_time_constant,
+        pcen_snr_threshold_db  = args.pcen_snr_threshold,
+        filename_map_path      = Path(args.filename_map) if args.filename_map else None,
         match_quality       = args.match_quality,
         sample            = args.sample,
         sample_species    = args.sample_species,
