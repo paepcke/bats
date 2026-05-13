@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-13 11:55:00
+# @Last Modified time: 2026-05-13 12:26:32
 # **********************************************************
 
 # NOTE: we made some changes to this code after running it
@@ -263,7 +263,8 @@ def _chirp_to_spectro(
                                with SNR >= this value are considered clean
                                and use log-power normalisation instead.
                                Default: 18.0 dB.
-    :return:                   uint8 array of shape ``(img_size, img_size)``,
+    :return:                   Tuple of ``(uint8 array of shape
+                               (img_size, img_size), pcen_applied: bool)``,
                                or ``None`` on any error.
     """
     try:
@@ -413,7 +414,7 @@ def _chirp_to_spectro(
         # ── Resize to img_size × img_size ─────────────────────────────
         img = Image.fromarray(Sxx_norm, mode='L')
         img = img.resize((img_size, img_size), Image.LANCZOS)
-        return np.array(img)
+        return np.array(img), use_pcen
 
     except Exception:
         return None
@@ -886,7 +887,7 @@ class ChirpSpectroExtractor:
             'crop_path', 'partition', 'species', 'confidence',
             'file_id', 'chirp_idx', 'harmonic_idx', 'Filename',
             'time_in_orig_rec_ms', 'time_in_file_ms', 'match_quality',
-            'matched_wav',
+            'matched_wav', 'pcen_applied',
         ]
         is_incremental = bool(done_set)
         if is_incremental:
@@ -966,10 +967,17 @@ class ChirpSpectroExtractor:
                     row = futures[fut]
                     sp  = row['species']
                     try:
-                        img_array = fut.result()
+                        result = fut.result()
                     except Exception as exc:
                         log.warn(f'Worker error for {row["Filename"]}: {exc}')
-                        img_array = None
+                        result = None
+
+                    # Worker returns (img_array, pcen_applied) or None on failure.
+                    if result is None:
+                        img_array   = None
+                        pcen_applied = False
+                    else:
+                        img_array, pcen_applied = result
 
                     if img_array is None:
                         n_failed += 1
@@ -1000,6 +1008,7 @@ class ChirpSpectroExtractor:
                                 'time_in_file_ms'    : row['TimeInFile'],
                                 'match_quality'      : row.get('match_quality', ''),
                                 'matched_wav'        : row.get('matched_wav', ''),
+                                'pcen_applied'       : pcen_applied,
                             })
                             n_written += 1
                         except Exception as exc:
