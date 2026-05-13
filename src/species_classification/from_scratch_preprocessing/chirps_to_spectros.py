@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-04-12 08:55:16
+# @Last Modified time: 2026-05-12 17:52:34
 # **********************************************************
 
 # NOTE: we made some changes to this code after running it
@@ -198,14 +198,16 @@ class SpectroExtractionResult:
 # ---------------------------------------------------------------------------
 
 def _chirp_to_spectro(
-    wav_path:      str,
-    time_ms:       float,
-    pre_ms:        float,
-    post_ms:       float,
-    freq_lo_hz:    float,
-    freq_hi_hz:    float,
-    img_size:      int,
-    dynamic_range: float,
+    wav_path:           str,
+    time_ms:            float,
+    pre_ms:             float,
+    post_ms:            float,
+    freq_lo_hz:         float,
+    freq_hi_hz:         float,
+    img_size:           int,
+    dynamic_range:      float,
+    pcen:               bool  = False,
+    pcen_time_constant: float = 0.1,
 ) -> Optional[np.ndarray]:
     """
     Load a short audio window from a full recording and return a normalised
@@ -216,24 +218,42 @@ def _chirp_to_spectro(
     Asymmetric defaults (3ms pre, 17ms post) capture the full FM sweep
     descent that follows chirp onset without admitting excess pre-call noise.
 
-    Normalisation anchors on the peak-power frame in the bat band rather
-    than the window maximum, preventing noise spikes outside the call from
-    compressing the call signal into the gray midrange.
+    Two normalisation modes are available:
+
+    **Log-power (default, pcen=False)**
+        Anchors on the peak-power frame in the bat band.  Prevents noise
+        spikes elsewhere in the window from compressing the call signal
+        into the gray midrange.
+
+    **PCEN (pcen=True)**
+        Per-Channel Energy Normalization via ``librosa.pcen``.  Applies an
+        adaptive gain control and non-linear compression per frequency bin,
+        using a running average to estimate and suppress the stationary
+        background noise floor.  Particularly effective for recordings with
+        heavy background hum or broadband environmental noise.  The
+        ``pcen_time_constant`` controls the time scale (seconds) of the
+        adaptive filter — shorter values track faster-changing noise floors.
+        Bat calls are short transients so 0.1 s works well; the librosa
+        default (0.395 s) is tuned for bird calls and is too slow here.
 
     Uses ``soundfile`` for seek-based partial reads when available,
     falling back to ``scipy.io.wavfile`` (full file load) otherwise.
 
-    :param wav_path:      Path to the full-recording ``.wav`` file.
-    :param time_ms:       Chirp onset within the recording (ms).
-    :param pre_ms:        Ms of audio before chirp onset.
-    :param post_ms:       Ms of audio after chirp onset.
-    :param freq_lo_hz:    Lower frequency bound for spectrogram (Hz).
-    :param freq_hi_hz:    Upper frequency bound for spectrogram (Hz).
-    :param img_size:      Output image size in pixels (square).
-    :param dynamic_range: Log-power normalisation range (dB).  Tighter
-                          values (e.g. 40 dB) suppress noisy backgrounds.
-    :return:              uint8 array of shape ``(img_size, img_size)``,
-                          or ``None`` on any error.
+    :param wav_path:           Path to the full-recording ``.wav`` file.
+    :param time_ms:            Chirp onset within the recording (ms).
+    :param pre_ms:             Ms of audio before chirp onset.
+    :param post_ms:            Ms of audio after chirp onset.
+    :param freq_lo_hz:         Lower frequency bound for spectrogram (Hz).
+    :param freq_hi_hz:         Upper frequency bound for spectrogram (Hz).
+    :param img_size:           Output image size in pixels (square).
+    :param dynamic_range:      Log-power normalisation range (dB).  Used
+                               only when ``pcen=False``.
+    :param pcen:               If ``True`` use PCEN instead of log-power
+                               normalisation.  Requires ``librosa``.
+    :param pcen_time_constant: Time constant (s) for the PCEN adaptive
+                               filter.  Default: 0.1 s.
+    :return:                   uint8 array of shape ``(img_size, img_size)``,
+                               or ``None`` on any error.
     """
     try:
         # ── Determine recording type (TE/DR) via WavInfo ──────────────
@@ -297,20 +317,53 @@ def _chirp_to_spectro(
             return None
         Sxx_band = Sxx[band, :]
 
-        # ── Log-power normalisation anchored on call peak ──────────────
-        # Find the time frame of maximum total energy in the bat band.
-        # Anchoring on this frame's peak power prevents noise spikes
-        # elsewhere in the window from compressing the call signal.
-        peak_frame = int(np.argmax(Sxx_band.sum(axis=0)))
-        peak_power = float(Sxx_band[:, peak_frame].max())
-        if peak_power <= 0:
-            return None
-        db_ref   = 10.0 * np.log10(peak_power + 1e-12)
-        eps      = 1e-12
-        Sxx_db   = 10.0 * np.log10(Sxx_band + eps)
-        db_floor = db_ref - dynamic_range
-        Sxx_clip = np.clip(Sxx_db, db_floor, db_ref)
-        Sxx_norm = ((Sxx_clip - db_floor) / dynamic_range * 255.0).astype(np.uint8)
+        # ── Normalisation ─────────────────────────────────────────────
+        if pcen:
+            # PCEN: Per-Channel Energy Normalization.
+            # Applies adaptive gain control and non-linear compression per
+            # frequency bin using a running average to estimate and suppress
+            # the stationary background noise floor.  Far more effective than
+            # log-normalisation for recordings with heavy background hum.
+            #
+            # librosa.pcen expects power spectrogram values in a range
+            # comparable to integer-PCM amplitudes (~2^31).  Sxx_band from
+            # scipy.signal.spectrogram is in units of (amplitude)^2 / Hz
+            # when scaling='spectrum'; scale up before passing to PCEN.
+            import librosa
+            hop_length = nperseg - noverlap
+            Sxx_pcen = librosa.pcen(
+                Sxx_band * (2 ** 31),
+                sr            = sr_true,
+                hop_length    = hop_length,
+                time_constant = pcen_time_constant,
+                gain          = 0.98,
+                bias          = 2.0,
+                power         = 0.5,
+                b             = None,   # auto-compute from time_constant + sr
+                eps           = 1e-6,
+            )
+            # PCEN output is in [0, ~bias^power] ≈ [0, ~1.4]; normalise to
+            # [0, 255].  Use the 99th percentile as ceiling to avoid a single
+            # noise spike compressing the whole image.
+            ceil = float(np.percentile(Sxx_pcen, 99))
+            if ceil <= 0:
+                return None
+            Sxx_norm = np.clip(Sxx_pcen / ceil * 255.0, 0, 255).astype(np.uint8)
+        else:
+            # Log-power normalisation anchored on call peak.
+            # Find the time frame of maximum total energy in the bat band.
+            # Anchoring on this frame's peak power prevents noise spikes
+            # elsewhere in the window from compressing the call signal.
+            peak_frame = int(np.argmax(Sxx_band.sum(axis=0)))
+            peak_power = float(Sxx_band[:, peak_frame].max())
+            if peak_power <= 0:
+                return None
+            db_ref   = 10.0 * np.log10(peak_power + 1e-12)
+            eps      = 1e-12
+            Sxx_db   = 10.0 * np.log10(Sxx_band + eps)
+            db_floor = db_ref - dynamic_range
+            Sxx_clip = np.clip(Sxx_db, db_floor, db_ref)
+            Sxx_norm = ((Sxx_clip - db_floor) / dynamic_range * 255.0).astype(np.uint8)
 
         # Frequency axis: flip so low frequencies are at the image bottom
         # (PIL origin is top-left).
@@ -379,8 +432,10 @@ class ChirpSpectroExtractor:
         freq_lo_khz:    float          = _DEFAULT_FREQ_LO_KHZ,
         freq_hi_khz:    float          = _DEFAULT_FREQ_HI_KHZ,
         img_size:       int            = _DEFAULT_IMG_SIZE,
-        dynamic_range:  float          = _DEFAULT_DYNAMIC_RANGE,
-        n_workers:      int            = _DEFAULT_WORKERS,
+        dynamic_range:      float          = _DEFAULT_DYNAMIC_RANGE,
+        n_workers:          int            = _DEFAULT_WORKERS,
+        pcen:               bool           = False,
+        pcen_time_constant: float          = 0.1,
         match_quality:      Sequence[str]  = ('window',),
         sample:             int            = 0,
         sample_species:     Sequence[str]  = (),
@@ -397,6 +452,8 @@ class ChirpSpectroExtractor:
         self.img_size      = img_size
         self.dynamic_range = dynamic_range
         self.n_workers     = n_workers
+        self.pcen               = pcen
+        self.pcen_time_constant = pcen_time_constant
         self.match_quality      = set(match_quality)
         self.sample             = sample
         self.sample_species     = list(sample_species)
@@ -807,6 +864,8 @@ class ChirpSpectroExtractor:
                         self.freq_hi_hz,
                         self.img_size,
                         self.dynamic_range,
+                        self.pcen,
+                        self.pcen_time_constant,
                     ): row
                     for row in batch
                 }
@@ -879,6 +938,8 @@ class ChirpSpectroExtractor:
             {'parameter': 'freq_hi_khz',    'value': self.freq_hi_hz / 1000},
             {'parameter': 'img_size',       'value': self.img_size},
             {'parameter': 'dynamic_range',  'value': self.dynamic_range},
+            {'parameter': 'pcen',            'value': self.pcen},
+            {'parameter': 'pcen_time_constant', 'value': self.pcen_time_constant},
             {'parameter': 'n_workers',       'value': self.n_workers},
             {'parameter': 'match_quality',   'value': str(list(self.match_quality))},
             {'parameter': 'sample',          'value': self.sample},
@@ -1041,6 +1102,32 @@ def _parse_args():
         help='Restrict sampling to this partition, e.g. 20220706_bats.',
     )
     parser.add_argument(
+        '--pcen',
+        action='store_true',
+        default=False,
+        help=(
+            'Use PCEN (Per-Channel Energy Normalization) instead of\n'
+            'log-power normalisation.  PCEN applies adaptive gain control\n'
+            'and non-linear compression per frequency bin, estimating and\n'
+            'suppressing the stationary background noise floor via a running\n'
+            'average.  Recommended for recordings with heavy background hum\n'
+            'or broadband environmental noise (barn, outdoor).  Requires\n'
+            'librosa (pip install librosa).'
+        ),
+    )
+    parser.add_argument(
+        '--pcen-time-constant',
+        type=float,
+        default=0.1,
+        metavar='SEC',
+        help=(
+            'Time constant (s) for the PCEN adaptive noise-floor filter.\n'
+            'Shorter values track faster-changing backgrounds.\n'
+            'Default: 0.1 s (suitable for short bat chirps).\n'
+            'The librosa default (0.395 s) is tuned for bird calls.'
+        ),
+    )
+    parser.add_argument(
         '--include-nearest',
         action='store_true',
         help=(
@@ -1077,9 +1164,11 @@ def main() -> None:
         freq_lo_khz   = args.freq_lo,
         freq_hi_khz   = args.freq_hi,
         img_size      = args.img_size,
-        dynamic_range = args.dynamic_range,
-        n_workers     = args.workers,
-        match_quality     = args.match_quality,
+        dynamic_range       = args.dynamic_range,
+        n_workers           = args.workers,
+        pcen                = args.pcen,
+        pcen_time_constant  = args.pcen_time_constant,
+        match_quality       = args.match_quality,
         sample            = args.sample,
         sample_species    = args.sample_species,
         sample_partition  = args.sample_partition,
