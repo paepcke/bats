@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-12 17:52:34
+# @Last Modified time: 2026-05-13 09:46:27
 # **********************************************************
 
 # NOTE: we made some changes to this code after running it
@@ -436,6 +436,7 @@ class ChirpSpectroExtractor:
         n_workers:          int            = _DEFAULT_WORKERS,
         pcen:               bool           = False,
         pcen_time_constant: float          = 0.1,
+        filename_map_path:  Optional[Path] = None,
         match_quality:      Sequence[str]  = ('window',),
         sample:             int            = 0,
         sample_species:     Sequence[str]  = (),
@@ -454,6 +455,7 @@ class ChirpSpectroExtractor:
         self.n_workers     = n_workers
         self.pcen               = pcen
         self.pcen_time_constant = pcen_time_constant
+        self.filename_map_path  = Path(filename_map_path) if filename_map_path else None
         self.match_quality      = set(match_quality)
         self.sample             = sample
         self.sample_species     = list(sample_species)
@@ -540,34 +542,60 @@ class ChirpSpectroExtractor:
         # parquet metadata.  The file_map values are fragment stems (set by
         # sb_measures_postprocessing._collect_all_raw path normalization).
         # Legacy feather already carries a Filename column directly.
+        #
+        # Fallback: if the parquet has no bats_metadata (e.g. the measures
+        # parquet bats_<timestamp>.parquet which was not written via
+        # BatsData.to_parquet()), use the --filename-map CSV instead.
+        # That CSV must have columns file_id and Filename (available from
+        # the manifest at <out-dir>/manifest.csv of any prior run).
         if 'Filename' not in df.columns:
-            # Re-read schema only (no data) to extract metadata efficiently.
-            _schema   = _pq.read_schema(
-                self.data_path,
-                memory_map=True,
-            )
+            # Try embedded file_map first.
+            _schema   = _pq.read_schema(self.data_path, memory_map=True)
             _meta_raw = _schema.metadata or {}
             _meta_key = b'bats_metadata'
-            if _meta_key not in _meta_raw:
-                raise KeyError(
-                    f'{self.data_path} has no bats_metadata — '
-                    f'was it written by BatsData.to_parquet()?'
+
+            if _meta_key in _meta_raw:
+                _file_map = {
+                    int(k): v
+                    for k, v in _json.loads(
+                        _meta_raw[_meta_key].decode()
+                    )['file_map'].items()
+                }
+                log.info('  Filename derived from embedded parquet file_map')
+            elif self.filename_map_path is not None:
+                # Fallback: load file_id → Filename from the supplied CSV.
+                log.info(
+                    f'  No bats_metadata in parquet; loading Filename map ' 
+                    f'from {self.filename_map_path}'
                 )
-            _file_map = {
-                int(k): v
-                for k, v in _json.loads(
-                    _meta_raw[_meta_key].decode()
-                )['file_map'].items()
-            }
+                _fmap_df  = pd.read_csv(
+                    self.filename_map_path,
+                    usecols   = ['file_id', 'Filename'],
+                    low_memory= False,
+                ).dropna(subset=['Filename']).drop_duplicates('file_id')
+                _file_map = dict(
+                    zip(_fmap_df['file_id'].astype(int),
+                        _fmap_df['Filename'].astype(str))
+                )
+                log.info(f'  Filename map loaded: {len(_file_map):,} file_ids')
+            else:
+                raise KeyError(
+                    f'{self.data_path} has no bats_metadata and no '
+                    f'--filename-map was supplied.  Either use a parquet '
+                    f'written by BatsData.to_parquet(), or pass '
+                    f'--filename-map <manifest.csv> to provide the '
+                    f'file_id → Filename mapping.'
+                )
+
             df['Filename'] = df['file_id'].map(_file_map)
             n_unmapped = df['Filename'].isna().sum()
             if n_unmapped:
                 log.warn(
                     f'  {n_unmapped:,} rows have a file_id absent from '
-                    f'the parquet file_map and will be dropped.'
+                    f'the file_map and will be dropped.'
                 )
                 df = df[df['Filename'].notna()].copy()
-            log.info(f'  Filename derived from parquet file_map for {len(df):,} rows')
+            log.info(f'  Filename mapped for {len(df):,} rows')
 
         # Strip Windows CRLF artefacts from string columns.
         for _col in ('Filename', 'species', 'confidence'):
@@ -1102,6 +1130,19 @@ def _parse_args():
         help='Restrict sampling to this partition, e.g. 20220706_bats.',
     )
     parser.add_argument(
+        '--filename-map',
+        default=None,
+        metavar='CSV',
+        help=(
+            'CSV with columns file_id and Filename providing the\n'
+            'file_id → fragment-stem mapping.  Required when the input\n'
+            'parquet has no embedded bats_metadata (e.g. the measures\n'
+            'parquet bats_<timestamp>.parquet).  The manifest.csv from\n'
+            'any prior chirps_to_spectros.py run is a suitable source:\n'
+            '  --filename-map <out-dir>/manifest.csv'
+        ),
+    )
+    parser.add_argument(
         '--pcen',
         action='store_true',
         default=False,
@@ -1168,6 +1209,7 @@ def main() -> None:
         n_workers           = args.workers,
         pcen                = args.pcen,
         pcen_time_constant  = args.pcen_time_constant,
+        filename_map_path   = Path(args.filename_map) if args.filename_map else None,
         match_quality       = args.match_quality,
         sample            = args.sample,
         sample_species    = args.sample_species,
