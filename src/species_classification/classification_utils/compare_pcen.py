@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-05-13 10:45:14
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-13 19:07:05
+# @Last Modified time: 2026-05-14 12:44:24
 # **********************************************************
 
 """
@@ -117,7 +117,15 @@ class CropPairFinder:
         if manifest_path is not None and manifest_path.exists():
             import pandas as pd
             log.info(f'Loading species labels from {manifest_path}')
-            mdf = pd.read_csv(manifest_path, usecols=['crop_path', 'species'],
+            # Read all useful columns; pcen_applied only present in adaptive runs.
+            _usecols = ['crop_path', 'species']
+            try:
+                _peek = pd.read_csv(manifest_path, nrows=0)
+                if 'pcen_applied' in _peek.columns:
+                    _usecols.append('pcen_applied')
+            except Exception:
+                pass
+            mdf = pd.read_csv(manifest_path, usecols=_usecols,
                               low_memory=False)
             # Key: partition/filename.png  (last two path components)
             mdf['_rel'] = mdf['crop_path'].apply(
@@ -345,6 +353,7 @@ class PcenCompareRenderer:
             'species'       : species,
             'pcen_applied'  : pcen_applied,
             'rel_path'      : rel_path,
+            'figure'        : str(out_path),
             'ref_mean'      : stats_ref['mean'],
             'ref_contrast'  : stats_ref['contrast'],
             'ref_p95'       : stats_ref['p95'],
@@ -445,7 +454,7 @@ class SummaryWriter:
             lines.append('')
 
         # Per-pair table.
-        cols = ['species', 'pcen_applied', 'rel_path',
+        cols = ['species', 'pcen_applied', 'rel_path', 'figure',
                 'ref_mean', 'ref_contrast', 'ref_p95',
                 'pcen_mean', 'pcen_contrast', 'pcen_p95']
         col_w = [max(len(c), max(len(str(r[c])) for r in records))
