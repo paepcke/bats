@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-13 12:26:32
+# @Last Modified time: 2026-05-14 14:58:14
 # **********************************************************
 
 # NOTE: we made some changes to this code after running it
@@ -209,6 +209,7 @@ def _chirp_to_spectro(
     pcen:                  bool  = False,
     pcen_time_constant:    float = 0.1,
     pcen_snr_threshold_db: float = 18.0,
+    min_snr_db:            float = 0.0,
 ) -> Optional[np.ndarray]:
     """
     Load a short audio window from a full recording and return a normalised
@@ -263,6 +264,12 @@ def _chirp_to_spectro(
                                with SNR >= this value are considered clean
                                and use log-power normalisation instead.
                                Default: 18.0 dB.
+    :param min_snr_db:         Minimum SNR (dB) required to write a crop.
+                               Chirps whose spectrogram SNR falls below this
+                               value are discarded — they are too noise-
+                               dominated to contain recoverable call structure
+                               and would harm training.  Default: 0.0 (no
+                               filtering).  Recommended production value: 12.0.
     :return:                   Tuple of ``(uint8 array of shape
                                (img_size, img_size), pcen_applied: bool)``,
                                or ``None`` on any error.
@@ -350,6 +357,12 @@ def _chirp_to_spectro(
         snr_db = 10.0 * np.log10(
             peak_power / (median_power + 1e-12)
         )
+        # Minimum SNR gate: discard crops too noise-dominated to be useful.
+        # These crops have no recoverable call structure regardless of
+        # normalisation and would add noise to the training set.
+        if min_snr_db > 0.0 and snr_db < min_snr_db:
+            return None, False   # (img, pcen_applied) convention
+
         # Decide whether to use PCEN: apply it when requested AND the
         # recording is noisy enough to benefit from adaptive gain control.
         # On clean recordings PCEN can boost background streaks relative to
@@ -479,6 +492,7 @@ class ChirpSpectroExtractor:
         pcen:                  bool           = False,
         pcen_time_constant:    float          = 0.1,
         pcen_snr_threshold_db: float          = 18.0,
+        min_snr_db:            float          = 0.0,
         filename_map_path:     Optional[Path] = None,
         match_quality:      Sequence[str]  = ('window',),
         sample:             int            = 0,
@@ -499,6 +513,7 @@ class ChirpSpectroExtractor:
         self.pcen                  = pcen
         self.pcen_time_constant    = pcen_time_constant
         self.pcen_snr_threshold_db = pcen_snr_threshold_db
+        self.min_snr_db            = min_snr_db
         self.filename_map_path     = Path(filename_map_path) if filename_map_path else None
         self.match_quality      = set(match_quality)
         self.sample             = sample
@@ -959,6 +974,7 @@ class ChirpSpectroExtractor:
                         self.pcen,
                         self.pcen_time_constant,
                         self.pcen_snr_threshold_db,
+                        self.min_snr_db,
                     ): row
                     for row in batch
                 }
@@ -972,9 +988,10 @@ class ChirpSpectroExtractor:
                         log.warn(f'Worker error for {row["Filename"]}: {exc}')
                         result = None
 
-                    # Worker returns (img_array, pcen_applied) or None on failure.
+                    # Worker returns (img_array, pcen_applied), or None on
+                    # exception, or (None, False) when SNR gate rejects crop.
                     if result is None:
-                        img_array   = None
+                        img_array    = None
                         pcen_applied = False
                     else:
                         img_array, pcen_applied = result
@@ -1042,6 +1059,7 @@ class ChirpSpectroExtractor:
             {'parameter': 'pcen',                  'value': self.pcen},
             {'parameter': 'pcen_time_constant',    'value': self.pcen_time_constant},
             {'parameter': 'pcen_snr_threshold_db', 'value': self.pcen_snr_threshold_db},
+            {'parameter': 'min_snr_db',            'value': self.min_snr_db},
             {'parameter': 'n_workers',       'value': self.n_workers},
             {'parameter': 'match_quality',   'value': str(list(self.match_quality))},
             {'parameter': 'sample',          'value': self.sample},
@@ -1243,6 +1261,19 @@ def _parse_args():
         ),
     )
     parser.add_argument(
+        '--min-snr',
+        type=float,
+        default=0.0,
+        metavar='DB',
+        help=(
+            'Minimum SNR (dB) required to write a crop.  Chirps whose\n'
+            'spectrogram SNR (peak/median power ratio) falls below this\n'
+            'value are discarded as too noise-dominated to contain\n'
+            'recoverable call structure.  Default: 0.0 (no filtering).\n'
+            'Recommended production value: 12.0.'
+        ),
+    )
+    parser.add_argument(
         '--pcen-snr-threshold',
         type=float,
         default=18.0,
@@ -1298,6 +1329,7 @@ def main() -> None:
         pcen                   = args.pcen,
         pcen_time_constant     = args.pcen_time_constant,
         pcen_snr_threshold_db  = args.pcen_snr_threshold,
+        min_snr_db             = args.min_snr,
         filename_map_path      = Path(args.filename_map) if args.filename_map else None,
         match_quality       = args.match_quality,
         sample            = args.sample,
