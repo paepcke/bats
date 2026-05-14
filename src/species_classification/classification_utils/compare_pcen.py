@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-05-13 10:45:14
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-13 11:00:32
+# @Last Modified time: 2026-05-13 19:07:05
 # **********************************************************
 
 """
@@ -126,9 +126,25 @@ class CropPairFinder:
             self._species_map = dict(
                 zip(mdf['_rel'], mdf['species'])
             )
-            log.info(f'  {len(self._species_map):,} species labels loaded')
+            # Load pcen_applied if present (written by adaptive PCEN runs).
+            if 'pcen_applied' in mdf.columns:
+                self._pcen_map = dict(
+                    zip(mdf['_rel'], mdf['pcen_applied'].astype(str))
+                )
+                log.info(
+                    f'  {len(self._species_map):,} species labels loaded, '
+                    f'pcen_applied column found'
+                )
+            else:
+                self._pcen_map: dict = {}
+                log.info(
+                    f'  {len(self._species_map):,} species labels loaded, '
+                    f'no pcen_applied column (not an adaptive run)'
+                )
         elif manifest_path is not None:
             log.warn(f'Manifest not found: {manifest_path} — no species labels')
+        if not hasattr(self, '_pcen_map'):
+            self._pcen_map: dict = {}
 
     def find_pairs(
         self,
@@ -177,7 +193,8 @@ class CropPairFinder:
 
         return [
             (ref_pngs[rel], pcen_pngs[rel], str(rel),
-             self._species_map.get(str(rel), '?'))
+             self._species_map.get(str(rel), '?'),
+             self._pcen_map.get(str(rel), '?'))
             for rel in common
         ]
 
@@ -229,10 +246,11 @@ class PcenCompareRenderer:
 
     def render_pair(
         self,
-        ref_path:  Path,
-        pcen_path: Path,
-        rel_path:  str,
-        species:   str = '?',
+        ref_path:      Path,
+        pcen_path:     Path,
+        rel_path:      str,
+        species:       str = '?',
+        pcen_applied:  str = '?',
     ) -> dict:
         """
         Render and save a comparison figure for one matched pair.
@@ -306,7 +324,15 @@ class PcenCompareRenderer:
         _plot_col(2, diff, 'PCEN − ref  (red=brighter, blue=darker)',
                   cmap='RdBu_r', vmin=-abs_max, vmax=abs_max)
 
-        fig.suptitle(f'{rel_path}   species: {species}', fontsize=9, y=1.01)
+        pcen_tag = (
+            '  [PCEN applied]' if pcen_applied == 'True'
+            else '  [log-power]' if pcen_applied == 'False'
+            else ''
+        )
+        fig.suptitle(
+            f'{rel_path}   species: {species}{pcen_tag}',
+            fontsize=9, y=1.01,
+        )
         plt.tight_layout()
 
         safe_name = rel_path.replace('/', '_').replace('\\', '_')
@@ -317,6 +343,7 @@ class PcenCompareRenderer:
 
         return {
             'species'       : species,
+            'pcen_applied'  : pcen_applied,
             'rel_path'      : rel_path,
             'ref_mean'      : stats_ref['mean'],
             'ref_contrast'  : stats_ref['contrast'],
@@ -339,12 +366,19 @@ class PcenCompareRenderer:
         :return:      List of stats dicts, one per pair.
         """
         records = []
-        for ref_path, pcen_path, rel_path, species in pairs:
+        for ref_path, pcen_path, rel_path, species, pcen_applied in pairs:
             try:
-                rec = self.render_pair(ref_path, pcen_path, rel_path, species)
+                rec = self.render_pair(
+                    ref_path, pcen_path, rel_path, species, pcen_applied
+                )
                 records.append(rec)
+                pcen_tag = (
+                    ' PCEN' if pcen_applied == 'True'
+                    else ' log-power' if pcen_applied == 'False'
+                    else ''
+                )
                 log.info(
-                    f'  [{species}] {rel_path}  '
+                    f'  [{species}{pcen_tag}] {rel_path}  '
                     f'ref_contrast={rec["ref_contrast"]}  '
                     f'pcen_contrast={rec["pcen_contrast"]}'
                 )
@@ -411,7 +445,8 @@ class SummaryWriter:
             lines.append('')
 
         # Per-pair table.
-        cols = ['species', 'rel_path', 'ref_mean', 'ref_contrast', 'ref_p95',
+        cols = ['species', 'pcen_applied', 'rel_path',
+                'ref_mean', 'ref_contrast', 'ref_p95',
                 'pcen_mean', 'pcen_contrast', 'pcen_p95']
         col_w = [max(len(c), max(len(str(r[c])) for r in records))
                  for c in cols]
