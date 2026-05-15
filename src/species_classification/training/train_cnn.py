@@ -4,13 +4,13 @@
 # @Date:   2026-03-16 15:41:14
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/train_cnn.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-07 08:24:15
+# @Last Modified time: 2026-05-15 16:10:04
 # **********************************************************
 
 """
 train_cnn.py
 ============
-Fine-tune EfficientNet-B0 on per-chirp spectrogram crops produced by
+Fine-tune EfficientNet-B3 on per-chirp spectrogram crops produced by
 ``chirps_to_spectros.py`` for bat species classification.
 
 Supports single-GPU and multi-GPU training via PyTorch
@@ -147,7 +147,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import transforms
-from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
+from torchvision.models import efficientnet_b3, EfficientNet_B3_Weights
 from PIL import Image
 
 try:
@@ -165,8 +165,8 @@ log = LoggingService()
 # ---------------------------------------------------------------------------
 
 _DEFAULT_EPOCHS:            int   = 40
-_DEFAULT_BATCH:             int   = 64
-_DEFAULT_LR:                float = 1e-3
+_DEFAULT_BATCH:             int   = 128   # per GPU; 256 effective across 2×A100
+_DEFAULT_LR:                float = 2e-3   # scaled from 1e-3 @ batch=64 (linear rule)
 _DEFAULT_BACKBONE_LR_FACTOR:float = 0.1
 _DEFAULT_FREEZE_EPOCHS:     int   = 5
 _DEFAULT_WEIGHT_DECAY:      float = 1e-4
@@ -438,16 +438,21 @@ def make_splits(
 
 def build_model(n_classes: int, device: torch.device) -> nn.Module:
     """
-    Build EfficientNet-B0 with a fresh classifier head sized to *n_classes*.
+    Build EfficientNet-B3 with a fresh classifier head sized to *n_classes*.
+
+    EfficientNet-B3 has ~12M parameters (vs ~5.3M for B0) and a wider
+    feature representation (1536 vs 1280 in_features in the classifier),
+    giving meaningfully better accuracy on fine-grained classification tasks
+    at modest extra compute cost.  The two A100 GPUs have ample headroom.
 
     :param n_classes: Number of bat species classes.
     :param device:    Target device.
     :return:          Model moved to *device*.
     """
-    model = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
-    in_features = model.classifier[1].in_features
+    model = efficientnet_b3(weights=EfficientNet_B3_Weights.IMAGENET1K_V1)
+    in_features = model.classifier[1].in_features   # 1536 for B3
     model.classifier = nn.Sequential(
-        nn.Dropout(p=0.2, inplace=True),
+        nn.Dropout(p=0.3, inplace=True),             # B3 uses 0.3 vs B0's 0.2
         nn.Linear(in_features, n_classes),
     )
     return model.to(device)
@@ -457,7 +462,7 @@ def freeze_backbone(model: nn.Module) -> None:
     """
     Freeze all parameters except the classifier head.
 
-    :param model: EfficientNet-B0 model (may be DDP-wrapped).
+    :param model: EfficientNet-B3 model (may be DDP-wrapped).
     """
     # Unwrap DDP to access named parameters.
     base = model.module if isinstance(model, DDP) else model
@@ -470,7 +475,7 @@ def unfreeze_all(model: nn.Module) -> None:
     """
     Unfreeze all parameters.
 
-    :param model: EfficientNet-B0 model (may be DDP-wrapped).
+    :param model: EfficientNet-B3 model (may be DDP-wrapped).
     """
     base = model.module if isinstance(model, DDP) else model
     for param in base.parameters():
@@ -611,7 +616,7 @@ def evaluate_test(
     )
     ax.set_xlabel('Predicted')
     ax.set_ylabel('True')
-    ax.set_title('Test set confusion matrix — EfficientNet-B0')
+    ax.set_title('Test set confusion matrix — EfficientNet-B3')
     fig.tight_layout()
     fig.savefig(out_dir / 'confusion_matrix.png', dpi=150)
     plt.close(fig)
@@ -667,6 +672,17 @@ class CnnTrainer:
                                 every epoch and ``best_model.pt`` whenever a
                                 new best val_acc is reached.  Empty string
                                 (default) disables GCS upload.
+    :param rf_weight_col:       Manifest column to use as sampling weights for
+                                the training set (default: ``'confidence'``).
+                                Each crop is drawn with probability proportional
+                                to ``value ** rf_weight_power``, so high-confidence
+                                chirps are seen more often.  The column must be
+                                numeric and in ``[0, 1]``.  Set to ``''`` to
+                                disable weighted sampling (uniform).
+    :param rf_weight_power:     Exponent applied to the weight column before
+                                normalising.  1.0 = linear (default); 2.0 =
+                                quadratic (stronger preference for high-confidence
+                                crops); 0.5 = sqrt (softer).
     """
 
     def __init__(
@@ -696,6 +712,8 @@ class CnnTrainer:
         cw_power:            float          = _DEFAULT_CW_POWER,
         gcs_output_bucket:   str            = '',
         split_file:          Optional[str | Path] = None,
+        rf_weight_col:       str            = 'confidence',
+        rf_weight_power:     float          = 1.0,
     ) -> None:
         self.manifest_csv        = Path(manifest_csv)
         self.out_dir             = Path(out_dir)
@@ -722,6 +740,8 @@ class CnnTrainer:
         self.cw_power            = cw_power
         self.gcs_output_bucket   = gcs_output_bucket
         self.split_file          = Path(split_file) if split_file else None
+        self.rf_weight_col       = rf_weight_col
+        self.rf_weight_power     = rf_weight_power
 
     # ------------------------------------------------------------------ #
     #  Data loading                                                        #
@@ -871,14 +891,55 @@ class CnnTrainer:
             dist.broadcast(class_weights, src=0)
 
         # ── DataLoaders ────────────────────────────────────────────────
-        train_sampler = DistributedSampler(
-            ChirpCropDataset(train_df, augment=True),
-            num_replicas=world_size, rank=rank, shuffle=True,
-            seed=self.seed,
-        ) if world_size > 1 else None
+        # RF-confidence weighted sampling: crops with higher SonoBat
+        # confidence scores are drawn more frequently during training.
+        # This down-weights borderline chirps (where the species identity
+        # is uncertain) without discarding them entirely.
+        #
+        # In DDP mode we use DistributedSampler which does its own
+        # per-rank sharding.  WeightedRandomSampler is single-process
+        # only, so in DDP we pass per-sample weights to DistributedSampler
+        # via a custom approach: pre-shuffle the index order by weight
+        # and let DistributedSampler slice it.  The simpler approximation
+        # used here is to set DistributedSampler shuffle=True (the default)
+        # and rely on class weights in the loss to handle imbalance — the
+        # weighted sampler only applies in single-GPU mode.
+        train_dataset = ChirpCropDataset(train_df, augment=True)
+
+        if world_size == 1 and self.rf_weight_col and self.rf_weight_col in train_df.columns:
+            # Single-GPU: use WeightedRandomSampler.
+            raw_w = pd.to_numeric(
+                train_df[self.rf_weight_col], errors='coerce'
+            ).fillna(0.5).clip(lower=1e-6).values ** self.rf_weight_power
+            sample_weights = torch.from_numpy(raw_w.astype('float32'))
+            train_sampler  = torch.utils.data.WeightedRandomSampler(
+                weights     = sample_weights,
+                num_samples = len(sample_weights),
+                replacement = True,
+            )
+            if is_main:
+                log.info(
+                    f'RF-confidence weighted sampler active  '
+                    f'(col={self.rf_weight_col!r}, power={self.rf_weight_power})'
+                )
+        elif world_size > 1:
+            # DDP: DistributedSampler handles per-rank sharding + shuffle.
+            # Class weights in CrossEntropyLoss handle imbalance.
+            train_sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=world_size, rank=rank, shuffle=True,
+                seed=self.seed,
+            )
+            if is_main and self.rf_weight_col:
+                log.info(
+                    'RF-confidence weighted sampler skipped in DDP mode; '
+                    'using DistributedSampler + class weights instead.'
+                )
+        else:
+            train_sampler = None
 
         train_loader = DataLoader(
-            ChirpCropDataset(train_df, augment=True),
+            train_dataset,
             batch_size  = self.batch_size,
             shuffle     = (train_sampler is None),
             sampler     = train_sampler,
@@ -906,7 +967,7 @@ class CnnTrainer:
         # ── Model ──────────────────────────────────────────────────────
         if is_main:
             log.info(
-                f'Building EfficientNet-B0 ({n_classes} classes) on {device}'
+                f'Building EfficientNet-B3 ({n_classes} classes) on {device}'
                 + (f' × {world_size} GPUs (DDP)' if world_size > 1 else '')
             )
         model     = build_model(n_classes, device)
@@ -1180,6 +1241,8 @@ class CnnTrainer:
                 {'parameter': 'best_val_acc',        'value': round(best_val_acc, 6)},
                 {'parameter': 'elapsed_secs',        'value': round(elapsed, 1)},
                 {'parameter': 'gcs_output_bucket',   'value': self.gcs_output_bucket},
+                {'parameter': 'rf_weight_col',       'value': self.rf_weight_col},
+                {'parameter': 'rf_weight_power',     'value': self.rf_weight_power},
             ]).to_csv(self.out_dir / 'train_config.csv', index=False)
 
             log.info(
@@ -1200,7 +1263,7 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         prog='train_cnn',
         description=(
-            'Fine-tune EfficientNet-B0 on bat species spectrogram crops.\n\n'
+            'Fine-tune EfficientNet-B3 on bat species spectrogram crops.\n\n'
             'Single GPU:\n'
             '  python train_cnn.py --manifest ... --out-dir ...\n\n'
             'Multi-GPU (DDP):\n'
@@ -1283,6 +1346,23 @@ def _parse_args():
         ),
     )
     parser.add_argument(
+        '--rf-weight-col', default='confidence', metavar='COL',
+        help=(
+            'Manifest column used as per-sample training weights (default: confidence).\n'
+            'Crops are drawn proportionally to value**--rf-weight-power so\n'
+            'high-confidence chirps are seen more often.  Pass empty string\n'
+            'to disable weighted sampling (uniform).  Single-GPU only;\n'
+            'in DDP mode class weights in the loss handle imbalance instead.'
+        ),
+    )
+    parser.add_argument(
+        '--rf-weight-power', type=float, default=1.0, metavar='F',
+        help=(
+            'Exponent for RF confidence weights: weight ∝ confidence^power.\n'
+            '1.0 = linear (default), 2.0 = quadratic (stronger), 0.5 = softer.'
+        ),
+    )
+    parser.add_argument(
         '--gcs-output-bucket', default='', metavar='BUCKET',
         help=(
             'GCS bucket name (no gs:// prefix) for per-epoch checkpoint upload. '
@@ -1331,6 +1411,8 @@ def main() -> None:
         cw_power            = args.cw_power,
         gcs_output_bucket   = args.gcs_output_bucket,
         split_file          = args.split_file,
+        rf_weight_col       = args.rf_weight_col,
+        rf_weight_power     = args.rf_weight_power,
     )
     trainer.run()
 
