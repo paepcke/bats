@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-14 14:58:14
+# @Last Modified time: 2026-05-14 18:42:12
 # **********************************************************
 
 # NOTE: we made some changes to this code after running it
@@ -609,8 +609,17 @@ class ChirpSpectroExtractor:
         # the manifest at <out-dir>/manifest.csv of any prior run).
         if 'Filename' not in df.columns:
             # Try embedded file_map first.
-            _schema   = _pq.read_schema(self.data_path, memory_map=True)
-            _meta_raw = _schema.metadata or {}
+            # Use ParquetFile with raised thrift limits — the bats_metadata
+            # blob (file_map with 800K+ entries) exceeds PyArrow's default
+            # thrift size limit when reading the schema of large parquets.
+            # This is the same issue that Utils.read_df_file() avoids.
+            _THRIFT = 1_000_000_000
+            _pf       = _pq.ParquetFile(
+                self.data_path,
+                thrift_string_size_limit    = _THRIFT,
+                thrift_container_size_limit = _THRIFT,
+            )
+            _meta_raw = _pf.schema_arrow.metadata or {}
             _meta_key = b'bats_metadata'
 
             if _meta_key in _meta_raw:
