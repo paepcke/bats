@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-05 17:09:19
+# @Last Modified time: 2026-05-15 13:10:30
 # ***********************************************
 
 # startup.sh
@@ -54,7 +54,8 @@ GCS_OUTPUT_BUCKET=$(curl -sf -H "${H}" "${META}/GCS_OUTPUT_BUCKET" || echo "bat-
 GCS_CROPS_PREFIX=$(curl -sf -H "${H}" "${META}/GCS_CROPS_PREFIX" || echo "")
 IMAGE_URI=$(curl -sf -H "${H}" "${META}/IMAGE_URI")
 NPROC_PER_NODE=$(curl -sf -H "${H}" "${META}/NPROC_PER_NODE" || echo "2")
-EPOCHS=$(curl -sf -H "${H}" "${META}/EPOCHS" || echo "40")
+EPOCHS=$(curl -sf -H "${H}" "${META}/EPOCHS" || echo "30")
+LR=$(curl -sf -H "${H}" "${META}/LR" || echo "2e-3")
 EXTRA_ARGS=$(curl -sf -H "${H}" "${META}/EXTRA_ARGS" || echo "")
 SPLIT_FILE_KEY=$(curl -sf -H "${H}" "${META}/SPLIT_FILE_KEY" || echo "holdout_split.csv")
 
@@ -64,6 +65,7 @@ echo "GCS_CROPS_PREFIX  : ${GCS_CROPS_PREFIX}"
 echo "IMAGE_URI         : ${IMAGE_URI}"
 echo "NPROC_PER_NODE    : ${NPROC_PER_NODE}"
 echo "EPOCHS            : ${EPOCHS}"
+echo "LR                : ${LR}"
 echo "EXTRA_ARGS        : ${EXTRA_ARGS}"
 echo "SPLIT_FILE_KEY    : ${SPLIT_FILE_KEY}"
 
@@ -253,6 +255,8 @@ docker run --rm \
     -e MANIFEST_CSV=/data/manifest.csv \
     -e OUT_DIR=/output \
     -e EPOCHS="${EPOCHS}" \
+    -e BATCH="128" \
+    -e LR="${LR}" \
     -e NPROC_PER_NODE="${NPROC_PER_NODE}" \
     ${SPLIT_ENV_ARG} \
     "${IMAGE_URI}" \

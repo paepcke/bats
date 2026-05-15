@@ -2,7 +2,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-14 13:11:23
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-04 12:47:37
+# @Last Modified time: 2026-05-15 13:10:09
 
 # entrypoint.sh
 # Launches train_cnn.py via torchrun (multi-GPU) or python (single-GPU).
@@ -11,23 +11,22 @@
 # Environment variables (set via docker run --env or -e):
 #   MANIFEST_CSV     path to manifest CSV inside the container
 #   OUT_DIR          path to output directory inside the container
-#   EPOCHS           number of training epochs (default: 40)
-#   BATCH            per-GPU batch size (default: 64)
+#   EPOCHS           number of training epochs (default: 30)
+#   BATCH            per-GPU batch size (default: 128)
+#   LR               initial learning rate (default: 2e-3)
 #   WORKERS          DataLoader workers per GPU (default: 8)
 #   NPROC_PER_NODE   number of GPUs to use (default: 1)
+#   SPLIT_FILE       path to holdout_split.csv inside the container
 
 set -euo pipefail
 
 MANIFEST_CSV="${MANIFEST_CSV:-/data/manifest.csv}"
 OUT_DIR="${OUT_DIR:-/output}"
-EPOCHS="${EPOCHS:-40}"
-BATCH="${BATCH:-64}"
+EPOCHS="${EPOCHS:-30}"
+BATCH="${BATCH:-128}"
+LR="${LR:-2e-3}"
 WORKERS="${WORKERS:-8}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
-# Optional: path to holdout_split.csv inside the container.
-# Set via -e SPLIT_FILE=/data/holdout_split.csv in docker run.
-# When set, train_cnn.py uses the pre-assigned file_id partitions
-# instead of computing its own random split.
 SPLIT_FILE="${SPLIT_FILE:-}"
 
 mkdir -p "${OUT_DIR}"
@@ -44,11 +43,12 @@ if [[ -n "${SPLIT_FILE}" ]]; then
 fi
 
 echo "=========================================="
-echo "  Bat CNN Training"
+echo "  Bat CNN Training — EfficientNet-B3"
 echo "  MANIFEST_CSV : ${MANIFEST_CSV}"
 echo "  OUT_DIR      : ${OUT_DIR}"
 echo "  EPOCHS       : ${EPOCHS}"
 echo "  BATCH        : ${BATCH} (per GPU)"
+echo "  LR           : ${LR}"
 echo "  WORKERS      : ${WORKERS}"
 echo "  NPROC        : ${NPROC_PER_NODE} GPU(s)"
 echo "  SPLIT_FILE   : ${SPLIT_FILE:-<none — internal random split>}"
@@ -65,6 +65,7 @@ if [ "${NPROC_PER_NODE}" -gt 1 ]; then
         --out-dir   "${OUT_DIR}" \
         --epochs    "${EPOCHS}" \
         --batch     "${BATCH}" \
+        --lr        "${LR}" \
         --workers   "${WORKERS}" \
         ${SPLIT_FILE_ARG} \
         "$@"
@@ -75,6 +76,7 @@ else
         --out-dir   "${OUT_DIR}" \
         --epochs    "${EPOCHS}" \
         --batch     "${BATCH}" \
+        --lr        "${LR}" \
         --workers   "${WORKERS}" \
         ${SPLIT_FILE_ARG} \
         "$@"
