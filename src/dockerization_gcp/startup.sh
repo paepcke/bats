@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-15 15:49:35
+# @Last Modified time: 2026-05-15 16:24:25
 # ***********************************************
 
 # startup.sh
@@ -57,9 +57,6 @@ NPROC_PER_NODE=$(curl -sf -H "${H}" "${META}/NPROC_PER_NODE" || echo "2")
 EPOCHS=$(curl -sf -H "${H}" "${META}/EPOCHS" || echo "30")
 LR=$(curl -sf -H "${H}" "${META}/LR" || echo "2e-3")
 EXTRA_ARGS=$(curl -sf -H "${H}" "${META}/EXTRA_ARGS" || echo "")
-# gcloud metadata cannot contain spaces in values; ^ is used as a
-# space substitute.  Expand back to spaces before passing to docker.
-EXTRA_ARGS="${EXTRA_ARGS//^/ }"
 SPLIT_FILE_KEY=$(curl -sf -H "${H}" "${META}/SPLIT_FILE_KEY" || echo "holdout_split.csv")
 
 echo "GCS_DATA_BUCKET   : gs://${GCS_DATA_BUCKET}"
