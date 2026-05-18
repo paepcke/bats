@@ -3,7 +3,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-04-13 12:49:09
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-15 16:24:25
+# @Last Modified time: 2026-05-18 08:32:27
 # ***********************************************
 
 # startup.sh
@@ -245,6 +245,13 @@ if [[ -n "${SPLIT_FILE_HOST}" && -f "${SPLIT_FILE_HOST}" ]]; then
     SPLIT_ENV_ARG="-e SPLIT_FILE=/data/holdout_split.csv"
 fi
 
+# Capture docker exit code without letting set -e abort the script.
+# torchrun can return non-zero even when training completed successfully
+# (e.g. worker process cleanup), so we must not let a non-zero exit here
+# prevent the final sync and VM self-delete from running.
+# Redirect container stdout/stderr into the startup log so training
+# output (epoch summaries, val_acc, etc.) is captured for debugging.
+set +e
 docker run --rm \
     --gpus all \
     --shm-size=32g \
@@ -261,11 +268,14 @@ docker run --rm \
     ${SPLIT_ENV_ARG} \
     "${IMAGE_URI}" \
     --gcs-output-bucket "${GCS_OUTPUT_BUCKET}" \
-    ${EXTRA_ARGS}
+    ${EXTRA_ARGS} 2>&1 | tee -a "${LOG}"
+DOCKER_EXIT=${PIPESTATUS[0]}
+set -e
 
-echo "Training complete: $(date)"
+echo "Training container exited with code ${DOCKER_EXIT}: $(date)"
 
 # ── Sync outputs back to GCS ──────────────────────────────────
+# Always run this sync regardless of docker exit code.
 # This final rsync picks up final_model.pt, train_log.csv,
 # confusion_matrix.png, and classification_report.txt, which are only
 # written at the very end of training.  checkpoint_latest.pt and
@@ -273,12 +283,14 @@ echo "Training complete: $(date)"
 echo "Syncing outputs to gs://${GCS_OUTPUT_BUCKET}/checkpoints/ ..."
 gcloud storage rsync \
     "${OUTPUT_DIR}/" \
-    "gs://${GCS_OUTPUT_BUCKET}/checkpoints/"
+    "gs://${GCS_OUTPUT_BUCKET}/checkpoints/" || true
 echo "Output sync complete."
 
 echo "====== Startup script finished: $(date) ======"
 
 # ── Self-delete the VM ────────────────────────────────────────
+# Always runs — even if training crashed, we don't want to pay for
+# an idle VM.  Outputs are in GCS; the VM is no longer needed.
 # Fetch instance name and zone from the metadata server so this
 # script works without hardcoding the VM name.
 INSTANCE_NAME=$(curl -sf -H "Metadata-Flavor: Google" \
