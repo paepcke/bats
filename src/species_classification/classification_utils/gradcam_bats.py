@@ -4,7 +4,7 @@
 # @Author: Andreas Paepcke
 # @Date:   2026-05-08 16:11:10
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-12 16:26:21
+# @Last Modified time: 2026-05-18 09:42:19
 # **********************************************************
 
 """
@@ -62,7 +62,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
-from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
+from torchvision.models import efficientnet_b3, EfficientNet_B3_Weights
 
 from logging_service import LoggingService
 
@@ -119,10 +119,10 @@ class ModelLoader:
         n_classes = len(label_to_idx)
         log.info(f'Label encoder: {n_classes} classes: {sorted(label_to_idx.keys())}')
 
-        model = efficientnet_b0(weights=None)
-        in_features = model.classifier[1].in_features
+        model = efficientnet_b3(weights=None)
+        in_features = model.classifier[1].in_features  # 1536 for B3
         model.classifier = nn.Sequential(
-            nn.Dropout(p=0.2, inplace=True),
+            nn.Dropout(p=0.3, inplace=True),
             nn.Linear(in_features, n_classes),
         )
 
