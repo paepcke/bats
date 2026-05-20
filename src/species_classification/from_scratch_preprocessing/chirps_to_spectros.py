@@ -4,7 +4,7 @@
 # @Date:   2026-03-15 09:46:12
 # @File:   /Users/paepcke/VSCodeWorkspaces/bats/src/species_classification/chirps_to_spectros.py
 # @Last Modified by:   Andreas Paepcke
-# @Last Modified time: 2026-05-20 12:52:09
+# @Last Modified time: 2026-05-20 13:22:47
 # **********************************************************
 
 """
@@ -561,8 +561,9 @@ class ChirpSpectroExtractor:
           dropped; a high NaN count is logged as it may indicate an upstream
           pipeline issue
         * ``species`` is not NaN and is a clean 4-char code, slash-composite
-          (e.g. ``Laci/Lano``), or the sentinel value ``'noise'`` written by
-          ``from_scratch_postprocessing.py`` for the noise parquet
+          (e.g. ``Laci/Lano``), or a sentinel value written by
+          ``from_scratch_postprocessing.py``: ``'noise'`` (unclassified rows)
+          or ``'unkn'`` (low-confidence rows below the clean threshold)
         * ``confidence`` >= ``self.min_conf``
         * fragment wav resolved from ``Filename`` stem via ``--fragment-dirs``
         * ``match_quality`` filter applied only when the column is present
@@ -716,13 +717,16 @@ class ChirpSpectroExtractor:
             )
 
         # Species filter: accept clean 4-char code, slash-composites
-        # (e.g. Laci/Lano), or the sentinel value 'noise' used by the noise
-        # parquet produced by from_scratch_postprocessing.py.
+        # (e.g. Laci/Lano), or the sentinel values written by
+        # from_scratch_postprocessing.py for the noise parquet:
+        #   'noise' — unclassified rows (confidence == 0 or species NaN)
+        #   'unkn'  — low-confidence rows below the clean threshold
+        _SENTINEL_SPECIES = {'noise', 'unkn'}
         import re
         _sp_re = re.compile(r'^[A-Z][a-z]{3}(/[A-Z][a-z]{3})*$')
         merged = merged[merged['species'].notna()]
         merged = merged[merged['species'].apply(
-            lambda s: s == 'noise' or bool(_sp_re.match(str(s)))
+            lambda s: s in _SENTINEL_SPECIES or bool(_sp_re.match(str(s)))
         )]
         log.info(f'  {len(merged):,} rows with valid species code')
 
